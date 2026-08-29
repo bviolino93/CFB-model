@@ -11,9 +11,11 @@ from datetime import date
 import math
 import requests
 from statistics import NormalDist, mean, pstdev
+from functools import lru_cache
+from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.2-ENVIRONMENT"
+MODEL_VERSION = "0.2.3-VENUE-WEATHER"
 
 DEFAULT_HFA = 2.5
 
@@ -122,24 +124,48 @@ def _loc_fields(obj):
     }
 
 def _resolve_venue(game, data):
+    """
+    Resolve an explicit CFBD venue first.
+    If a non-neutral game has no usable venue, fall back to the home team's
+    location/stadium coordinates so travel and weather can still be modeled.
+    """
     raw = game.get("venue")
     if isinstance(raw, dict):
-        return raw
+        loc = _loc_fields(raw)
+        if loc.get("latitude") is not None and loc.get("longitude") is not None:
+            out = dict(raw)
+            out["_venue_source"] = "game_venue"
+            return out
 
     venues = data.get("venues", {})
     if raw is not None:
         key = str(raw).strip().lower()
-        if key in venues:
-            return venues[key]
-        if str(raw) in venues:
-            return venues[str(raw)]
+        candidate = venues.get(key) or venues.get(str(raw))
+        if candidate:
+            out = dict(candidate)
+            out["_venue_source"] = "venue_lookup"
+            return out
 
-    # Some CFBD game payloads expose venueId separately.
     vid = game.get("venueId") or game.get("venue_id")
     if vid is not None and str(vid) in venues:
-        return venues[str(vid)]
+        out = dict(venues[str(vid)])
+        out["_venue_source"] = "venue_id"
+        return out
 
-    return {}
+    # Critical v0.2.3 fallback: for a normal home game, use the home team's
+    # CFBD location if the game payload omits its venue.
+    if not bool(game.get("neutralSite")):
+        home = str(game.get("homeTeam"))
+        home_obj = data.get("teams", {}).get(home) or {}
+        home_loc = _loc_fields(home_obj)
+        if home_loc.get("latitude") is not None and home_loc.get("longitude") is not None:
+            out = dict(home_obj)
+            if not out.get("name"):
+                out["name"] = f"{home} home location"
+            out["_venue_source"] = "home_team_fallback"
+            return out
+
+    return {"_venue_source": "unresolved"}
 
 def _weather_from_game(game):
     weather = game.get("weather") if isinstance(game.get("weather"), dict) else {}
@@ -152,6 +178,116 @@ def _weather_from_game(game):
     wind = _num(weather.get("windSpeed"), _num(game.get("windSpeed")))
     temp = _num(weather.get("temperature"), _num(game.get("temperature")))
     return {"description": description, "wind_mph": wind, "temperature_f": temp}
+
+
+def _parse_game_datetime(game):
+    raw = game.get("startDate") or game.get("start_date") or game.get("startTime")
+    if not raw:
+        return None
+    try:
+        s = str(raw).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+@lru_cache(maxsize=512)
+def _open_meteo_hourly(lat_key, lon_key, date_key):
+    """
+    Free/no-key forecast fallback. Cache by rounded venue coordinates + local date.
+    """
+    try:
+        params = {
+            "latitude": float(lat_key),
+            "longitude": float(lon_key),
+            "hourly": "temperature_2m,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m",
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "inch",
+            "timezone": "auto",
+            "start_date": date_key,
+            "end_date": date_key,
+        }
+        r = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+def _forecast_weather(game, venue):
+    lat = venue.get("latitude")
+    lon = venue.get("longitude")
+    dt = _parse_game_datetime(game)
+    if lat is None or lon is None or dt is None:
+        return {}
+
+    # Ask Open-Meteo for the venue's local calendar date. We use the game date
+    # from the ISO string as a safe first pass and select the nearest forecast hour.
+    date_key = dt.date().isoformat()
+    data = _open_meteo_hourly(round(float(lat), 3), round(float(lon), 3), date_key)
+    hourly = data.get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        return {}
+
+    # Convert kickoff to venue-local time using Open-Meteo's UTC offset when present.
+    try:
+        offset_seconds = int(data.get("utc_offset_seconds") or 0)
+        local_dt = dt.astimezone(timezone.utc) + timedelta(seconds=offset_seconds)
+        target = local_dt.replace(tzinfo=None)
+    except Exception:
+        target = dt.replace(tzinfo=None)
+
+    nearest_i = None
+    nearest_seconds = None
+    for i, ts in enumerate(times):
+        try:
+            t = datetime.fromisoformat(ts)
+            diff = abs((t - target).total_seconds())
+            if nearest_seconds is None or diff < nearest_seconds:
+                nearest_seconds = diff
+                nearest_i = i
+        except Exception:
+            continue
+    if nearest_i is None:
+        return {}
+
+    def pick(key):
+        vals = hourly.get(key) or []
+        if nearest_i < len(vals):
+            return _num(vals[nearest_i])
+        return None
+
+    precip_prob = pick("precipitation_probability")
+    precip = pick("precipitation")
+    wind = pick("wind_speed_10m")
+    gust = pick("wind_gusts_10m")
+    temp = pick("temperature_2m")
+
+    desc_bits = []
+    if precip_prob is not None:
+        desc_bits.append(f"{precip_prob:.0f}% precip")
+    if precip is not None and precip >= 0.02:
+        desc_bits.append(f"{precip:.2f} in precip")
+    if wind is not None:
+        desc_bits.append(f"{wind:.0f} mph wind")
+    if gust is not None:
+        desc_bits.append(f"gusts {gust:.0f}")
+    if temp is not None:
+        desc_bits.append(f"{temp:.0f}F")
+
+    return {
+        "source": "Open-Meteo",
+        "description": ", ".join(desc_bits),
+        "wind_mph": wind,
+        "wind_gust_mph": gust,
+        "temperature_f": temp,
+        "precip_probability": precip_prob,
+        "precipitation_in": precip,
+        "forecast_hour": times[nearest_i],
+    }
 
 def _environment_adjustment(game, data):
     """
@@ -235,6 +371,27 @@ def _environment_adjustment(game, data):
 
     # Weather: wind is the strongest total suppressor here.
     weather = _weather_from_game(game)
+    weather_source = "CFBD game payload" if any([
+        weather.get("wind_mph") is not None,
+        weather.get("temperature_f") is not None,
+        bool(weather.get("description"))
+    ]) else None
+
+    # If CFBD does not carry usable weather, fetch forecast weather from Open-Meteo.
+    if weather_source is None:
+        forecast = _forecast_weather(game, venue)
+        if forecast:
+            weather = {
+                "description": forecast.get("description") or "",
+                "wind_mph": forecast.get("wind_mph"),
+                "temperature_f": forecast.get("temperature_f"),
+                "wind_gust_mph": forecast.get("wind_gust_mph"),
+                "precip_probability": forecast.get("precip_probability"),
+                "precipitation_in": forecast.get("precipitation_in"),
+                "forecast_hour": forecast.get("forecast_hour"),
+            }
+            weather_source = forecast.get("source")
+
     wind = weather.get("wind_mph")
     temp = weather.get("temperature_f")
     desc = weather.get("description", "")
@@ -252,8 +409,19 @@ def _environment_adjustment(game, data):
             total_adj -= 1.5
             reasons.append("meaningful wind")
 
-    precip_terms = ["rain", "shower", "storm", "snow", "sleet"]
-    if any(term in desc for term in precip_terms):
+    gust = _num(weather.get("wind_gust_mph"))
+    if gust is not None and gust >= 35 and (wind is None or wind < 20):
+        total_adj -= 0.75
+        reasons.append("strong wind gusts")
+
+    precip_terms = ["rain", "shower", "storm", "snow", "sleet", "precip"]
+    precip_prob = _num(weather.get("precip_probability"))
+    precip_amt = _num(weather.get("precipitation_in"))
+    meaningful_precip = (
+        any(term in desc for term in precip_terms)
+        or (precip_prob is not None and precip_prob >= 55 and precip_amt is not None and precip_amt >= 0.02)
+    )
+    if meaningful_precip:
         total_adj -= 0.75
         reasons.append("precipitation")
 
@@ -286,10 +454,16 @@ def _environment_adjustment(game, data):
         "venue_state": venue.get("state"),
         "venue_country": venue.get("country"),
         "venue_elevation": elev,
+        "venue_source": venue_obj.get("_venue_source") if isinstance(venue_obj, dict) else None,
         "international": international,
+        "weather_source": weather_source,
         "weather_description": weather.get("description"),
+        "forecast_hour": weather.get("forecast_hour"),
         "wind_mph": wind,
+        "wind_gust_mph": weather.get("wind_gust_mph"),
         "temperature_f": temp,
+        "precip_probability": weather.get("precip_probability"),
+        "precipitation_in": weather.get("precipitation_in"),
         "reasons": reasons,
     }
 
@@ -906,7 +1080,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.2-ENVIRONMENT • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.3-VENUE-WEATHER • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -1216,7 +1390,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.2-ENVIRONMENT",
+                "model_version": "0.2.3-VENUE-WEATHER",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1248,8 +1422,12 @@ if run_mode == "Slate":
                 "away_travel_miles": gp["environment"].get("away_travel_miles"),
                 "home_travel_miles": gp["environment"].get("home_travel_miles"),
                 "international_game": gp["environment"].get("international"),
+                "venue_source": gp["environment"].get("venue_source"),
+                "weather_source": gp["environment"].get("weather_source"),
                 "wind_mph": gp["environment"].get("wind_mph"),
+                "wind_gust_mph": gp["environment"].get("wind_gust_mph"),
                 "temperature_f": gp["environment"].get("temperature_f"),
+                "precip_probability": gp["environment"].get("precip_probability"),
                 "environment_flags": "; ".join(gp["environment"].get("reasons") or []),
                 "market_source": market.get("provider"),
                 "market_away_ml": market.get("away_ml"),
@@ -1336,11 +1514,19 @@ with st.expander("Projection components"):
     e = p["environment"]
     st.write("---")
     st.write(f"Venue: {e.get('venue_name') or 'Unknown'}")
+    st.write(f"Venue source: {e.get('venue_source') or 'unresolved'}")
     st.write(f"Away travel: {e.get('away_travel_miles'):.0f} mi" if e.get('away_travel_miles') is not None else "Away travel: unavailable")
     st.write(f"Home travel: {e.get('home_travel_miles'):.0f} mi" if e.get('home_travel_miles') is not None else "Home travel: unavailable")
     st.write(f"Weather: {e.get('weather_description') or 'not available'}")
+    st.write(f"Weather source: {e.get('weather_source') or 'not available'}")
+    if e.get("forecast_hour"):
+        st.write(f"Forecast hour: {e['forecast_hour']}")
     if e.get("wind_mph") is not None:
         st.write(f"Wind: {e['wind_mph']:.0f} mph")
+    if e.get("wind_gust_mph") is not None:
+        st.write(f"Gusts: {e['wind_gust_mph']:.0f} mph")
+    if e.get("precip_probability") is not None:
+        st.write(f"Precipitation probability: {e['precip_probability']:.0f}%")
     if e.get("temperature_f") is not None:
         st.write(f"Temperature: {e['temperature_f']:.0f}°F")
     if e.get("reasons"):
@@ -1350,7 +1536,7 @@ with st.expander("Projection components"):
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.2-ENVIRONMENT",
+        "model_version": "0.2.3-VENUE-WEATHER",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -1399,12 +1585,18 @@ def build_export_row(p, game, selected_date, market=None):
         "venue_state": p["environment"].get("venue_state"),
         "venue_country": p["environment"].get("venue_country"),
         "venue_elevation": p["environment"].get("venue_elevation"),
+        "venue_source": p["environment"].get("venue_source"),
         "international_game": p["environment"].get("international"),
         "away_travel_miles": p["environment"].get("away_travel_miles"),
         "home_travel_miles": p["environment"].get("home_travel_miles"),
+        "weather_source": p["environment"].get("weather_source"),
         "weather_description": p["environment"].get("weather_description"),
+        "forecast_hour": p["environment"].get("forecast_hour"),
         "wind_mph": p["environment"].get("wind_mph"),
+        "wind_gust_mph": p["environment"].get("wind_gust_mph"),
         "temperature_f": p["environment"].get("temperature_f"),
+        "precip_probability": p["environment"].get("precip_probability"),
+        "precipitation_in": p["environment"].get("precipitation_in"),
         "environment_flags": "; ".join(p["environment"].get("reasons") or []),
 
         "away_srs": p["away_rating"].get("srs"),
