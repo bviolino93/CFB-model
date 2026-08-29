@@ -15,7 +15,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.9-SLATE-CARDS"
+MODEL_VERSION = "0.3.0-RANKED-SLATE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -2027,7 +2027,7 @@ if run_mode == "Slate":
         c3.metric("Leans", len(leans))
 
         if len(actionable):
-            st.success(f"{len(actionable)} game(s) currently clear the BET threshold.")
+            st.success(f"{len(actionable)} ranked BET signal(s) currently clear the threshold.")
         elif len(leans):
             st.info("No full BET signals right now. There are LEAN-level edges.")
         else:
@@ -2057,7 +2057,24 @@ if run_mode == "Slate":
                 "NO LINE": "noline",
             }.get(str(verdict), "pass")
 
-        for _, r in slate_df.iterrows():
+        # Rank games by verdict first, then edge, then EV.
+        verdict_rank = {
+            "STRONG BET": 4,
+            "BET": 3,
+            "LEAN": 2,
+            "PASS": 1,
+            "NO LINE": 0,
+        }
+        ranked_df = slate_df.copy()
+        ranked_df["_verdict_rank"] = ranked_df["best_verdict"].map(verdict_rank).fillna(0)
+        ranked_df["_edge_sort"] = pd.to_numeric(ranked_df["best_edge"], errors="coerce").fillna(-999)
+        ranked_df["_ev_sort"] = pd.to_numeric(ranked_df["best_ev"], errors="coerce").fillna(-999)
+        ranked_df = ranked_df.sort_values(
+            ["_verdict_rank", "_edge_sort", "_ev_sort"],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+
+        def _render_slate_card(r, rank=None):
             market_spread = _fmt_spread(r["home_team"], r["market_home_spread"])
             model_spread = _fmt_spread(r["home_team"], r["model_home_spread"])
             market_total = _fmt_num(r["market_total"])
@@ -2066,13 +2083,14 @@ if run_mode == "Slate":
             verdict = str(r["best_verdict"])
             edge = _fmt_pct(r["best_edge"])
             ev = _fmt_pct(r["best_ev"])
+            rank_text = f"#{rank} " if rank is not None else ""
 
             st.markdown(
                 f"""
                 <div class="slate-card">
                   <div class="slate-card-top">
                     <div>
-                      <div class="slate-time">{html.escape(str(r['kickoff_et']))}</div>
+                      <div class="slate-time">{rank_text}{html.escape(str(r['kickoff_et']))}</div>
                       <div class="slate-matchup">{html.escape(str(r['away_team']))} <span>@</span> {html.escape(str(r['home_team']))}</div>
                     </div>
                     <div class="slate-badge {_verdict_class(verdict)}">{html.escape(verdict)}</div>
@@ -2113,6 +2131,33 @@ if run_mode == "Slate":
                 unsafe_allow_html=True,
             )
 
+        # Top bets shown immediately, ordered strongest to weakest.
+        top_bets = ranked_df[ranked_df["best_verdict"].isin(["STRONG BET", "BET"])].copy()
+        if len(top_bets):
+            st.markdown('<div class="section-kicker">Top Bets</div>', unsafe_allow_html=True)
+            for i, (_, r) in enumerate(top_bets.iterrows(), start=1):
+                _render_slate_card(r, rank=i)
+        else:
+            st.info("No BET or STRONG BET signals currently qualify.")
+
+        # Leans and passes stay out of the way until the user wants them.
+        lean_df = ranked_df[ranked_df["best_verdict"].eq("LEAN")].copy()
+        pass_df = ranked_df[ranked_df["best_verdict"].isin(["PASS", "NO LINE"])].copy()
+
+        with st.expander(f"Leans ({len(lean_df)})", expanded=False):
+            if len(lean_df):
+                for i, (_, r) in enumerate(lean_df.iterrows(), start=1):
+                    _render_slate_card(r, rank=i)
+            else:
+                st.caption("No lean-level signals on this slate.")
+
+        with st.expander(f"Passes / No Line ({len(pass_df)})", expanded=False):
+            if len(pass_df):
+                for i, (_, r) in enumerate(pass_df.iterrows(), start=1):
+                    _render_slate_card(r, rank=i)
+            else:
+                st.caption("No pass/no-line games on this slate.")
+
         with st.expander("View full slate data"):
             display_cols = [
                 "kickoff_et","away_team","home_team","projected_away_score","projected_home_score",
@@ -2124,7 +2169,7 @@ if run_mode == "Slate":
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v029_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v030_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
@@ -2553,4 +2598,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.2.9-SLATE-CARDS • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
+st.caption("CFB Edge • v0.3.0-RANKED-SLATE • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
