@@ -15,12 +15,9 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.7-DOME-WEATHER-FIX"
+MODEL_VERSION = "0.2.7.1-DOME-FIX"
 
-
-# Weather adjustments should not be applied to fully enclosed/domed stadiums.
-# Retractable-roof venues are treated as enclosed by default unless roof status
-# is explicitly available in the game payload in a future version.
+# Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
     "allegiant stadium",
     "mercedes-benz stadium",
@@ -31,9 +28,15 @@ ENCLOSED_VENUES = {
     "caesars superdome",
     "the dome at america's center",
     "alamodome",
-    "carrier dome",
     "jma wireless dome",
+    "carrier dome",
 }
+
+def is_enclosed_venue(venue_name):
+    if not venue_name:
+        return False
+    v = str(venue_name).strip().lower()
+    return any(name in v for name in ENCLOSED_VENUES)
 
 
 DEFAULT_HFA = 2.5
@@ -41,13 +44,6 @@ DEFAULT_HFA = 2.5
 # Distribution widths are intentionally wider early in the season.
 BASE_MARGIN_SD = 15.8
 BASE_TOTAL_SD = 12.8
-
-
-def is_enclosed_venue(venue_name):
-    if not venue_name:
-        return False
-    v = str(venue_name).strip().lower()
-    return any(name in v for name in ENCLOSED_VENUES)
 
 def _headers(api_key):
     return {"Authorization": f"Bearer {api_key}"}
@@ -456,8 +452,6 @@ def _forecast_weather(game, venue):
     }
 
 def _environment_adjustment(game, data):
-    venue_name_for_weather = str((venue_info.get("venue_name") if isinstance(venue_info, dict) else "") or (game.get("venue") if isinstance(game, dict) else "") or "")
-    enclosed_venue = is_enclosed_venue(venue_name_for_weather)
     """
     Conservative pregame environment layer.
     It uses CFBD team/venue coordinates and game weather when available.
@@ -469,6 +463,11 @@ def _environment_adjustment(game, data):
 
     venue_obj = _resolve_venue(game, data)
     venue = _loc_fields(venue_obj)
+
+    resolved_venue_name = (
+        venue_obj.get("name") if isinstance(venue_obj, dict) else None
+    ) or game.get("venue")
+    enclosed_venue = is_enclosed_venue(resolved_venue_name)
 
     away_team_obj = data.get("teams", {}).get(str(away), {})
     home_team_obj = data.get("teams", {}).get(str(home), {})
@@ -540,7 +539,7 @@ def _environment_adjustment(game, data):
     international_keywords = ["ireland", "dublin", "aviva", "australia", "sydney", "japan", "tokyo"]
     international = any(k in venue_blob for k in international_keywords)
     if international:
-        # Informational only in v0.2.7. International/neutral games are rare,
+        # Informational only in v0.2.7.1. International/neutral games are rare,
         # so we do not apply a bespoke scoring penalty without calibration data.
         reasons.append("international/atypical venue (informational)")
 
@@ -571,21 +570,21 @@ def _environment_adjustment(game, data):
     temp = weather.get("temperature_f")
     desc = weather.get("description", "")
 
-    if wind is not None:
-        if not enclosed_venue and wind >= 25:
+    if not enclosed_venue and wind is not None:
+        if wind >= 25:
             total_adj -= 4.0
             confidence_penalty += 2
             reasons.append("very high wind")
-        elif not enclosed_venue and wind >= 20:
+        elif wind >= 20:
             total_adj -= 3.0
             confidence_penalty += 1
             reasons.append("high wind")
-        elif not enclosed_venue and wind >= 15:
+        elif wind >= 15:
             total_adj -= 1.5
             reasons.append("meaningful wind")
 
     gust = _num(weather.get("wind_gust_mph"))
-    if gust is not None and gust >= 35 and (wind is None or wind < 20):
+    if not enclosed_venue and gust is not None and gust >= 35 and (wind is None or wind < 20):
         total_adj -= 0.75
         reasons.append("strong wind gusts")
 
@@ -608,11 +607,11 @@ def _environment_adjustment(game, data):
     )
 
     meaningful_precip = text_precip or numeric_precip
-    if meaningful_precip:
+    if not enclosed_venue and meaningful_precip:
         total_adj -= 0.75
         reasons.append("precipitation")
 
-    if temp is not None:
+    if not enclosed_venue and temp is not None:
         if temp <= 25:
             total_adj -= 1.0
             reasons.append("extreme cold")
@@ -645,6 +644,7 @@ def _environment_adjustment(game, data):
         "venue_country": venue.get("country"),
         "venue_elevation": elev,
         "venue_source": venue_obj.get("_venue_source") if isinstance(venue_obj, dict) else None,
+        "enclosed_venue": enclosed_venue,
         "venue_geocode_query": venue_obj.get("_geocode_query") if isinstance(venue_obj, dict) else None,
         "international": international,
         "weather_source": weather_source,
@@ -657,6 +657,7 @@ def _environment_adjustment(game, data):
         "precipitation_in": weather.get("precipitation_in"),
         "reasons": reasons,
     }
+
 def _safe_fetch(func, *args):
     try:
         return func(*args)
@@ -1850,8 +1851,6 @@ def build_export_row(p, game, selected_date, market=None):
         "temperature_f": p["environment"].get("temperature_f"),
         "precip_probability": p["environment"].get("precip_probability"),
         "precipitation_in": p["environment"].get("precipitation_in"),
-        "enclosed_venue": is_enclosed_venue(p.get("venue_name") or p.get("venue") or game.get("venue")),
-
         "environment_flags": "; ".join(p["environment"].get("reasons") or []),
 
         "away_srs": p["away_rating"].get("srs"),
