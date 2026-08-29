@@ -15,7 +15,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.7.1-DOME-FIX"
+MODEL_VERSION = "0.2.8-PRO-UI"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1266,9 +1266,283 @@ def normalize_game_lines(rows, game_id=None):
 # ===== End embedded model engine =====
 
 
-st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
-st.title("🏈 CFB Model")
-st.caption("Version 0.2.6-CALIBRATION • SP+ anchor + matchup/efficiency/roster adjustments")
+st.set_page_config(
+    page_title="CFB Edge",
+    page_icon="🏈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ---------- Professional app theme ----------
+st.markdown("""
+<style>
+    /* App shell */
+    .stApp {
+        background:
+          radial-gradient(circle at 15% 0%, rgba(37,99,235,.12), transparent 32%),
+          radial-gradient(circle at 90% 8%, rgba(16,185,129,.08), transparent 26%),
+          #07101f;
+        color: #E8EEF8;
+    }
+    [data-testid="stHeader"] {
+        background: rgba(7,16,31,.76);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid rgba(148,163,184,.10);
+    }
+    .block-container {
+        max-width: 1180px;
+        padding-top: 1.6rem;
+        padding-bottom: 4rem;
+    }
+
+    /* Hide default Streamlit chrome */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Typography */
+    h1, h2, h3 {
+        letter-spacing: -0.025em;
+        color: #F8FAFC !important;
+    }
+    p, label, .stCaption {
+        color: #AFC0D6 !important;
+    }
+
+    /* Hero */
+    .cfb-hero {
+        padding: 22px 24px;
+        margin-bottom: 22px;
+        border: 1px solid rgba(148,163,184,.15);
+        border-radius: 22px;
+        background: linear-gradient(135deg, rgba(15,30,54,.96), rgba(10,22,42,.92));
+        box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    }
+    .cfb-kicker {
+        font-size: .73rem;
+        font-weight: 800;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+        color: #60A5FA;
+        margin-bottom: 7px;
+    }
+    .cfb-title {
+        font-size: clamp(1.9rem, 4vw, 3rem);
+        line-height: 1.02;
+        font-weight: 850;
+        color: #F8FAFC;
+        letter-spacing: -.045em;
+    }
+    .cfb-subtitle {
+        color: #AFC0D6;
+        font-size: .98rem;
+        margin-top: 8px;
+    }
+    .version-pill {
+        display: inline-block;
+        margin-top: 13px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(96,165,250,.10);
+        border: 1px solid rgba(96,165,250,.25);
+        color: #93C5FD;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .05em;
+    }
+
+    /* Section labels */
+    .section-kicker {
+        margin-top: 1.1rem;
+        margin-bottom: .45rem;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+        color: #7DD3FC;
+    }
+
+    /* Inputs */
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="input"] > div,
+    div[data-baseweb="base-input"],
+    [data-testid="stDateInput"] input,
+    [data-testid="stNumberInput"] input {
+        background: #0D1A2D !important;
+        border-color: rgba(148,163,184,.18) !important;
+        color: #F8FAFC !important;
+        border-radius: 12px !important;
+    }
+    div[data-baseweb="select"] span {
+        color: #F8FAFC !important;
+    }
+
+    /* Radio segmented control */
+    div[role="radiogroup"] {
+        gap: .45rem;
+        background: rgba(13,26,45,.75);
+        border: 1px solid rgba(148,163,184,.14);
+        padding: 5px;
+        border-radius: 14px;
+    }
+    div[role="radiogroup"] label {
+        border-radius: 10px;
+        padding: 3px 10px;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        width: 100%;
+        border-radius: 12px;
+        min-height: 45px;
+        font-weight: 750;
+        border: 1px solid rgba(96,165,250,.30);
+        background: linear-gradient(135deg, #2563EB, #1D4ED8);
+        color: white;
+        box-shadow: 0 10px 24px rgba(37,99,235,.18);
+        transition: .15s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        border-color: rgba(147,197,253,.65);
+        box-shadow: 0 12px 30px rgba(37,99,235,.28);
+        color: white;
+    }
+
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background: linear-gradient(180deg, rgba(16,31,53,.96), rgba(12,24,43,.96));
+        border: 1px solid rgba(148,163,184,.14);
+        border-radius: 16px;
+        padding: 15px 16px;
+        box-shadow: 0 12px 30px rgba(0,0,0,.13);
+    }
+    [data-testid="stMetricLabel"] {
+        color: #93A8C2 !important;
+        font-weight: 700;
+    }
+    [data-testid="stMetricValue"] {
+        color: #F8FAFC !important;
+        letter-spacing: -.03em;
+    }
+
+    /* Scoreboard */
+    .scoreboard {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 18px;
+        padding: 22px;
+        border-radius: 20px;
+        background: linear-gradient(145deg, rgba(15,31,54,.98), rgba(9,20,38,.98));
+        border: 1px solid rgba(148,163,184,.16);
+        box-shadow: 0 20px 55px rgba(0,0,0,.22);
+        margin-bottom: 12px;
+    }
+    .score-team { min-width: 0; }
+    .score-team.right { text-align: right; }
+    .team-name {
+        color: #C6D4E7;
+        font-size: .84rem;
+        font-weight: 750;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .team-score {
+        color: #F8FAFC;
+        font-weight: 900;
+        font-size: clamp(2rem, 6vw, 3.3rem);
+        letter-spacing: -.06em;
+        line-height: 1;
+        margin-top: 4px;
+    }
+    .score-center {
+        text-align: center;
+        padding: 0 9px;
+    }
+    .score-at {
+        font-size: .72rem;
+        color: #64748B;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .12em;
+    }
+    .score-total {
+        margin-top: 5px;
+        color: #7DD3FC;
+        font-size: .78rem;
+        font-weight: 800;
+    }
+
+    /* Edge strip */
+    .edge-strip {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin: 12px 0 18px 0;
+    }
+    .edge-cell {
+        padding: 12px 14px;
+        border-radius: 13px;
+        background: rgba(13,26,45,.88);
+        border: 1px solid rgba(148,163,184,.12);
+    }
+    .edge-label {
+        color: #7890AC;
+        font-size: .68rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .10em;
+    }
+    .edge-value {
+        color: #F8FAFC;
+        margin-top: 3px;
+        font-weight: 800;
+        font-size: .98rem;
+    }
+
+    /* Expanders/data */
+    [data-testid="stExpander"] {
+        background: rgba(10,22,42,.76);
+        border: 1px solid rgba(148,163,184,.12);
+        border-radius: 14px;
+    }
+    [data-testid="stDataFrame"] {
+        border: 1px solid rgba(148,163,184,.12);
+        border-radius: 14px;
+        overflow: hidden;
+    }
+
+    hr {
+        border-color: rgba(148,163,184,.12) !important;
+    }
+
+    /* Alerts */
+    [data-testid="stAlert"] {
+        border-radius: 14px;
+        border: 1px solid rgba(148,163,184,.14);
+    }
+
+    @media (max-width: 700px) {
+        .block-container { padding-left: 1rem; padding-right: 1rem; }
+        .cfb-hero { padding: 18px; border-radius: 18px; }
+        .scoreboard { padding: 17px 14px; gap: 8px; }
+        .edge-strip { grid-template-columns: 1fr; }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    f"""
+    <div class="cfb-hero">
+      <div class="cfb-kicker">College Football Analytics</div>
+      <div class="cfb-title">CFB Edge</div>
+      <div class="cfb-subtitle">Market-aware projections powered by SP+, matchup efficiency, roster quality, travel and selective weather.</div>
+      <div class="version-pill">{MODEL_VERSION}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -1313,12 +1587,13 @@ def ios_save_button(label, csv_text, filename):
             style="
               width:100%;
               min-height:44px;
-              border:1px solid rgba(49,51,63,.2);
-              border-radius:8px;
-              background:white;
-              color:rgb(49,51,63);
-              font-size:16px;
-              font-weight:600;
+              border:1px solid rgba(96,165,250,.28);
+              border-radius:12px;
+              background:linear-gradient(135deg,#0F2747,#12325B);
+              color:#EAF2FF;
+              font-size:15px;
+              font-weight:750;
+              box-shadow:0 10px 24px rgba(0,0,0,.18);
               cursor:pointer;
               padding:10px 14px;">
             {safe_label}
@@ -1631,7 +1906,7 @@ if run_mode == "Slate":
 
         slate_df = pd.DataFrame(slate_rows)
 
-        st.subheader(f"{slate_choice} Slate Results")
+        st.markdown(f'<div class="section-kicker">{slate_choice} Slate Results</div>', unsafe_allow_html=True)
         display_cols = [
             "kickoff_et","away_team","home_team","model_home_spread","model_total",
             "market_home_spread","market_total","best_verdict","best_market","best_edge","best_ev"
@@ -1647,7 +1922,7 @@ if run_mode == "Slate":
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v020_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v028_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
@@ -1674,19 +1949,47 @@ except Exception as e:
 hfa=st.number_input("Home-field advantage", min_value=0.0, max_value=6.0, value=2.5, step=.25, disabled=bool(game.get("neutralSite")))
 p=project_game(game,model_data,hfa=hfa)
 
-st.subheader("Model projection")
-a,b,c=st.columns(3)
-a.metric(p["away"],f"{p['away_score']:.1f}")
-b.metric(p["home"],f"{p['home_score']:.1f}")
-c.metric("Total",f"{p['model_total']:.1f}")
-st.write(f"**Model spread:** {p['home']} {p['model_home_spread']:+.1f}")
-st.write(f"**Win probability:** {p['home']} {p['home_win_prob']*100:.1f}% / {p['away']} {p['away_win_prob']*100:.1f}%")
-st.caption(f"{p['away']} source: {p['away_rating']['source']} • {p['home']} source: {p['home_rating']['source']}")
+st.markdown('<div class="section-kicker">Model Projection</div>', unsafe_allow_html=True)
+
+st.markdown(
+    f"""
+    <div class="scoreboard">
+      <div class="score-team">
+        <div class="team-name">{html.escape(str(p['away']))}</div>
+        <div class="team-score">{p['away_score']:.1f}</div>
+      </div>
+      <div class="score-center">
+        <div class="score-at">Projected</div>
+        <div class="score-total">TOTAL {p['model_total']:.1f}</div>
+      </div>
+      <div class="score-team right">
+        <div class="team-name">{html.escape(str(p['home']))}</div>
+        <div class="team-score">{p['home_score']:.1f}</div>
+      </div>
+    </div>
+    <div class="edge-strip">
+      <div class="edge-cell">
+        <div class="edge-label">Fair Spread</div>
+        <div class="edge-value">{html.escape(str(p['home']))} {p['model_home_spread']:+.1f}</div>
+      </div>
+      <div class="edge-cell">
+        <div class="edge-label">Home Win Probability</div>
+        <div class="edge-value">{p['home_win_prob']*100:.1f}%</div>
+      </div>
+      <div class="edge-cell">
+        <div class="edge-label">Away Win Probability</div>
+        <div class="edge-value">{p['away_win_prob']*100:.1f}%</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.caption(f"Rating sources • {p['away']}: {p['away_rating']['source']} • {p['home']}: {p['home_rating']['source']}")
 
 d1,d2,d3=st.columns(3)
-d1.metric("Model confidence", f"{p['confidence']}/100")
-d2.metric("Margin σ", f"{p['margin_sd']:.1f}")
-d3.metric("Total σ", f"{p['total_sd']:.1f}")
+d1.metric("Model Confidence", f"{p['confidence']}/100")
+d2.metric("Margin Volatility", f"{p['margin_sd']:.1f}")
+d3.metric("Total Volatility", f"{p['total_sd']:.1f}")
 
 with st.expander("Projection components"):
     c = p["components"]
@@ -1875,7 +2178,7 @@ def build_export_row(p, game, selected_date, market=None):
     return add_result_fields(row, p)
 
 st.divider()
-st.subheader("Sportsbook lines")
+st.markdown('<div class="section-kicker">Market Comparison</div>', unsafe_allow_html=True)
 
 st.caption(
     "Pull a generic market line automatically from CFBD, then edit anything that differs from your book."
@@ -1971,7 +2274,7 @@ projection_only_df = pd.DataFrame([build_export_row(p, game, selected_date)])
 ios_save_button(
     "Save Projection CSV",
     projection_only_df.to_csv(index=False),
-    f"cfb_projection_v020_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+    f"cfb_projection_v028_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
 )
 st.caption("Use this to save the projection file for audit/upload.")
 
@@ -2006,7 +2309,7 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     else:
         st.info("⚪ **PASS — no market clears the threshold.**")
 
-    st.subheader("Every market")
+    st.markdown('<div class="section-kicker">Market Grades</div>', unsafe_allow_html=True)
     for v,name,odds,prob,e,ev,fair in markets:
         icon="🟢" if v in {"BET","STRONG BET"} else ("🟡" if v=="LEAN" else "⚪")
         st.markdown(f"**{icon} {v} — {name} {int(odds):+d}**  \nModel {prob*100:.1f}% • Edge {e*100:+.1f}% • EV {ev*100:+.1f}% • Fair {int(fair):+d}")
@@ -2039,13 +2342,13 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     export_df = pd.DataFrame([export_row])
     csv_bytes = export_df.to_csv(index=False).encode("utf-8")
 
-    st.subheader("Export model check")
+    st.markdown('<div class="section-kicker">Audit Export</div>', unsafe_allow_html=True)
     st.caption("Download this CSV and upload it back into ChatGPT so the inputs, projection, market comparison, and betting call can be audited.")
     ios_save_button(
         "Save Game CSV",
         export_df.to_csv(index=False),
-        f"cfb_model_v020_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+        f"cfb_model_v028_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
     )
 
 st.divider()
-st.caption("v0.2.2 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
+st.caption("CFB Edge • v0.2.8-PRO-UI • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
