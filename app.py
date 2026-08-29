@@ -6,7 +6,7 @@ from model import MODEL_VERSION, fetch_games, load_rating_maps, project_game, co
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.1.5-SLATE-RUNNER • Early-season prototype")
+st.caption("Version 0.1.6-IOS-DOWNLOAD • Early-season prototype")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -261,7 +261,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.1.5-SLATE-RUNNER",
+                "model_version": "0.1.6-IOS-DOWNLOAD",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -310,7 +310,7 @@ if run_mode == "Slate":
             f"Download {slate_choice} Slate CSV",
             data=slate_df.to_csv(index=False).encode("utf-8"),
             file_name=f"cfb_v015_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
-            mime="text/csv",
+            mime="application/octet-stream",
             use_container_width=True,
         )
 
@@ -351,7 +351,7 @@ st.caption(f"{p['away']} source: {p['away_rating']['source']} • {p['home']} so
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.1.4-CSV-EXPORT",
+        "model_version": "0.1.6-IOS-DOWNLOAD",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -484,7 +484,7 @@ st.download_button(
     "Download Projection CSV",
     data=projection_only_df.to_csv(index=False).encode("utf-8"),
     file_name=f"cfb_projection_v014_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-    mime="text/csv",
+    mime="application/octet-stream",
     use_container_width=True,
     help="Use this if you want to audit the model projection before entering or comparing sportsbook lines.",
 )
@@ -559,7 +559,7 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
         "Download Game CSV",
         data=csv_bytes,
         file_name=f"cfb_model_v014_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-        mime="text/csv",
+        mime="application/octet-stream",
         use_container_width=True,
     )
 
