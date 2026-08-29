@@ -1,12 +1,15 @@
 
 import streamlit as st
 import pandas as pd
+import base64
+import html
+import streamlit.components.v1 as components
 from datetime import date
 from model import MODEL_VERSION, fetch_games, load_rating_maps, project_game, cover_probability, total_probability, fair_ml, grade, fetch_lines, normalize_game_lines
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.1.6-IOS-DOWNLOAD • Early-season prototype")
+st.caption("Version 0.1.7-IOS-SAVE • Early-season prototype")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -32,6 +35,61 @@ def game_date_et(g):
     if not s: return None
     try: return pd.to_datetime(s, utc=True).tz_convert("America/New_York").date()
     except: return None
+
+
+def ios_save_button(label, csv_text, filename):
+    """
+    Browser-native download button.
+    Uses a Blob + download attribute instead of Streamlit's file response,
+    which avoids iOS rendering CSV as a full-screen document preview.
+    """
+    payload = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
+    safe_label = html.escape(label)
+    safe_filename = html.escape(filename, quote=True)
+
+    components.html(
+        f"""
+        <div style="width:100%;padding:0;margin:0;">
+          <button id="saveBtn"
+            style="
+              width:100%;
+              min-height:44px;
+              border:1px solid rgba(49,51,63,.2);
+              border-radius:8px;
+              background:white;
+              color:rgb(49,51,63);
+              font-size:16px;
+              font-weight:600;
+              cursor:pointer;
+              padding:10px 14px;">
+            {safe_label}
+          </button>
+        </div>
+        <script>
+        document.getElementById("saveBtn").addEventListener("click", function() {{
+            const b64 = "{payload}";
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {{
+                bytes[i] = binary.charCodeAt(i);
+            }}
+
+            // Deliberately use binary MIME so iOS doesn't Quick Look the CSV.
+            const blob = new Blob([bytes], {{type: "application/octet-stream"}});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "{safe_filename}";
+            a.rel = "noopener";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }});
+        </script>
+        """,
+        height=58,
+    )
 
 selected_date = st.date_input("Game date", value=date.today())
 year = selected_date.year
@@ -261,7 +319,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.1.6-IOS-DOWNLOAD",
+                "model_version": "0.1.7-IOS-SAVE",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -306,12 +364,10 @@ if run_mode == "Slate":
         else:
             st.info("No games in this slate currently clear the BET threshold.")
 
-        st.download_button(
-            f"Download {slate_choice} Slate CSV",
-            data=slate_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"cfb_v015_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
-            mime="application/octet-stream",
-            use_container_width=True,
+        ios_save_button(
+            f"Save {slate_choice} Slate CSV",
+            slate_df.to_csv(index=False),
+            f"cfb_v017_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
@@ -351,7 +407,7 @@ st.caption(f"{p['away']} source: {p['away_rating']['source']} • {p['home']} so
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.1.6-IOS-DOWNLOAD",
+        "model_version": "0.1.7-IOS-SAVE",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -480,14 +536,12 @@ under_odds=t3.number_input("Under odds", value=-110, step=5)
 
 
 projection_only_df = pd.DataFrame([build_export_row(p, game, selected_date)])
-st.download_button(
-    "Download Projection CSV",
-    data=projection_only_df.to_csv(index=False).encode("utf-8"),
-    file_name=f"cfb_projection_v014_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-    mime="application/octet-stream",
-    use_container_width=True,
-    help="Use this if you want to audit the model projection before entering or comparing sportsbook lines.",
+ios_save_button(
+    "Save Projection CSV",
+    projection_only_df.to_csv(index=False),
+    f"cfb_projection_v017_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
 )
+st.caption("Use this to save the projection file for audit/upload.")
 
 if st.button("Should I Bet?",type="primary",use_container_width=True):
     markets=[]
@@ -555,12 +609,10 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
 
     st.subheader("Export model check")
     st.caption("Download this CSV and upload it back into ChatGPT so the inputs, projection, market comparison, and betting call can be audited.")
-    st.download_button(
-        "Download Game CSV",
-        data=csv_bytes,
-        file_name=f"cfb_model_v014_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-        mime="application/octet-stream",
-        use_container_width=True,
+    ios_save_button(
+        "Save Game CSV",
+        export_df.to_csv(index=False),
+        f"cfb_model_v017_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
     )
 
 st.divider()
