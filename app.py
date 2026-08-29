@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import base64
 import html
+import json
 import streamlit.components.v1 as components
 from datetime import date
 
@@ -15,7 +16,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.3.0-RANKED-SLATE"
+MODEL_VERSION = "0.3.1-MARKET-DROPDOWNS"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1639,6 +1640,26 @@ st.markdown("""
         .slate-reco-value { font-size:1.06rem; }
     }
 
+
+    .market-row {
+        margin: 7px 0;
+        padding: 11px 12px;
+        border-radius: 11px;
+        background: rgba(13,26,45,.72);
+        border: 1px solid rgba(148,163,184,.10);
+    }
+    .market-row-title {
+        color: #E8EEF8;
+        font-size: .88rem;
+        font-weight: 800;
+    }
+    .market-row-sub {
+        margin-top: 3px;
+        color: #8EA4BE;
+        font-size: .74rem;
+        font-weight: 650;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1962,6 +1983,17 @@ if run_mode == "Slate":
                 b = candidates[0]
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
+            market_grades = [
+                {
+                    "verdict": v,
+                    "market": name,
+                    "odds": odds,
+                    "edge": e,
+                    "ev": ev,
+                }
+                for v, name, odds, e, ev in candidates
+            ]
+
             slate_rows.append({
                 "model_version": MODEL_VERSION,
                 "game_date": str(selected_date),
@@ -2012,6 +2044,7 @@ if run_mode == "Slate":
                 "best_odds": best_odds,
                 "best_edge": round(best_edge, 6) if best_edge is not None else None,
                 "best_ev": round(best_ev, 6) if best_ev is not None else None,
+                "market_grades_json": json.dumps(market_grades),
             })
 
         slate_df = pd.DataFrame(slate_rows)
@@ -2131,6 +2164,49 @@ if run_mode == "Slate":
                 unsafe_allow_html=True,
             )
 
+            # Full market audit for this game, ranked strongest to weakest.
+            try:
+                market_rows = json.loads(r.get("market_grades_json", "[]") or "[]")
+            except Exception:
+                market_rows = []
+
+            with st.expander(f"All Markets • {r['away_team']} @ {r['home_team']}", expanded=False):
+                if not market_rows:
+                    st.caption("No market lines are available for this game.")
+                else:
+                    market_rank = {"STRONG BET": 4, "BET": 3, "LEAN": 2, "PASS": 1, "NO LINE": 0}
+                    market_rows = sorted(
+                        market_rows,
+                        key=lambda x: (
+                            market_rank.get(str(x.get("verdict")), 0),
+                            float(x.get("edge") if x.get("edge") is not None else -999),
+                            float(x.get("ev") if x.get("ev") is not None else -999),
+                        ),
+                        reverse=True,
+                    )
+
+                    for m in market_rows:
+                        verdict_m = str(m.get("verdict", "PASS"))
+                        market_m = str(m.get("market", ""))
+                        odds_m = m.get("odds")
+                        edge_m = m.get("edge")
+                        ev_m = m.get("ev")
+
+                        icon = "🟢" if verdict_m in {"BET", "STRONG BET"} else ("🟡" if verdict_m == "LEAN" else "⚪")
+                        odds_txt = f"{int(float(odds_m)):+d}" if odds_m is not None else ""
+                        edge_txt = f"{float(edge_m)*100:+.1f}%" if edge_m is not None else "—"
+                        ev_txt = f"{float(ev_m)*100:+.1f}%" if ev_m is not None else "—"
+
+                        st.markdown(
+                            f"""
+                            <div class="market-row">
+                              <div class="market-row-title">{icon} {html.escape(verdict_m)} · {html.escape(market_m)} {html.escape(odds_txt)}</div>
+                              <div class="market-row-sub">Edge {edge_txt} &nbsp;•&nbsp; EV {ev_txt}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
         # Top bets shown immediately, ordered strongest to weakest.
         top_bets = ranked_df[ranked_df["best_verdict"].isin(["STRONG BET", "BET"])].copy()
         if len(top_bets):
@@ -2169,7 +2245,7 @@ if run_mode == "Slate":
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v030_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v031_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
@@ -2521,7 +2597,7 @@ projection_only_df = pd.DataFrame([build_export_row(p, game, selected_date)])
 ios_save_button(
     "Save Projection CSV",
     projection_only_df.to_csv(index=False),
-    f"cfb_projection_v028_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+    f"cfb_projection_v031_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
 )
 st.caption("Use this to save the projection file for audit/upload.")
 
@@ -2594,8 +2670,8 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     ios_save_button(
         "Save Game CSV",
         export_df.to_csv(index=False),
-        f"cfb_model_v028_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+        f"cfb_model_v031_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
     )
 
 st.divider()
-st.caption("CFB Edge • v0.3.0-RANKED-SLATE • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
+st.caption("CFB Edge • v0.3.1-MARKET-DROPDOWNS • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
