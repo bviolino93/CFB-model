@@ -126,3 +126,80 @@ def grade(prob, odds, confidence=75):
     elif edge>0 and ev>0: verdict="LEAN"
     else: verdict="PASS"
     return verdict,edge,ev,imp
+
+
+def fetch_lines(api_key, year=None, week=None, game_id=None, provider=None):
+    params = {"seasonType": "regular"}
+    if game_id is not None:
+        params["gameId"] = int(game_id)
+    elif year is not None:
+        params["year"] = int(year)
+        if week is not None:
+            params["week"] = int(week)
+    if provider:
+        params["provider"] = provider
+    return cfbd_get("/lines", api_key, params)
+
+def _line_obj_values(obj):
+    """
+    Normalize both old and newer CFBD /lines shapes.
+    Returns a list of provider dictionaries.
+    """
+    lines = obj.get("lines")
+    if isinstance(lines, list):
+        return lines
+    if isinstance(lines, dict):
+        return [lines]
+    return []
+
+def normalize_game_lines(rows, game_id=None):
+    """
+    Convert CFBD line payloads to a simple provider list.
+    """
+    providers = []
+    for row in rows or []:
+        if game_id is not None:
+            try:
+                if int(row.get("id")) != int(game_id):
+                    continue
+            except Exception:
+                pass
+
+        away = row.get("awayTeam")
+        home = row.get("homeTeam")
+        for ln in _line_obj_values(row):
+            provider = ln.get("provider") or "Unknown"
+            spread = ln.get("spread")
+            total = ln.get("overUnder")
+            away_ml = ln.get("awayMoneyline")
+            home_ml = ln.get("homeMoneyline")
+
+            try:
+                spread = float(spread) if spread is not None else None
+            except Exception:
+                spread = None
+            try:
+                total = float(total) if total is not None else None
+            except Exception:
+                total = None
+            try:
+                away_ml = int(away_ml) if away_ml is not None else None
+            except Exception:
+                away_ml = None
+            try:
+                home_ml = int(home_ml) if home_ml is not None else None
+            except Exception:
+                home_ml = None
+
+            # CFBD spread is typically from the home-team perspective.
+            providers.append({
+                "provider": str(provider),
+                "away": away,
+                "home": home,
+                "home_spread": spread,
+                "away_spread": -spread if spread is not None else None,
+                "total": total,
+                "away_ml": away_ml,
+                "home_ml": home_ml,
+            })
+    return providers
