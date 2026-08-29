@@ -13,7 +13,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.0-MATCHUP"
+MODEL_VERSION = "0.2.1-MATCHUP-FIX"
 
 DEFAULT_HFA = 2.5
 
@@ -525,7 +525,7 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
     home_margin = home_score - away_score
 
     margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
-    home_wp = NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
+    home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
 
     components = {
         "base_power_margin": base_margin,
@@ -669,7 +669,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.0-MATCHUP • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.1-MATCHUP-FIX • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -979,7 +979,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.0-MATCHUP",
+                "model_version": "0.2.1-MATCHUP-FIX",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1090,7 +1090,7 @@ with st.expander("Projection components"):
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.0-MATCHUP",
+        "model_version": "0.2.1-MATCHUP-FIX",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -1328,4 +1328,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("v0.2.0 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
+st.caption("v0.2.1 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
