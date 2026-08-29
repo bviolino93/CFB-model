@@ -15,13 +15,39 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.5-PRECIP-FIX"
+MODEL_VERSION = "0.2.7-DOME-WEATHER-FIX"
+
+
+# Weather adjustments should not be applied to fully enclosed/domed stadiums.
+# Retractable-roof venues are treated as enclosed by default unless roof status
+# is explicitly available in the game payload in a future version.
+ENCLOSED_VENUES = {
+    "allegiant stadium",
+    "mercedes-benz stadium",
+    "ford field",
+    "lucas oil stadium",
+    "u.s. bank stadium",
+    "us bank stadium",
+    "caesars superdome",
+    "the dome at america's center",
+    "alamodome",
+    "carrier dome",
+    "jma wireless dome",
+}
+
 
 DEFAULT_HFA = 2.5
 
 # Distribution widths are intentionally wider early in the season.
 BASE_MARGIN_SD = 15.8
 BASE_TOTAL_SD = 12.8
+
+
+def is_enclosed_venue(venue_name):
+    if not venue_name:
+        return False
+    v = str(venue_name).strip().lower()
+    return any(name in v for name in ENCLOSED_VENUES)
 
 def _headers(api_key):
     return {"Authorization": f"Bearer {api_key}"}
@@ -430,6 +456,8 @@ def _forecast_weather(game, venue):
     }
 
 def _environment_adjustment(game, data):
+    venue_name_for_weather = str((venue_info.get("venue_name") if isinstance(venue_info, dict) else "") or (game.get("venue") if isinstance(game, dict) else "") or "")
+    enclosed_venue = is_enclosed_venue(venue_name_for_weather)
     """
     Conservative pregame environment layer.
     It uses CFBD team/venue coordinates and game weather when available.
@@ -512,9 +540,9 @@ def _environment_adjustment(game, data):
     international_keywords = ["ireland", "dublin", "aviva", "australia", "sydney", "japan", "tokyo"]
     international = any(k in venue_blob for k in international_keywords)
     if international:
-        total_adj -= 1.00
-        confidence_penalty += 2
-        reasons.append("international/atypical venue")
+        # Informational only in v0.2.7. International/neutral games are rare,
+        # so we do not apply a bespoke scoring penalty without calibration data.
+        reasons.append("international/atypical venue (informational)")
 
     # Weather: wind is the strongest total suppressor here.
     weather = _weather_from_game(game)
@@ -544,15 +572,15 @@ def _environment_adjustment(game, data):
     desc = weather.get("description", "")
 
     if wind is not None:
-        if wind >= 25:
+        if not enclosed_venue and wind >= 25:
             total_adj -= 4.0
             confidence_penalty += 2
             reasons.append("very high wind")
-        elif wind >= 20:
+        elif not enclosed_venue and wind >= 20:
             total_adj -= 3.0
             confidence_penalty += 1
             reasons.append("high wind")
-        elif wind >= 15:
+        elif not enclosed_venue and wind >= 15:
             total_adj -= 1.5
             reasons.append("meaningful wind")
 
@@ -602,6 +630,9 @@ def _environment_adjustment(game, data):
     margin_adj = max(-1.25, min(1.25, margin_adj))
     total_adj = max(-5.0, min(1.0, total_adj))
 
+    if enclosed_venue:
+        reasons.append("weather suppressed: enclosed venue")
+
     return {
         "margin_adjustment": margin_adj,
         "total_adjustment": total_adj,
@@ -626,7 +657,6 @@ def _environment_adjustment(game, data):
         "precipitation_in": weather.get("precipitation_in"),
         "reasons": reasons,
     }
-
 def _safe_fetch(func, *args):
     try:
         return func(*args)
@@ -1090,9 +1120,6 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
 
     margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
     confidence = max(60, confidence - int(environment.get("confidence_penalty", 0)))
-    if environment.get("international"):
-        margin_sd = min(18.5, margin_sd + 0.4)
-        total_sd = min(15.5, total_sd + 0.5)
     home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
 
     components = {
@@ -1240,7 +1267,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.5-PRECIP-FIX • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.6-CALIBRATION • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -1550,7 +1577,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.5-PRECIP-FIX",
+                "model_version": "0.2.6-CALIBRATION",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1695,10 +1722,73 @@ with st.expander("Projection components"):
         st.write("Environment flags: " + ", ".join(e["reasons"]))
 
 
+
+def add_result_fields(row, p, actual_away_score=None, actual_home_score=None,
+                      market_home_spread=None, market_total=None):
+    """
+    Append postgame calibration fields. This does not change the projection.
+    """
+    if actual_away_score is None or actual_home_score is None:
+        row.update({
+            "game_final": False,
+            "actual_away_score": None,
+            "actual_home_score": None,
+            "actual_total": None,
+            "actual_home_margin": None,
+            "spread_error_points": None,
+            "total_error_points": None,
+            "winner_correct": None,
+            "model_abs_spread_error": None,
+            "model_abs_total_error": None,
+            "market_home_cover_result": None,
+            "market_total_result": None,
+        })
+        return row
+
+    aa = float(actual_away_score)
+    ah = float(actual_home_score)
+    actual_total = aa + ah
+    actual_margin = ah - aa
+
+    # Signed error: positive means model was too high.
+    spread_error = float(p["home_margin"]) - actual_margin
+    total_error = float(p["model_total"]) - actual_total
+
+    pred_home_win = float(p["home_margin"]) > 0
+    actual_home_win = actual_margin > 0
+    winner_correct = (pred_home_win == actual_home_win) if actual_margin != 0 else None
+
+    cover_result = None
+    if market_home_spread is not None:
+        ats_margin = actual_margin + float(market_home_spread)
+        cover_result = "HOME_COVER" if ats_margin > 0 else ("AWAY_COVER" if ats_margin < 0 else "PUSH")
+
+    total_result = None
+    if market_total is not None:
+        diff = actual_total - float(market_total)
+        total_result = "OVER" if diff > 0 else ("UNDER" if diff < 0 else "PUSH")
+
+    row.update({
+        "game_final": True,
+        "actual_away_score": aa,
+        "actual_home_score": ah,
+        "actual_total": actual_total,
+        "actual_home_margin": actual_margin,
+        "spread_error_points": round(spread_error, 3),
+        "total_error_points": round(total_error, 3),
+        "winner_correct": winner_correct,
+        "model_abs_spread_error": round(abs(spread_error), 3),
+        "model_abs_total_error": round(abs(total_error), 3),
+        "market_home_cover_result": cover_result,
+        "market_total_result": total_result,
+    })
+    return row
+
+
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.5-PRECIP-FIX",
+        "model_version": "0.2.6-CALIBRATION",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -1760,6 +1850,8 @@ def build_export_row(p, game, selected_date, market=None):
         "temperature_f": p["environment"].get("temperature_f"),
         "precip_probability": p["environment"].get("precip_probability"),
         "precipitation_in": p["environment"].get("precipitation_in"),
+        "enclosed_venue": is_enclosed_venue(p.get("venue_name") or p.get("venue") or game.get("venue")),
+
         "environment_flags": "; ".join(p["environment"].get("reasons") or []),
 
         "away_srs": p["away_rating"].get("srs"),
@@ -1781,7 +1873,7 @@ def build_export_row(p, game, selected_date, market=None):
     }
 
     row.update(market)
-    return row
+    return add_result_fields(row, p)
 
 st.divider()
 st.subheader("Sportsbook lines")
