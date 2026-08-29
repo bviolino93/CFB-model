@@ -5,11 +5,11 @@ import base64
 import html
 import streamlit.components.v1 as components
 from datetime import date
-from model import MODEL_VERSION, fetch_games, load_rating_maps, project_game, cover_probability, total_probability, fair_ml, grade, fetch_lines, normalize_game_lines
+from model import MODEL_VERSION, fetch_games, load_model_data, project_game, cover_probability, total_probability, fair_ml, grade, fetch_lines, normalize_game_lines
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.1.7-IOS-SAVE • Early-season prototype")
+st.caption("Version 0.2.0-MATCHUP • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -22,8 +22,8 @@ def get_games(year):
     return fetch_games(API_KEY, year)
 
 @st.cache_data(ttl=3600)
-def get_ratings(year):
-    return load_rating_maps(API_KEY, year)
+def get_model_data(year):
+    return load_model_data(API_KEY, year)
 
 
 @st.cache_data(ttl=300)
@@ -250,9 +250,9 @@ if run_mode == "Slate":
 
     if st.button("Run Slate", type="primary", use_container_width=True):
         try:
-            current_map_s, previous_map_s = get_ratings(year)
+            model_data_s = get_model_data(year)
         except Exception as e:
-            st.error(f"CFBD SP+ request failed: {e}")
+            st.error(f"CFBD model-data request failed: {e}")
             st.stop()
 
         # Efficiently pull all line data by unique week rather than one request per game.
@@ -269,7 +269,7 @@ if run_mode == "Slate":
         slate_rows = []
 
         for g in slate_games:
-            gp = project_game(g, current_map_s, previous_map_s, 2.5)
+            gp = project_game(g, model_data_s, hfa=2.5)
             k = kickoff_et(g)
 
             market = {}
@@ -290,26 +290,26 @@ if run_mode == "Slate":
             candidates = []
 
             if market.get("away_ml") is not None:
-                v,e,ev,_ = grade(gp["away_win_prob"], market["away_ml"], 75)
+                v,e,ev,_ = grade(gp["away_win_prob"], market["away_ml"], gp["confidence"])
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
             if market.get("home_ml") is not None:
-                v,e,ev,_ = grade(gp["home_win_prob"], market["home_ml"], 75)
+                v,e,ev,_ = grade(gp["home_win_prob"], market["home_ml"], gp["confidence"])
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
-                hp = cover_probability(gp["home_margin"], market["home_spread"], "home")
+                hp = cover_probability(gp["home_margin"], market["home_spread"], "home", gp["margin_sd"])
                 ap = 1 - hp
-                v,e,ev,_ = grade(hp, -110, 75)
+                v,e,ev,_ = grade(hp, -110, gp["confidence"])
                 candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
-                v,e,ev,_ = grade(ap, -110, 75)
+                v,e,ev,_ = grade(ap, -110, gp["confidence"])
                 candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
             if market.get("total") is not None:
-                op = total_probability(gp["model_total"], market["total"], "over")
+                op = total_probability(gp["model_total"], market["total"], "over", gp["total_sd"])
                 up = 1 - op
-                v,e,ev,_ = grade(op, -110, 75)
+                v,e,ev,_ = grade(op, -110, gp["confidence"])
                 candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
-                v,e,ev,_ = grade(up, -110, 75)
+                v,e,ev,_ = grade(up, -110, gp["confidence"])
                 candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
             if candidates:
@@ -319,7 +319,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.1.7-IOS-SAVE",
+                "model_version": "0.2.0-MATCHUP",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -337,6 +337,15 @@ if run_mode == "Slate":
                 "model_total": round(gp["model_total"], 2),
                 "away_win_prob": round(gp["away_win_prob"], 6),
                 "home_win_prob": round(gp["home_win_prob"], 6),
+                "model_confidence": gp["confidence"],
+                "margin_sd": round(gp["margin_sd"], 3),
+                "total_sd": round(gp["total_sd"], 3),
+                "data_completeness": round(gp["data_completeness"], 4),
+                "base_power_margin": round(gp["components"]["base_power_margin"], 4),
+                "matchup_margin_adjustment": round(gp["components"]["matchup_margin_adjustment"], 4),
+                "sp_total_base": round(gp["components"]["sp_total_base"], 4),
+                "efficiency_total_adjustment": round(gp["components"]["efficiency_total_adjustment"], 4),
+                "pace_total_adjustment": round(gp["components"]["pace_total_adjustment"], 4),
                 "market_source": market.get("provider"),
                 "market_away_ml": market.get("away_ml"),
                 "market_home_ml": market.get("home_ml"),
@@ -367,7 +376,7 @@ if run_mode == "Slate":
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v017_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v020_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
@@ -386,13 +395,13 @@ for g in daily:
 game=labels[st.selectbox("Game", list(labels.keys()))]
 
 try:
-    current_map, previous_map = get_ratings(year)
+    model_data = get_model_data(year)
 except Exception as e:
-    st.error(f"CFBD SP+ request failed: {e}")
+    st.error(f"CFBD model-data request failed: {e}")
     st.stop()
 
 hfa=st.number_input("Home-field advantage", min_value=0.0, max_value=6.0, value=2.5, step=.25, disabled=bool(game.get("neutralSite")))
-p=project_game(game,current_map,previous_map,hfa)
+p=project_game(game,model_data,hfa=hfa)
 
 st.subheader("Model projection")
 a,b,c=st.columns(3)
@@ -403,11 +412,25 @@ st.write(f"**Model spread:** {p['home']} {p['model_home_spread']:+.1f}")
 st.write(f"**Win probability:** {p['home']} {p['home_win_prob']*100:.1f}% / {p['away']} {p['away_win_prob']*100:.1f}%")
 st.caption(f"{p['away']} source: {p['away_rating']['source']} • {p['home']} source: {p['home_rating']['source']}")
 
+d1,d2,d3=st.columns(3)
+d1.metric("Model confidence", f"{p['confidence']}/100")
+d2.metric("Margin σ", f"{p['margin_sd']:.1f}")
+d3.metric("Total σ", f"{p['total_sd']:.1f}")
+
+with st.expander("Projection components"):
+    c = p["components"]
+    st.write(f"Base power margin: {c['base_power_margin']:+.2f}")
+    st.write(f"Matchup adjustment: {c['matchup_margin_adjustment']:+.2f}")
+    st.write(f"HFA adjustment: {c['hfa_adjustment']:+.2f}")
+    st.write(f"SP+ matchup total base: {c['sp_total_base']:.2f}")
+    st.write(f"Efficiency total adjustment: {c['efficiency_total_adjustment']:+.2f}")
+    st.write(f"Pace total adjustment: {c['pace_total_adjustment']:+.2f}")
+
 
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.1.7-IOS-SAVE",
+        "model_version": "0.2.0-MATCHUP",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -437,6 +460,35 @@ def build_export_row(p, game, selected_date, market=None):
         "home_win_prob": round(p["home_win_prob"], 6),
         "away_fair_ml": fair_ml(p["away_win_prob"]),
         "home_fair_ml": fair_ml(p["home_win_prob"]),
+
+        "week": p["week"],
+        "model_confidence": p["confidence"],
+        "margin_sd": round(p["margin_sd"], 3),
+        "total_sd": round(p["total_sd"], 3),
+        "data_completeness": round(p["data_completeness"], 4),
+
+        "base_power_margin": round(p["components"]["base_power_margin"], 4),
+        "matchup_margin_adjustment": round(p["components"]["matchup_margin_adjustment"], 4),
+        "sp_total_base": round(p["components"]["sp_total_base"], 4),
+        "efficiency_total_adjustment": round(p["components"]["efficiency_total_adjustment"], 4),
+        "pace_total_adjustment": round(p["components"]["pace_total_adjustment"], 4),
+
+        "away_srs": p["away_rating"].get("srs"),
+        "home_srs": p["home_rating"].get("srs"),
+        "away_talent": p["away_rating"].get("talent"),
+        "home_talent": p["home_rating"].get("talent"),
+        "away_returning_ppa_pct": p["away_rating"].get("returning"),
+        "home_returning_ppa_pct": p["home_rating"].get("returning"),
+        "away_current_data_weight": p["away_rating"].get("current_data_weight"),
+        "home_current_data_weight": p["home_rating"].get("current_data_weight"),
+        "away_ppa_off": p["away_rating"].get("ppa",{}).get("off"),
+        "home_ppa_off": p["home_rating"].get("ppa",{}).get("off"),
+        "away_ppa_def": p["away_rating"].get("ppa",{}).get("def"),
+        "home_ppa_def": p["home_rating"].get("ppa",{}).get("def"),
+        "away_success_rate": p["away_rating"].get("adv",{}).get("off_success"),
+        "home_success_rate": p["home_rating"].get("adv",{}).get("off_success"),
+        "away_def_success_rate": p["away_rating"].get("adv",{}).get("def_success"),
+        "home_def_success_rate": p["home_rating"].get("adv",{}).get("def_success"),
     }
 
     row.update(market)
@@ -539,7 +591,7 @@ projection_only_df = pd.DataFrame([build_export_row(p, game, selected_date)])
 ios_save_button(
     "Save Projection CSV",
     projection_only_df.to_csv(index=False),
-    f"cfb_projection_v017_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+    f"cfb_projection_v020_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
 )
 st.caption("Use this to save the projection file for audit/upload.")
 
@@ -549,20 +601,20 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
         (f"{p['away']} ML",p["away_win_prob"],away_ml),
         (f"{p['home']} ML",p["home_win_prob"],home_ml)
     ]:
-        v,e,ev,imp=grade(prob,odds,75); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    hc=cover_probability(p["home_margin"],home_spread,"home")
-    ac=cover_probability(p["home_margin"],home_spread,"away")
+    hc=cover_probability(p["home_margin"],home_spread,"home",p["margin_sd"])
+    ac=cover_probability(p["home_margin"],home_spread,"away",p["margin_sd"])
     for name,prob,odds in [
         (f"{p['home']} {home_spread:+.1f}",hc,home_spread_odds),
         (f"{p['away']} {away_spread:+.1f}",ac,away_spread_odds)
     ]:
-        v,e,ev,imp=grade(prob,odds,75); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    op=total_probability(p["model_total"],market_total,"over")
+    op=total_probability(p["model_total"],market_total,"over",p["total_sd"])
     up=1-op
     for name,prob,odds in [(f"Over {market_total:g}",op,over_odds),(f"Under {market_total:g}",up,under_odds)]:
-        v,e,ev,imp=grade(prob,odds,75); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
@@ -612,8 +664,8 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     ios_save_button(
         "Save Game CSV",
         export_df.to_csv(index=False),
-        f"cfb_model_v017_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+        f"cfb_model_v020_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
     )
 
 st.divider()
-st.caption("v0.1.0 uses SP+ as the anchor. Margin and total distributions are provisional and should be calibrated from tracked results.")
+st.caption("v0.2.0 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
