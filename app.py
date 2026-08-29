@@ -15,7 +15,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.4-STADIUM-FALLBACK"
+MODEL_VERSION = "0.2.5-PRECIP-FIX"
 
 DEFAULT_HFA = 2.5
 
@@ -561,13 +561,25 @@ def _environment_adjustment(game, data):
         total_adj -= 0.75
         reasons.append("strong wind gusts")
 
-    precip_terms = ["rain", "shower", "storm", "snow", "sleet", "precip"]
+    # Only count precipitation when there is actual evidence of it.
+    # Do NOT key off the generic word "precip" because Open-Meteo descriptions
+    # include strings like "0% precip", which caused a false adjustment in v0.2.4.
+    weather_terms = ["rain", "shower", "storm", "snow", "sleet"]
     precip_prob = _num(weather.get("precip_probability"))
     precip_amt = _num(weather.get("precipitation_in"))
-    meaningful_precip = (
-        any(term in desc for term in precip_terms)
-        or (precip_prob is not None and precip_prob >= 55 and precip_amt is not None and precip_amt >= 0.02)
+
+    text_precip = any(term in desc for term in weather_terms)
+    numeric_precip = (
+        (precip_amt is not None and precip_amt >= 0.02)
+        or (
+            precip_prob is not None
+            and precip_prob >= 55
+            and precip_amt is not None
+            and precip_amt > 0
+        )
     )
+
+    meaningful_precip = text_precip or numeric_precip
     if meaningful_precip:
         total_adj -= 0.75
         reasons.append("precipitation")
@@ -1228,7 +1240,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.4-STADIUM-FALLBACK • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.5-PRECIP-FIX • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -1538,7 +1550,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.4-STADIUM-FALLBACK",
+                "model_version": "0.2.5-PRECIP-FIX",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1686,7 +1698,7 @@ with st.expander("Projection components"):
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.4-STADIUM-FALLBACK",
+        "model_version": "0.2.5-PRECIP-FIX",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
