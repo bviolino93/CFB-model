@@ -15,7 +15,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.3-VENUE-WEATHER"
+MODEL_VERSION = "0.2.4-STADIUM-FALLBACK"
 
 DEFAULT_HFA = 2.5
 
@@ -123,13 +123,138 @@ def _loc_fields(obj):
         "dome": loc.get("dome"),
     }
 
+
+# Curated stadium/school coordinates for edge cases and common major-FBS teams.
+# These are used only when CFBD does not resolve a usable game venue.
+# lat/lon are approximate stadium coordinates and are sufficient for travel/weather.
+FBS_STADIUM_OVERRIDES = {
+    "Stanford": {
+        "name": "Stanford Stadium",
+        "city": "Stanford",
+        "state": "CA",
+        "countryCode": "US",
+        "latitude": 37.4345,
+        "longitude": -122.1611,
+        "elevation": 95,
+    },
+    "Hawai'i": {
+        "name": "Clarence T.C. Ching Athletics Complex",
+        "city": "Honolulu",
+        "state": "HI",
+        "countryCode": "US",
+        "latitude": 21.2947,
+        "longitude": -157.8174,
+        "elevation": 20,
+    },
+    "Hawaii": {
+        "name": "Clarence T.C. Ching Athletics Complex",
+        "city": "Honolulu",
+        "state": "HI",
+        "countryCode": "US",
+        "latitude": 21.2947,
+        "longitude": -157.8174,
+        "elevation": 20,
+    },
+    "Notre Dame": {
+        "name": "Notre Dame Stadium",
+        "city": "Notre Dame",
+        "state": "IN",
+        "countryCode": "US",
+        "latitude": 41.6984,
+        "longitude": -86.2339,
+        "elevation": 730,
+    },
+}
+
+def _normalize_team_name(name):
+    s = str(name or "").strip()
+    # Normalize common apostrophe/encoding variants.
+    return (s.replace("’", "'")
+             .replace("`", "'")
+             .replace("Hawai’i", "Hawai'i")
+             .replace("Hawaiʻi", "Hawai'i"))
+
+@lru_cache(maxsize=512)
+def _nominatim_geocode(query):
+    """
+    Last-resort geocoder for a home stadium/campus.
+    Uses OpenStreetMap Nominatim with a descriptive User-Agent.
+    Cached to avoid repeat calls.
+    """
+    if not query:
+        return {}
+    try:
+        headers = {"User-Agent": "CFBModel/0.2.4 stadium-weather resolver"}
+        params = {
+            "q": query,
+            "format": "jsonv2",
+            "limit": 1,
+            "countrycodes": "us",
+            "addressdetails": 1,
+        }
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        r.raise_for_status()
+        rows = r.json() or []
+        if not rows:
+            return {}
+        row = rows[0]
+        address = row.get("address") or {}
+        return {
+            "name": row.get("name") or query,
+            "city": address.get("city") or address.get("town") or address.get("village"),
+            "state": address.get("state"),
+            "countryCode": str(address.get("country_code") or "us").upper(),
+            "latitude": _num(row.get("lat")),
+            "longitude": _num(row.get("lon")),
+            "display_name": row.get("display_name"),
+        }
+    except Exception:
+        return {}
+
+def _stadium_fallback(team):
+    """
+    Resolve a team's home stadium/location independently of CFBD.
+    1) curated stadium override
+    2) geocode '<team> football stadium'
+    3) geocode '<team> university'
+    """
+    team = _normalize_team_name(team)
+
+    if team in FBS_STADIUM_OVERRIDES:
+        out = dict(FBS_STADIUM_OVERRIDES[team])
+        out["_venue_source"] = "curated_stadium_override"
+        return out
+
+    for query in (
+        f"{team} football stadium",
+        f"{team} university football stadium",
+        f"{team} university",
+    ):
+        out = _nominatim_geocode(query)
+        if out.get("latitude") is not None and out.get("longitude") is not None:
+            out["_venue_source"] = "openstreetmap_geocode"
+            out["_geocode_query"] = query
+            return out
+
+    return {}
+
 def _resolve_venue(game, data):
     """
-    Resolve an explicit CFBD venue first.
-    If a non-neutral game has no usable venue, fall back to the home team's
-    location/stadium coordinates so travel and weather can still be modeled.
+    Venue resolution order:
+      1. explicit game venue object
+      2. CFBD venue lookup by name / id
+      3. CFBD home-team location (non-neutral)
+      4. curated FBS stadium override
+      5. OpenStreetMap stadium/campus geocode
+    Neutral games do not silently fall back to the home-designated team's campus.
     """
     raw = game.get("venue")
+
     if isinstance(raw, dict):
         loc = _loc_fields(raw)
         if loc.get("latitude") is not None and loc.get("longitude") is not None:
@@ -142,28 +267,43 @@ def _resolve_venue(game, data):
         key = str(raw).strip().lower()
         candidate = venues.get(key) or venues.get(str(raw))
         if candidate:
-            out = dict(candidate)
-            out["_venue_source"] = "venue_lookup"
-            return out
+            loc = _loc_fields(candidate)
+            if loc.get("latitude") is not None and loc.get("longitude") is not None:
+                out = dict(candidate)
+                out["_venue_source"] = "cfbd_venue_lookup"
+                return out
 
     vid = game.get("venueId") or game.get("venue_id")
     if vid is not None and str(vid) in venues:
-        out = dict(venues[str(vid)])
-        out["_venue_source"] = "venue_id"
-        return out
+        candidate = venues[str(vid)]
+        loc = _loc_fields(candidate)
+        if loc.get("latitude") is not None and loc.get("longitude") is not None:
+            out = dict(candidate)
+            out["_venue_source"] = "cfbd_venue_id"
+            return out
 
-    # Critical v0.2.3 fallback: for a normal home game, use the home team's
-    # CFBD location if the game payload omits its venue.
     if not bool(game.get("neutralSite")):
-        home = str(game.get("homeTeam"))
-        home_obj = data.get("teams", {}).get(home) or {}
+        home = _normalize_team_name(game.get("homeTeam"))
+
+        home_obj = data.get("teams", {}).get(home) or data.get("teams", {}).get(str(game.get("homeTeam"))) or {}
         home_loc = _loc_fields(home_obj)
         if home_loc.get("latitude") is not None and home_loc.get("longitude") is not None:
             out = dict(home_obj)
             if not out.get("name"):
                 out["name"] = f"{home} home location"
-            out["_venue_source"] = "home_team_fallback"
+            out["_venue_source"] = "cfbd_home_team_location"
             return out
+
+        fallback = _stadium_fallback(home)
+        if fallback:
+            return fallback
+
+    # Neutral game: if the raw venue name exists, try geocoding that exact venue.
+    if bool(game.get("neutralSite")) and raw:
+        fallback = _nominatim_geocode(str(raw))
+        if fallback:
+            fallback["_venue_source"] = "neutral_venue_geocode"
+            return fallback
 
     return {"_venue_source": "unresolved"}
 
@@ -306,6 +446,13 @@ def _environment_adjustment(game, data):
     home_team_obj = data.get("teams", {}).get(str(home), {})
     away_loc = _loc_fields(away_team_obj)
     home_loc = _loc_fields(home_team_obj)
+
+    # If CFBD does not expose campus/stadium coordinates, use the independent
+    # stadium resolver as each team's travel origin.
+    if away_loc.get("latitude") is None or away_loc.get("longitude") is None:
+        away_loc = _loc_fields(_stadium_fallback(away))
+    if home_loc.get("latitude") is None or home_loc.get("longitude") is None:
+        home_loc = _loc_fields(_stadium_fallback(home))
 
     away_miles = _haversine_miles(
         away_loc.get("latitude"), away_loc.get("longitude"),
@@ -455,6 +602,7 @@ def _environment_adjustment(game, data):
         "venue_country": venue.get("country"),
         "venue_elevation": elev,
         "venue_source": venue_obj.get("_venue_source") if isinstance(venue_obj, dict) else None,
+        "venue_geocode_query": venue_obj.get("_geocode_query") if isinstance(venue_obj, dict) else None,
         "international": international,
         "weather_source": weather_source,
         "weather_description": weather.get("description"),
@@ -1080,7 +1228,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.3-VENUE-WEATHER • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.4-STADIUM-FALLBACK • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -1390,7 +1538,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.3-VENUE-WEATHER",
+                "model_version": "0.2.4-STADIUM-FALLBACK",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1515,6 +1663,8 @@ with st.expander("Projection components"):
     st.write("---")
     st.write(f"Venue: {e.get('venue_name') or 'Unknown'}")
     st.write(f"Venue source: {e.get('venue_source') or 'unresolved'}")
+    if e.get("venue_geocode_query"):
+        st.write(f"Venue geocode query: {e['venue_geocode_query']}")
     st.write(f"Away travel: {e.get('away_travel_miles'):.0f} mi" if e.get('away_travel_miles') is not None else "Away travel: unavailable")
     st.write(f"Home travel: {e.get('home_travel_miles'):.0f} mi" if e.get('home_travel_miles') is not None else "Home travel: unavailable")
     st.write(f"Weather: {e.get('weather_description') or 'not available'}")
@@ -1536,7 +1686,7 @@ with st.expander("Projection components"):
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.3-VENUE-WEATHER",
+        "model_version": "0.2.4-STADIUM-FALLBACK",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -1586,6 +1736,7 @@ def build_export_row(p, game, selected_date, market=None):
         "venue_country": p["environment"].get("venue_country"),
         "venue_elevation": p["environment"].get("venue_elevation"),
         "venue_source": p["environment"].get("venue_source"),
+        "venue_geocode_query": p["environment"].get("venue_geocode_query"),
         "international_game": p["environment"].get("international"),
         "away_travel_miles": p["environment"].get("away_travel_miles"),
         "home_travel_miles": p["environment"].get("home_travel_miles"),
