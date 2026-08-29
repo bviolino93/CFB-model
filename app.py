@@ -15,7 +15,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.8-PRO-UI"
+MODEL_VERSION = "0.2.9-SLATE-CARDS"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1529,6 +1529,116 @@ st.markdown("""
         .scoreboard { padding: 17px 14px; gap: 8px; }
         .edge-strip { grid-template-columns: 1fr; }
     }
+
+    /* Mobile-first slate cards */
+    .slate-card {
+        margin: 14px 0;
+        padding: 17px;
+        border-radius: 18px;
+        background: linear-gradient(145deg, rgba(15,31,54,.98), rgba(9,20,38,.98));
+        border: 1px solid rgba(148,163,184,.14);
+        box-shadow: 0 16px 40px rgba(0,0,0,.18);
+    }
+    .slate-card-top {
+        display:flex;
+        align-items:flex-start;
+        justify-content:space-between;
+        gap:14px;
+        margin-bottom:14px;
+    }
+    .slate-time {
+        color:#7890AC;
+        font-size:.70rem;
+        font-weight:800;
+        letter-spacing:.10em;
+        text-transform:uppercase;
+    }
+    .slate-matchup {
+        margin-top:3px;
+        color:#F8FAFC;
+        font-size:1.08rem;
+        font-weight:850;
+        letter-spacing:-.02em;
+    }
+    .slate-matchup span { color:#64748B; font-weight:700; }
+    .slate-badge {
+        flex:0 0 auto;
+        border-radius:999px;
+        padding:5px 9px;
+        font-size:.67rem;
+        font-weight:900;
+        letter-spacing:.07em;
+        border:1px solid rgba(148,163,184,.16);
+    }
+    .slate-badge.strong {
+        color:#BBF7D0; background:rgba(22,163,74,.16); border-color:rgba(34,197,94,.30);
+    }
+    .slate-badge.bet {
+        color:#BAE6FD; background:rgba(2,132,199,.16); border-color:rgba(56,189,248,.30);
+    }
+    .slate-badge.lean {
+        color:#FDE68A; background:rgba(202,138,4,.14); border-color:rgba(250,204,21,.25);
+    }
+    .slate-badge.pass, .slate-badge.noline {
+        color:#CBD5E1; background:rgba(100,116,139,.12);
+    }
+    .slate-reco {
+        padding:13px 14px;
+        margin-bottom:12px;
+        border-radius:13px;
+        background:rgba(37,99,235,.09);
+        border:1px solid rgba(96,165,250,.16);
+    }
+    .slate-reco-label, .slate-box-label {
+        color:#7890AC;
+        font-size:.66rem;
+        font-weight:850;
+        letter-spacing:.10em;
+        text-transform:uppercase;
+    }
+    .slate-reco-value {
+        margin-top:3px;
+        color:#F8FAFC;
+        font-size:1.12rem;
+        font-weight:900;
+    }
+    .slate-reco-meta {
+        margin-top:3px;
+        color:#93C5FD;
+        font-size:.76rem;
+        font-weight:750;
+    }
+    .slate-grid {
+        display:grid;
+        grid-template-columns:repeat(4, 1fr);
+        gap:8px;
+    }
+    .slate-box {
+        padding:10px 11px;
+        border-radius:11px;
+        background:rgba(13,26,45,.82);
+        border:1px solid rgba(148,163,184,.10);
+    }
+    .slate-box-value {
+        margin-top:3px;
+        color:#E8EEF8;
+        font-size:.88rem;
+        font-weight:800;
+    }
+    .slate-footer {
+        margin-top:11px;
+        color:#7890AC;
+        font-size:.74rem;
+        font-weight:650;
+    }
+    .slate-footer span { padding:0 5px; color:#475569; }
+
+    @media (max-width: 700px) {
+        .slate-grid { grid-template-columns:repeat(2, 1fr); }
+        .slate-card { padding:15px; border-radius:16px; }
+        .slate-reco-value { font-size:1.06rem; }
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1853,7 +1963,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.6-CALIBRATION",
+                "model_version": MODEL_VERSION,
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1906,27 +2016,119 @@ if run_mode == "Slate":
 
         slate_df = pd.DataFrame(slate_rows)
 
-        st.markdown(f'<div class="section-kicker">{slate_choice} Slate Results</div>', unsafe_allow_html=True)
-        display_cols = [
-            "kickoff_et","away_team","home_team","model_home_spread","model_total",
-            "market_home_spread","market_total","best_verdict","best_market","best_edge","best_ev"
-        ]
-        st.dataframe(slate_df[display_cols], use_container_width=True, hide_index=True)
+        st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
         actionable = slate_df[slate_df["best_verdict"].isin(["BET","STRONG BET"])]
+        leans = slate_df[slate_df["best_verdict"].eq("LEAN")]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Games", len(slate_df))
+        c2.metric("Bet Signals", len(actionable))
+        c3.metric("Leans", len(leans))
+
         if len(actionable):
-            st.success(f"{len(actionable)} game(s) have a BET or STRONG BET call.")
+            st.success(f"{len(actionable)} game(s) currently clear the BET threshold.")
+        elif len(leans):
+            st.info("No full BET signals right now. There are LEAN-level edges.")
         else:
-            st.info("No games in this slate currently clear the BET threshold.")
+            st.info("No games in this slate currently clear the LEAN threshold.")
+
+        def _fmt_spread(team, value):
+            if pd.isna(value):
+                return "—"
+            return f"{team} {float(value):+.1f}"
+
+        def _fmt_num(value, digits=1):
+            if pd.isna(value):
+                return "—"
+            return f"{float(value):.{digits}f}"
+
+        def _fmt_pct(value):
+            if pd.isna(value):
+                return "—"
+            return f"{float(value)*100:.1f}%"
+
+        def _verdict_class(verdict):
+            return {
+                "STRONG BET": "strong",
+                "BET": "bet",
+                "LEAN": "lean",
+                "PASS": "pass",
+                "NO LINE": "noline",
+            }.get(str(verdict), "pass")
+
+        for _, r in slate_df.iterrows():
+            market_spread = _fmt_spread(r["home_team"], r["market_home_spread"])
+            model_spread = _fmt_spread(r["home_team"], r["model_home_spread"])
+            market_total = _fmt_num(r["market_total"])
+            model_total = _fmt_num(r["model_total"])
+            best_market = str(r["best_market"]) if pd.notna(r["best_market"]) and str(r["best_market"]).strip() else "No actionable market"
+            verdict = str(r["best_verdict"])
+            edge = _fmt_pct(r["best_edge"])
+            ev = _fmt_pct(r["best_ev"])
+
+            st.markdown(
+                f"""
+                <div class="slate-card">
+                  <div class="slate-card-top">
+                    <div>
+                      <div class="slate-time">{html.escape(str(r['kickoff_et']))}</div>
+                      <div class="slate-matchup">{html.escape(str(r['away_team']))} <span>@</span> {html.escape(str(r['home_team']))}</div>
+                    </div>
+                    <div class="slate-badge {_verdict_class(verdict)}">{html.escape(verdict)}</div>
+                  </div>
+
+                  <div class="slate-reco">
+                    <div class="slate-reco-label">Top Model Call</div>
+                    <div class="slate-reco-value">{html.escape(best_market)}</div>
+                    <div class="slate-reco-meta">Edge {edge} &nbsp;•&nbsp; EV {ev}</div>
+                  </div>
+
+                  <div class="slate-grid">
+                    <div class="slate-box">
+                      <div class="slate-box-label">Model Spread</div>
+                      <div class="slate-box-value">{html.escape(model_spread)}</div>
+                    </div>
+                    <div class="slate-box">
+                      <div class="slate-box-label">Market Spread</div>
+                      <div class="slate-box-value">{html.escape(market_spread)}</div>
+                    </div>
+                    <div class="slate-box">
+                      <div class="slate-box-label">Model Total</div>
+                      <div class="slate-box-value">{model_total}</div>
+                    </div>
+                    <div class="slate-box">
+                      <div class="slate-box-label">Market Total</div>
+                      <div class="slate-box-value">{market_total}</div>
+                    </div>
+                  </div>
+
+                  <div class="slate-footer">
+                    Confidence {int(r['model_confidence'])}/100
+                    <span>•</span>
+                    Projected {html.escape(str(r['away_team']))} {float(r['projected_away_score']):.1f} – {html.escape(str(r['home_team']))} {float(r['projected_home_score']):.1f}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with st.expander("View full slate data"):
+            display_cols = [
+                "kickoff_et","away_team","home_team","projected_away_score","projected_home_score",
+                "model_home_spread","model_total","market_home_spread","market_total",
+                "best_verdict","best_market","best_edge","best_ev","model_confidence"
+            ]
+            st.dataframe(slate_df[display_cols], use_container_width=True, hide_index=True)
 
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v028_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v029_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
-            "Slate lines use a median across available CFBD providers. "
+            "Slate lines use the median across available CFBD providers. "
             "Spread and total pricing are assumed at -110 in slate mode unless actual ML prices are available."
         )
 
@@ -2092,7 +2294,7 @@ def add_result_fields(row, p, actual_away_score=None, actual_home_score=None,
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.6-CALIBRATION",
+        "model_version": MODEL_VERSION,
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -2351,4 +2553,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.2.8-PRO-UI • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
+st.caption("CFB Edge • v0.2.9-SLATE-CARDS • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
