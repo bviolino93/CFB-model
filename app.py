@@ -13,7 +13,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.1-MATCHUP-FIX"
+MODEL_VERSION = "0.2.2-ENVIRONMENT"
 
 DEFAULT_HFA = 2.5
 
@@ -70,6 +70,228 @@ def fetch_talent(api_key, year):
 
 def fetch_returning(api_key, year):
     return cfbd_get("/player/returning", api_key, {"year": year})
+
+def fetch_fbs_teams(api_key, year):
+    return cfbd_get("/teams/fbs", api_key, {"year": year})
+
+def fetch_venues(api_key):
+    return cfbd_get("/venues", api_key, {})
+
+def _school_map(rows):
+    return {str(r.get("school")): r for r in rows or [] if r.get("school")}
+
+def _venue_map(rows):
+    out = {}
+    for r in rows or []:
+        name = r.get("name")
+        if name:
+            out[str(name).strip().lower()] = r
+        vid = r.get("id")
+        if vid is not None:
+            out[str(vid)] = r
+    return out
+
+def _haversine_miles(lat1, lon1, lat2, lon2):
+    vals = [lat1, lon1, lat2, lon2]
+    if any(v is None for v in vals):
+        return None
+    try:
+        from math import radians, sin, cos, asin, sqrt
+        lat1, lon1, lat2, lon2 = map(radians, map(float, vals))
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
+        return 3958.8 * 2 * asin(sqrt(a))
+    except Exception:
+        return None
+
+def _loc_fields(obj):
+    if not isinstance(obj, dict):
+        return {}
+    loc = obj.get("location") if isinstance(obj.get("location"), dict) else obj
+    return {
+        "name": loc.get("name"),
+        "city": loc.get("city"),
+        "state": loc.get("state"),
+        "country": loc.get("countryCode") or loc.get("country"),
+        "latitude": _num(loc.get("latitude")),
+        "longitude": _num(loc.get("longitude")),
+        "elevation": _num(loc.get("elevation")),
+        "timezone": loc.get("timezone"),
+        "dome": loc.get("dome"),
+    }
+
+def _resolve_venue(game, data):
+    raw = game.get("venue")
+    if isinstance(raw, dict):
+        return raw
+
+    venues = data.get("venues", {})
+    if raw is not None:
+        key = str(raw).strip().lower()
+        if key in venues:
+            return venues[key]
+        if str(raw) in venues:
+            return venues[str(raw)]
+
+    # Some CFBD game payloads expose venueId separately.
+    vid = game.get("venueId") or game.get("venue_id")
+    if vid is not None and str(vid) in venues:
+        return venues[str(vid)]
+
+    return {}
+
+def _weather_from_game(game):
+    weather = game.get("weather") if isinstance(game.get("weather"), dict) else {}
+    description = str(
+        weather.get("description")
+        or game.get("weatherDescription")
+        or game.get("weather_condition")
+        or ""
+    ).lower()
+    wind = _num(weather.get("windSpeed"), _num(game.get("windSpeed")))
+    temp = _num(weather.get("temperature"), _num(game.get("temperature")))
+    return {"description": description, "wind_mph": wind, "temperature_f": temp}
+
+def _environment_adjustment(game, data):
+    """
+    Conservative pregame environment layer.
+    It uses CFBD team/venue coordinates and game weather when available.
+    These are small, capped adjustments until we have a larger backtest.
+    """
+    away = game.get("awayTeam")
+    home = game.get("homeTeam")
+    neutral = bool(game.get("neutralSite"))
+
+    venue_obj = _resolve_venue(game, data)
+    venue = _loc_fields(venue_obj)
+
+    away_team_obj = data.get("teams", {}).get(str(away), {})
+    home_team_obj = data.get("teams", {}).get(str(home), {})
+    away_loc = _loc_fields(away_team_obj)
+    home_loc = _loc_fields(home_team_obj)
+
+    away_miles = _haversine_miles(
+        away_loc.get("latitude"), away_loc.get("longitude"),
+        venue.get("latitude"), venue.get("longitude")
+    )
+    home_miles = _haversine_miles(
+        home_loc.get("latitude"), home_loc.get("longitude"),
+        venue.get("latitude"), venue.get("longitude")
+    )
+
+    margin_adj = 0.0
+    total_adj = 0.0
+    confidence_penalty = 0
+    reasons = []
+
+    # Travel: differential matters more than raw distance.
+    # Keep point impact modest until calibrated.
+    if away_miles is not None and home_miles is not None:
+        differential = away_miles - home_miles
+
+        if differential >= 3000:
+            margin_adj += 0.75
+            confidence_penalty += 2
+            reasons.append("extreme away travel disadvantage")
+        elif differential >= 1800:
+            margin_adj += 0.50
+            confidence_penalty += 1
+            reasons.append("long away travel disadvantage")
+        elif differential >= 900:
+            margin_adj += 0.25
+            reasons.append("moderate away travel disadvantage")
+        elif differential <= -3000:
+            margin_adj -= 0.75
+            confidence_penalty += 2
+            reasons.append("extreme home-designated travel disadvantage")
+        elif differential <= -1800:
+            margin_adj -= 0.50
+            confidence_penalty += 1
+            reasons.append("long home-designated travel disadvantage")
+        elif differential <= -900:
+            margin_adj -= 0.25
+            reasons.append("moderate home-designated travel disadvantage")
+
+        # Very long trips can suppress offensive efficiency slightly.
+        if max(away_miles, home_miles) >= 3000:
+            total_adj -= 0.75
+        elif max(away_miles, home_miles) >= 2000:
+            total_adj -= 0.35
+
+    # International / unusual neutral-site context.
+    venue_blob = " ".join(str(x or "") for x in [
+        venue_obj.get("name") if isinstance(venue_obj, dict) else "",
+        venue.get("city"), venue.get("state"), venue.get("country"),
+        game.get("venue")
+    ]).lower()
+
+    international_keywords = ["ireland", "dublin", "aviva", "australia", "sydney", "japan", "tokyo"]
+    international = any(k in venue_blob for k in international_keywords)
+    if international:
+        total_adj -= 1.00
+        confidence_penalty += 2
+        reasons.append("international/atypical venue")
+
+    # Weather: wind is the strongest total suppressor here.
+    weather = _weather_from_game(game)
+    wind = weather.get("wind_mph")
+    temp = weather.get("temperature_f")
+    desc = weather.get("description", "")
+
+    if wind is not None:
+        if wind >= 25:
+            total_adj -= 4.0
+            confidence_penalty += 2
+            reasons.append("very high wind")
+        elif wind >= 20:
+            total_adj -= 3.0
+            confidence_penalty += 1
+            reasons.append("high wind")
+        elif wind >= 15:
+            total_adj -= 1.5
+            reasons.append("meaningful wind")
+
+    precip_terms = ["rain", "shower", "storm", "snow", "sleet"]
+    if any(term in desc for term in precip_terms):
+        total_adj -= 0.75
+        reasons.append("precipitation")
+
+    if temp is not None:
+        if temp <= 25:
+            total_adj -= 1.0
+            reasons.append("extreme cold")
+        elif temp >= 100:
+            total_adj -= 0.75
+            reasons.append("extreme heat")
+
+    # Elevation: small home-side acclimation edge when a low-travel visitor goes high.
+    elev = venue.get("elevation")
+    if elev is not None and elev >= 4500 and away_miles is not None and away_miles >= 700 and not neutral:
+        margin_adj += 0.25
+        total_adj -= 0.25
+        reasons.append("high-altitude venue")
+
+    margin_adj = max(-1.25, min(1.25, margin_adj))
+    total_adj = max(-5.0, min(1.0, total_adj))
+
+    return {
+        "margin_adjustment": margin_adj,
+        "total_adjustment": total_adj,
+        "confidence_penalty": confidence_penalty,
+        "away_travel_miles": away_miles,
+        "home_travel_miles": home_miles,
+        "venue_name": venue_obj.get("name") if isinstance(venue_obj, dict) else game.get("venue"),
+        "venue_city": venue.get("city"),
+        "venue_state": venue.get("state"),
+        "venue_country": venue.get("country"),
+        "venue_elevation": elev,
+        "international": international,
+        "weather_description": weather.get("description"),
+        "wind_mph": wind,
+        "temperature_f": temp,
+        "reasons": reasons,
+    }
 
 def _safe_fetch(func, *args):
     try:
@@ -232,6 +454,8 @@ def load_model_data(api_key, year):
     prev_adv = _team_map(_safe_fetch(fetch_advanced, api_key, year - 1))
     talent = _team_map(_safe_fetch(fetch_talent, api_key, year))
     returning = _team_map(_safe_fetch(fetch_returning, api_key, year))
+    teams = _school_map(_safe_fetch(fetch_fbs_teams, api_key, year))
+    venues = _venue_map(_safe_fetch(fetch_venues, api_key))
 
     # Pre-compute distribution stats used to place unlike metrics on common scales.
     srs_vals = [_num(x.get("rating")) for x in cur_srs.values()]
@@ -270,6 +494,8 @@ def load_model_data(api_key, year):
         "adv_previous": prev_adv,
         "talent": talent,
         "returning": returning,
+        "teams": teams,
+        "venues": venues,
         "stats": {
             "srs_mu": srs_mu, "srs_sd": srs_sd,
             "talent_mu": talent_mu, "talent_sd": talent_sd,
@@ -486,6 +712,7 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
             "ppa_current": {}, "ppa_previous": {},
             "adv_current": {}, "adv_previous": {},
             "talent": {}, "returning": {},
+            "teams": {}, "venues": {},
             "stats": {
                 "srs_mu": 0.0, "srs_sd": 1.0,
                 "talent_mu": 0.0, "talent_sd": 1.0,
@@ -508,14 +735,17 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
     matchup_margin_adj = home_match - away_match
 
     base_margin = home_power - away_power
-    home_margin = base_margin + matchup_margin_adj + applied_hfa
+    environment = _environment_adjustment(game, data)
+    env_margin_adj = environment["margin_adjustment"]
+    home_margin = base_margin + matchup_margin_adj + applied_hfa + env_margin_adj
 
     raw_sp_total = _total_from_sp(ar, hr)
     efficiency_adj = _total_efficiency_adjustment(ar, hr)
     pace_adj = _pace_adjustment(ar, hr)
 
     # Keep the total independent of the market.
-    total = raw_sp_total + efficiency_adj + pace_adj
+    env_total_adj = environment["total_adjustment"]
+    total = raw_sp_total + efficiency_adj + pace_adj + env_total_adj
     total = max(34.0, min(82.0, total))
 
     # Reconcile the scoring split to the independently estimated margin.
@@ -525,15 +755,21 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
     home_margin = home_score - away_score
 
     margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
+    confidence = max(60, confidence - int(environment.get("confidence_penalty", 0)))
+    if environment.get("international"):
+        margin_sd = min(18.5, margin_sd + 0.4)
+        total_sd = min(15.5, total_sd + 0.5)
     home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
 
     components = {
         "base_power_margin": base_margin,
         "matchup_margin_adjustment": matchup_margin_adj,
         "hfa_adjustment": applied_hfa,
+        "environment_margin_adjustment": env_margin_adj,
         "sp_total_base": raw_sp_total,
         "efficiency_total_adjustment": efficiency_adj,
         "pace_total_adjustment": pace_adj,
+        "environment_total_adjustment": env_total_adj,
     }
 
     return {
@@ -556,6 +792,7 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
         "confidence": confidence,
         "data_completeness": completeness,
         "components": components,
+        "environment": environment,
     }
 
 def cover_probability(home_margin_mean, market_home_spread, side="home", sigma=None):
@@ -669,7 +906,7 @@ def normalize_game_lines(rows, game_id=None):
 
 st.set_page_config(page_title="CFB Model", page_icon="🏈", layout="centered")
 st.title("🏈 CFB Model")
-st.caption("Version 0.2.1-MATCHUP-FIX • SP+ anchor + matchup/efficiency/roster adjustments")
+st.caption("Version 0.2.2-ENVIRONMENT • SP+ anchor + matchup/efficiency/roster adjustments")
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -979,7 +1216,7 @@ if run_mode == "Slate":
                 best_verdict, best_market, best_odds, best_edge, best_ev = b
 
             slate_rows.append({
-                "model_version": "0.2.1-MATCHUP-FIX",
+                "model_version": "0.2.2-ENVIRONMENT",
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
@@ -1006,6 +1243,14 @@ if run_mode == "Slate":
                 "sp_total_base": round(gp["components"]["sp_total_base"], 4),
                 "efficiency_total_adjustment": round(gp["components"]["efficiency_total_adjustment"], 4),
                 "pace_total_adjustment": round(gp["components"]["pace_total_adjustment"], 4),
+                "environment_margin_adjustment": round(gp["components"]["environment_margin_adjustment"], 4),
+                "environment_total_adjustment": round(gp["components"]["environment_total_adjustment"], 4),
+                "away_travel_miles": gp["environment"].get("away_travel_miles"),
+                "home_travel_miles": gp["environment"].get("home_travel_miles"),
+                "international_game": gp["environment"].get("international"),
+                "wind_mph": gp["environment"].get("wind_mph"),
+                "temperature_f": gp["environment"].get("temperature_f"),
+                "environment_flags": "; ".join(gp["environment"].get("reasons") or []),
                 "market_source": market.get("provider"),
                 "market_away_ml": market.get("away_ml"),
                 "market_home_ml": market.get("home_ml"),
@@ -1082,15 +1327,30 @@ with st.expander("Projection components"):
     st.write(f"Base power margin: {c['base_power_margin']:+.2f}")
     st.write(f"Matchup adjustment: {c['matchup_margin_adjustment']:+.2f}")
     st.write(f"HFA adjustment: {c['hfa_adjustment']:+.2f}")
+    st.write(f"Environment margin adjustment: {c['environment_margin_adjustment']:+.2f}")
     st.write(f"SP+ matchup total base: {c['sp_total_base']:.2f}")
     st.write(f"Efficiency total adjustment: {c['efficiency_total_adjustment']:+.2f}")
     st.write(f"Pace total adjustment: {c['pace_total_adjustment']:+.2f}")
+    st.write(f"Environment total adjustment: {c['environment_total_adjustment']:+.2f}")
+
+    e = p["environment"]
+    st.write("---")
+    st.write(f"Venue: {e.get('venue_name') or 'Unknown'}")
+    st.write(f"Away travel: {e.get('away_travel_miles'):.0f} mi" if e.get('away_travel_miles') is not None else "Away travel: unavailable")
+    st.write(f"Home travel: {e.get('home_travel_miles'):.0f} mi" if e.get('home_travel_miles') is not None else "Home travel: unavailable")
+    st.write(f"Weather: {e.get('weather_description') or 'not available'}")
+    if e.get("wind_mph") is not None:
+        st.write(f"Wind: {e['wind_mph']:.0f} mph")
+    if e.get("temperature_f") is not None:
+        st.write(f"Temperature: {e['temperature_f']:.0f}°F")
+    if e.get("reasons"):
+        st.write("Environment flags: " + ", ".join(e["reasons"]))
 
 
 def build_export_row(p, game, selected_date, market=None):
     market = market or {}
     row = {
-        "model_version": "0.2.1-MATCHUP-FIX",
+        "model_version": "0.2.2-ENVIRONMENT",
         "game_date": str(selected_date),
         "game_id": game.get("id"),
         "away_team": p["away"],
@@ -1132,6 +1392,20 @@ def build_export_row(p, game, selected_date, market=None):
         "sp_total_base": round(p["components"]["sp_total_base"], 4),
         "efficiency_total_adjustment": round(p["components"]["efficiency_total_adjustment"], 4),
         "pace_total_adjustment": round(p["components"]["pace_total_adjustment"], 4),
+        "environment_margin_adjustment": round(p["components"]["environment_margin_adjustment"], 4),
+        "environment_total_adjustment": round(p["components"]["environment_total_adjustment"], 4),
+        "venue_name": p["environment"].get("venue_name"),
+        "venue_city": p["environment"].get("venue_city"),
+        "venue_state": p["environment"].get("venue_state"),
+        "venue_country": p["environment"].get("venue_country"),
+        "venue_elevation": p["environment"].get("venue_elevation"),
+        "international_game": p["environment"].get("international"),
+        "away_travel_miles": p["environment"].get("away_travel_miles"),
+        "home_travel_miles": p["environment"].get("home_travel_miles"),
+        "weather_description": p["environment"].get("weather_description"),
+        "wind_mph": p["environment"].get("wind_mph"),
+        "temperature_f": p["environment"].get("temperature_f"),
+        "environment_flags": "; ".join(p["environment"].get("reasons") or []),
 
         "away_srs": p["away_rating"].get("srs"),
         "home_srs": p["home_rating"].get("srs"),
@@ -1328,4 +1602,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("v0.2.1 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
+st.caption("v0.2.2 keeps SP+ as the anchor, adds SRS/talent/returning-production and matchup efficiency, rebuilds totals from offense-vs-defense components, and widens uncertainty early in the season. It still needs backtesting/calibration before production betting.")
