@@ -16,7 +16,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.3.1-MARKET-DROPDOWNS"
+MODEL_VERSION = "0.3.2-CALIBRATION-GUARDRAILS"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -45,6 +45,45 @@ DEFAULT_HFA = 2.5
 # Distribution widths are intentionally wider early in the season.
 BASE_MARGIN_SD = 15.8
 BASE_TOTAL_SD = 12.8
+
+# v0.3.2 calibration guardrails
+# These are deliberately conservative and should be re-estimated after a larger
+# historical sample. They change the betting layer, not the underlying football ratings.
+EARLY_SIDE_SHRINK = {1: 0.55, 2: 0.65, 3: 0.75, 4: 0.85}
+EARLY_TOTAL_SHRINK = {1: 0.40, 2: 0.50, 3: 0.60, 4: 0.75}
+
+def _week_num(week):
+    try:
+        return max(1, int(week))
+    except Exception:
+        return 1
+
+def _shrink_weight(week, market_type):
+    w = _week_num(week)
+    table = EARLY_TOTAL_SHRINK if market_type == "total" else EARLY_SIDE_SHRINK
+    return table.get(w, 1.0)
+
+def calibrated_market_projection(raw_value, market_value, week, market_type):
+    """
+    Pull an early-season model projection toward the observed market.
+    Returns (adjusted_value, model_weight, shrink_points).
+    """
+    if market_value is None:
+        return float(raw_value), 1.0, 0.0
+    weight = _shrink_weight(week, market_type)
+    adjusted = float(market_value) + weight * (float(raw_value) - float(market_value))
+    return adjusted, weight, float(raw_value) - adjusted
+
+def calibrated_sigmas(margin_sd, total_sd, week):
+    """Extra uncertainty in Weeks 0-2/1-2 while priors dominate."""
+    w = _week_num(week)
+    if w <= 1:
+        return max(float(margin_sd), 18.0), max(float(total_sd), 15.0)
+    if w == 2:
+        return max(float(margin_sd), 17.2), max(float(total_sd), 14.3)
+    if w == 3:
+        return max(float(margin_sd), 16.5), max(float(total_sd), 13.7)
+    return float(margin_sd), float(total_sd)
 
 def _headers(api_key):
     return {"Authorization": f"Bearer {api_key}"}
@@ -1190,17 +1229,49 @@ def juice_thresholds(odds):
     if odds >= -249: return .05, .08
     return .07, .12
 
-def grade(prob, odds, confidence=75):
+def grade(prob, odds, confidence=75, market_type="side", projection_gap=None, week=1):
+    """
+    v0.3.2 guarded betting grade.
+    - Higher thresholds than v0.3.1.
+    - Totals require more evidence.
+    - Weeks 1-2 require extra edge/EV.
+    - Very large raw model/market gaps are review-only until calibrated.
+    """
     imp = implied_prob(odds)
     edge = prob - imp
     ev = expected_value(prob, odds)
     me, mv = juice_thresholds(odds)
 
-    # Early/low-confidence model states can still show positive-EV leans,
-    # but require >=70 confidence for a formal BET.
-    if confidence >= 80 and edge >= me + .02 and ev >= mv + .03:
+    # Base hurdle increase: the opening 1-5 card showed that the prior mapping
+    # from projection -> probability -> BET was too aggressive.
+    me += 0.015
+    mv += 0.025
+
+    if market_type == "total":
+        me += 0.010
+        mv += 0.015
+
+    w = _week_num(week)
+    if w <= 1:
+        me += 0.010
+        mv += 0.015
+    elif w == 2:
+        me += 0.005
+        mv += 0.010
+
+    # Extreme disagreements are not promoted to BET solely because the normal
+    # distribution creates a large probability edge. Keep them review-only.
+    review_only = False
+    if projection_gap is not None:
+        gap = abs(float(projection_gap))
+        if market_type == "total" and gap >= 10.0:
+            review_only = True
+        elif market_type in {"side", "spread"} and gap >= 9.0:
+            review_only = True
+
+    if (not review_only) and confidence >= 80 and edge >= me + .025 and ev >= mv + .04:
         verdict = "STRONG BET"
-    elif confidence >= 70 and edge >= me and ev >= mv:
+    elif (not review_only) and confidence >= 72 and edge >= me and ev >= mv:
         verdict = "BET"
     elif edge > 0 and ev > 0:
         verdict = "LEAN"
@@ -1954,27 +2025,61 @@ if run_mode == "Slate":
 
             candidates = []
 
+            # v0.3.2: calibrate projections to the market before converting to
+            # probabilities. Raw projections remain in the export for audit.
+            cal_margin_sd, cal_total_sd = calibrated_sigmas(gp["margin_sd"], gp["total_sd"], gp["week"])
+            raw_home_spread = gp["model_home_spread"]
+            raw_total = gp["model_total"]
+
+            adjusted_home_spread = raw_home_spread
+            side_weight = 1.0
+            side_shrink = 0.0
+            if market.get("home_spread") is not None:
+                adjusted_home_spread, side_weight, side_shrink = calibrated_market_projection(
+                    raw_home_spread, market["home_spread"], gp["week"], "side"
+                )
+            adjusted_home_margin = -adjusted_home_spread
+
+            adjusted_total = raw_total
+            total_weight = 1.0
+            total_shrink = 0.0
+            if market.get("total") is not None:
+                adjusted_total, total_weight, total_shrink = calibrated_market_projection(
+                    raw_total, market["total"], gp["week"], "total"
+                )
+
+            adjusted_home_wp = 1.0 - NormalDist(mu=adjusted_home_margin, sigma=cal_margin_sd).cdf(0)
+            adjusted_away_wp = 1.0 - adjusted_home_wp
+
             if market.get("away_ml") is not None:
-                v,e,ev,_ = grade(gp["away_win_prob"], market["away_ml"], gp["confidence"])
+                v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
+                                 market_type="side", projection_gap=None, week=gp["week"])
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
             if market.get("home_ml") is not None:
-                v,e,ev,_ = grade(gp["home_win_prob"], market["home_ml"], gp["confidence"])
+                v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
+                                 market_type="side", projection_gap=None, week=gp["week"])
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
-                hp = cover_probability(gp["home_margin"], market["home_spread"], "home", gp["margin_sd"])
+                spread_gap = raw_home_spread - market["home_spread"]
+                hp = cover_probability(adjusted_home_margin, market["home_spread"], "home", cal_margin_sd)
                 ap = 1 - hp
-                v,e,ev,_ = grade(hp, -110, gp["confidence"])
+                v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
+                                 projection_gap=spread_gap, week=gp["week"])
                 candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
-                v,e,ev,_ = grade(ap, -110, gp["confidence"])
+                v,e,ev,_ = grade(ap, -110, gp["confidence"], market_type="spread",
+                                 projection_gap=spread_gap, week=gp["week"])
                 candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
             if market.get("total") is not None:
-                op = total_probability(gp["model_total"], market["total"], "over", gp["total_sd"])
+                total_gap = raw_total - market["total"]
+                op = total_probability(adjusted_total, market["total"], "over", cal_total_sd)
                 up = 1 - op
-                v,e,ev,_ = grade(op, -110, gp["confidence"])
+                v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
+                                 projection_gap=total_gap, week=gp["week"])
                 candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
-                v,e,ev,_ = grade(up, -110, gp["confidence"])
+                v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
+                                 projection_gap=total_gap, week=gp["week"])
                 candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
             if candidates:
@@ -2039,6 +2144,16 @@ if run_mode == "Slate":
                 "market_home_ml": market.get("home_ml"),
                 "market_home_spread": market.get("home_spread"),
                 "market_total": market.get("total"),
+                "raw_model_home_spread": round(raw_home_spread, 3),
+                "adjusted_model_home_spread": round(adjusted_home_spread, 3),
+                "side_market_weight": round(side_weight, 3),
+                "side_shrink_points": round(side_shrink, 3),
+                "raw_model_total": round(raw_total, 3),
+                "adjusted_model_total": round(adjusted_total, 3),
+                "total_market_weight": round(total_weight, 3),
+                "total_shrink_points": round(total_shrink, 3),
+                "calibrated_margin_sd": round(cal_margin_sd, 3),
+                "calibrated_total_sd": round(cal_total_sd, 3),
                 "best_verdict": best_verdict,
                 "best_market": best_market,
                 "best_odds": best_odds,
@@ -2245,12 +2360,13 @@ if run_mode == "Slate":
         ios_save_button(
             f"Save {slate_choice} Slate CSV",
             slate_df.to_csv(index=False),
-            f"cfb_v031_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            f"cfb_v032_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
         )
 
         st.caption(
             "Slate lines use the median across available CFBD providers. "
-            "Spread and total pricing are assumed at -110 in slate mode unless actual ML prices are available."
+            "v0.3.2 applies early-season market shrinkage and wider uncertainty before grading. "
+            "Spread and total pricing are assumed at -110 in slate mode unless actual prices are available."
         )
 
     st.stop()
@@ -2603,24 +2719,41 @@ st.caption("Use this to save the projection file for audit/upload.")
 
 if st.button("Should I Bet?",type="primary",use_container_width=True):
     markets=[]
-    for name,prob,odds in [
-        (f"{p['away']} ML",p["away_win_prob"],away_ml),
-        (f"{p['home']} ML",p["home_win_prob"],home_ml)
-    ]:
-        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    hc=cover_probability(p["home_margin"],home_spread,"home",p["margin_sd"])
-    ac=cover_probability(p["home_margin"],home_spread,"away",p["margin_sd"])
+    # v0.3.2 guarded single-game calibration.
+    cal_margin_sd, cal_total_sd = calibrated_sigmas(p["margin_sd"], p["total_sd"], p["week"])
+    adj_home_spread, side_weight, side_shrink = calibrated_market_projection(
+        p["model_home_spread"], home_spread, p["week"], "side"
+    )
+    adj_home_margin = -adj_home_spread
+    adj_total, total_weight, total_shrink = calibrated_market_projection(
+        p["model_total"], market_total, p["week"], "total"
+    )
+    adj_home_wp = 1.0 - NormalDist(mu=adj_home_margin, sigma=cal_margin_sd).cdf(0)
+    adj_away_wp = 1.0 - adj_home_wp
+
+    for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
+        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="side",week=p["week"])
+        markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+
+    spread_gap = p["model_home_spread"] - home_spread
+    hc=cover_probability(adj_home_margin,home_spread,"home",cal_margin_sd)
+    ac=1-hc
     for name,prob,odds in [
         (f"{p['home']} {home_spread:+.1f}",hc,home_spread_odds),
         (f"{p['away']} {away_spread:+.1f}",ac,away_spread_odds)
     ]:
-        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="spread",
+                         projection_gap=spread_gap,week=p["week"])
+        markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    op=total_probability(p["model_total"],market_total,"over",p["total_sd"])
+    total_gap = p["model_total"] - market_total
+    op=total_probability(adj_total,market_total,"over",cal_total_sd)
     up=1-op
     for name,prob,odds in [(f"Over {market_total:g}",op,over_odds),(f"Under {market_total:g}",up,under_odds)]:
-        v,e,ev,imp=grade(prob,odds,p["confidence"]); markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="total",
+                         projection_gap=total_gap,week=p["week"])
+        markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
@@ -2653,6 +2786,16 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
         "model_over_prob": round(op, 6),
         "model_under_prob": round(up, 6),
         "best_verdict": best[0],
+        "raw_model_home_spread": round(p["model_home_spread"], 3),
+        "adjusted_model_home_spread": round(adj_home_spread, 3),
+        "side_market_weight": round(side_weight, 3),
+        "side_shrink_points": round(side_shrink, 3),
+        "raw_model_total": round(p["model_total"], 3),
+        "adjusted_model_total": round(adj_total, 3),
+        "total_market_weight": round(total_weight, 3),
+        "total_shrink_points": round(total_shrink, 3),
+        "calibrated_margin_sd": round(cal_margin_sd, 3),
+        "calibrated_total_sd": round(cal_total_sd, 3),
         "best_market": best[1],
         "best_odds": best[2],
         "best_model_prob": round(best[3], 6),
