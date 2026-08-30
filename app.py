@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.6.1-SIGNAL-EXPORTS"
+MODEL_VERSION = "0.6.2-EXPORT-FIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -2861,8 +2861,15 @@ def ios_save_button(label, csv_text, filename):
     Browser-native download button.
     Uses a Blob + download attribute instead of Streamlit's file response,
     which avoids iOS rendering CSV as a full-screen document preview.
+
+    Accepts either a Python string or bytes so research exports and legacy
+    exports use the same safe download path.
     """
-    payload = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
+    if isinstance(csv_text, bytes):
+        raw_bytes = csv_text
+    else:
+        raw_bytes = str(csv_text).encode("utf-8")
+    payload = base64.b64encode(raw_bytes).decode("ascii")
     safe_label = html.escape(label)
     safe_filename = html.escape(filename, quote=True)
 
@@ -3273,11 +3280,11 @@ if app_section == "Backtest":
             st.markdown("#### Development-ranked signals → untouched holdout")
             st.dataframe(show, use_container_width=True, hide_index=True)
 
-            research_csv = research_df.to_csv(index=False).encode("utf-8")
+            research_csv = research_df.to_csv(index=False)
             ios_save_button(
                 "Save Signal Research CSV",
                 research_csv,
-                f"cfb_v061_signal_research_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                f"cfb_v062_signal_research_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
             )
 
         if isinstance(research_wf, pd.DataFrame) and not research_wf.empty:
@@ -3289,11 +3296,11 @@ if app_section == "Backtest":
             st.markdown("#### Signal survival by unseen season")
             st.dataframe(wf_show, use_container_width=True, hide_index=True)
 
-            wf_csv = research_wf.to_csv(index=False).encode("utf-8")
+            wf_csv = research_wf.to_csv(index=False)
             ios_save_button(
                 "Save Signal Walk-Forward CSV",
                 wf_csv,
-                f"cfb_v061_signal_walkforward_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                f"cfb_v062_signal_walkforward_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
             )
 
             agg = research_wf.groupby("Signal", as_index=False).agg(
@@ -3314,11 +3321,11 @@ if app_section == "Backtest":
             st.markdown("#### Multi-season survival summary")
             st.dataframe(agg_show, use_container_width=True, hide_index=True)
 
-            agg_csv = agg.to_csv(index=False).encode("utf-8")
+            agg_csv = agg.to_csv(index=False)
             ios_save_button(
                 "Save Signal Summary CSV",
                 agg_csv,
-                f"cfb_v061_signal_summary_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                f"cfb_v062_signal_summary_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
             )
 
         st.warning(
@@ -3360,7 +3367,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v061_signal_exports_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v062_export_fix_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -4360,4 +4367,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.6.1-SIGNAL-EXPORTS • Signal Research tables are now downloadable for audit.")
+st.caption("CFB Edge • v0.6.2-EXPORT-FIX • Signal Research CSV downloads fixed for iOS/Streamlit.")

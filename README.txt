@@ -1,19 +1,17 @@
-CFB Edge v0.6.1-SIGNAL-EXPORTS
+CFB Edge v0.6.2-EXPORT-FIX
 
-Changes from v0.6.0
--------------------
-- No modeling logic changes.
-- Adds downloadable CSV for Development-ranked Signal Research.
-- Adds downloadable CSV for rolling Signal Walk-Forward results.
-- Adds downloadable CSV for Multi-season Signal Summary.
-- Keeps the normal full backtest export.
-- Fixes only the research export workflow so signal results can be audited outside Streamlit.
+Fix
+---
+The v0.6.1 research CSV exports passed bytes into ios_save_button(), while the
+helper expected a string and called .encode(). That caused the AttributeError
+shown in Streamlit.
 
-Recommended run
----------------
-Run 2022-2025 with 2025 as the holdout, then export:
-1) Signal Research CSV
-2) Signal Walk-Forward CSV
-3) Signal Summary CSV
+v0.6.2:
+- Makes ios_save_button accept either str or bytes.
+- Keeps new Signal Research exports as strings.
+- No model, backtest, signal, threshold, or validation logic changed.
+- Updates exported filenames to v0.6.2.
 
-Those three files contain the evidence needed to decide whether any signal should advance toward the live model.
+You do not need to reinterpret the prior model results. Re-run the same
+2022-2025 / 2025-holdout backtest and use the three Signal Research download
+buttons.
