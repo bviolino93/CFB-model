@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.5.1-WALKFORWARD-SPREAD"
+MODEL_VERSION = "0.6.0-SIGNAL-RESEARCH"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1774,6 +1774,21 @@ def _residual_feature_frame(game_df):
     d["total_base_minus_market"] = pd.to_numeric(d["sp_total_base"], errors="coerce") - pd.to_numeric(d["market_total"], errors="coerce")
     d["total_eff_adj"] = pd.to_numeric(d["efficiency_total_adjustment"], errors="coerce")
     d["total_pace_adj"] = pd.to_numeric(d["pace_total_adjustment"], errors="coerce")
+
+    # Interpretable football signals for v0.6.0 research.
+    for col in [
+        "away_sp_rating","home_sp_rating",
+        "away_srs_adjustment","home_srs_adjustment",
+        "away_talent_adjustment","home_talent_adjustment",
+        "away_returning_adjustment","home_returning_adjustment",
+    ]:
+        if col not in d.columns:
+            d[col] = np.nan
+
+    d["sp_rating_diff"] = pd.to_numeric(d["home_sp_rating"], errors="coerce") - pd.to_numeric(d["away_sp_rating"], errors="coerce")
+    d["srs_adjustment_diff"] = pd.to_numeric(d["home_srs_adjustment"], errors="coerce") - pd.to_numeric(d["away_srs_adjustment"], errors="coerce")
+    d["talent_adjustment_diff"] = pd.to_numeric(d["home_talent_adjustment"], errors="coerce") - pd.to_numeric(d["away_talent_adjustment"], errors="coerce")
+    d["returning_adjustment_diff"] = pd.to_numeric(d["home_returning_adjustment"], errors="coerce") - pd.to_numeric(d["away_returning_adjustment"], errors="coerce")
     return d
 
 SPREAD_RESIDUAL_FEATURES = [
@@ -2177,9 +2192,9 @@ def _walkforward_season_summary(signal_df):
 
     for season in sorted(official["season"].dropna().astype(int).unique().tolist()):
         s = official[official["season"] == season]
-        wins = int((s["result"] == "W").sum())
-        losses = int((s["result"] == "L").sum())
-        pushes = int((s["result"] == "P").sum())
+        wins = int((s["result"] == "WIN").sum())
+        losses = int((s["result"] == "LOSS").sum())
+        pushes = int((s["result"] == "PUSH").sum())
         decided = wins + losses
         units = float(s["profit_units"].sum()) if len(s) else 0.0
         roi = units / len(s) if len(s) else np.nan
@@ -2230,6 +2245,173 @@ def _walkforward_error_summary(holdout_df):
             })
 
     return pd.DataFrame(rows)
+
+
+# ===== v0.6.0 signal research =====
+
+SIGNAL_RESEARCH_VERSION = "v0.6.0-signal-research"
+
+SIGNAL_CANDIDATES = {
+    "Raw model disagreement": "spread_model_delta",
+    "Base power vs market": "sp_base_minus_market",
+    "SP+ rating differential": "sp_rating_diff",
+    "SRS adjustment differential": "srs_adjustment_diff",
+    "Talent adjustment differential": "talent_adjustment_diff",
+    "Returning production differential": "returning_adjustment_diff",
+    "Matchup adjustment": "sp_matchup_adj",
+    "Home-field adjustment": "sp_hfa",
+    "Market favorite size": "market_margin",
+    "Absolute favorite size": "abs_market_margin",
+    "Week": "week_num",
+    "Model confidence": "confidence_num",
+}
+
+def _ats_profit(result, odds=-110):
+    return _bt_profit(result, odds)
+
+def _signal_directional_set(df, feature, direction, cutoff):
+    """
+    A research-only ATS set. Positive direction means back the home side when
+    feature >= cutoff; negative direction means back away when feature <= cutoff.
+    """
+    d = df.copy()
+    x = pd.to_numeric(d[feature], errors="coerce")
+    if direction > 0:
+        s = d[x >= cutoff].copy()
+        side = "home"
+    else:
+        s = d[x <= cutoff].copy()
+        side = "away"
+
+    if s.empty:
+        return pd.DataFrame()
+
+    s["research_side"] = side
+    s["research_result"] = s.apply(
+        lambda r: _bt_settle(
+            "spread",
+            side,
+            float(r["home_points"]),
+            float(r["away_points"]),
+            float(r["market_home_spread"]),
+        ),
+        axis=1,
+    )
+    s["research_profit_units"] = s["research_result"].map(lambda r: _ats_profit(r, -110))
+    return s
+
+def _signal_stats(s):
+    if s.empty:
+        return {"bets":0, "wins":0, "losses":0, "pushes":0, "win_pct":np.nan, "units":0.0, "roi":np.nan}
+    w = int((s["research_result"]=="WIN").sum())
+    l = int((s["research_result"]=="LOSS").sum())
+    p = int((s["research_result"]=="PUSH").sum())
+    n = len(s)
+    decided = w + l
+    units = float(s["research_profit_units"].sum())
+    return {
+        "bets": n, "wins": w, "losses": l, "pushes": p,
+        "win_pct": w/decided if decided else np.nan,
+        "units": units,
+        "roi": units/n if n else np.nan,
+    }
+
+def _research_one_signal(dev, hold, label, feature):
+    """
+    Development sample chooses direction and extreme-quartile cutoff.
+    Holdout is then evaluated with that exact frozen rule.
+    This is descriptive signal research, not a promoted betting strategy.
+    """
+    cols = [feature, "spread_target_residual", "market_home_spread", "home_points", "away_points"]
+    d = dev[cols].replace([np.inf,-np.inf], np.nan).dropna().copy()
+    h = hold[cols].replace([np.inf,-np.inf], np.nan).dropna().copy()
+    if len(d) < 100 or len(h) < 50 or d[feature].nunique() < 5:
+        return None
+
+    corr = d[feature].corr(d["spread_target_residual"])
+    if pd.isna(corr):
+        return None
+    direction = 1 if corr >= 0 else -1
+    cutoff = float(d[feature].quantile(0.75 if direction > 0 else 0.25))
+
+    dev_set = _signal_directional_set(d, feature, direction, cutoff)
+    hold_set = _signal_directional_set(h, feature, direction, cutoff)
+    ds = _signal_stats(dev_set)
+    hs = _signal_stats(hold_set)
+
+    return {
+        "Signal": label,
+        "Feature": feature,
+        "Dev corr": float(corr),
+        "Direction": "Home on high values" if direction > 0 else "Away on low values",
+        "Frozen cutoff": cutoff,
+        "Dev bets": ds["bets"],
+        "Dev win %": ds["win_pct"],
+        "Dev ROI": ds["roi"],
+        "Holdout bets": hs["bets"],
+        "Holdout W-L-P": f'{hs["wins"]}-{hs["losses"]}-{hs["pushes"]}',
+        "Holdout win %": hs["win_pct"],
+        "Holdout units": hs["units"],
+        "Holdout ROI": hs["roi"],
+    }
+
+def _run_signal_research(feature_df, holdout):
+    """
+    Search only development seasons for simple, interpretable spread signals.
+    The selected holdout is used only to report whether each frozen signal survives.
+    """
+    dev = feature_df[feature_df["season"] != holdout].copy()
+    hold = feature_df[feature_df["season"] == holdout].copy()
+
+    rows = []
+    for label, feature in SIGNAL_CANDIDATES.items():
+        if feature not in feature_df.columns:
+            continue
+        r = _research_one_signal(dev, hold, label, feature)
+        if r is not None:
+            rows.append(r)
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows)
+    # Rank on development evidence only. Holdout performance is NEVER part of ranking.
+    out["Dev score"] = (
+        out["Dev ROI"].fillna(-9) * np.sqrt(out["Dev bets"].clip(lower=1))
+        + out["Dev corr"].abs().fillna(0)
+    )
+    return out.sort_values(["Dev score","Dev bets"], ascending=[False,False]).reset_index(drop=True)
+
+def _walkforward_signal_research(feature_df):
+    """
+    Repeats the frozen-signal exercise through time. Each test year only uses
+    prior seasons to choose direction/cutoff.
+    """
+    seasons = sorted(feature_df["season"].dropna().astype(int).unique().tolist())
+    rows = []
+    for test_season in seasons[1:]:
+        dev = feature_df[feature_df["season"] < test_season].copy()
+        hold = feature_df[feature_df["season"] == test_season].copy()
+        for label, feature in SIGNAL_CANDIDATES.items():
+            if feature not in feature_df.columns:
+                continue
+            r = _research_one_signal(dev, hold, label, feature)
+            if r is None:
+                continue
+            rows.append({
+                "Test season": test_season,
+                "Signal": label,
+                "Direction": r["Direction"],
+                "Frozen cutoff": r["Frozen cutoff"],
+                "Bets": r["Holdout bets"],
+                "W-L-P": r["Holdout W-L-P"],
+                "Win %": r["Holdout win %"],
+                "Units": r["Holdout units"],
+                "ROI": r["Holdout ROI"],
+            })
+    return pd.DataFrame(rows)
+
+# ===== End v0.6.0 signal research =====
 
 # ===== End v0.5.1 rolling walk-forward validation =====
 
@@ -2751,7 +2933,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Residual model validation • holdout + rolling walk-forward")
+    st.markdown("### Model validation • residual + signal research")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -2880,6 +3062,14 @@ if app_section == "Backtest":
                         "sp_total_base":float(p["components"].get("sp_total_base", 0.0)),
                         "efficiency_total_adjustment":float(p["components"].get("efficiency_total_adjustment", 0.0)),
                         "pace_total_adjustment":float(p["components"].get("pace_total_adjustment", 0.0)),
+                        "away_sp_rating":float(p["away_rating"].get("sp_rating") or 0.0),
+                        "home_sp_rating":float(p["home_rating"].get("sp_rating") or 0.0),
+                        "away_srs_adjustment":float(p["away_rating"].get("srs_adjustment") or 0.0),
+                        "home_srs_adjustment":float(p["home_rating"].get("srs_adjustment") or 0.0),
+                        "away_talent_adjustment":float(p["away_rating"].get("talent_adjustment") or 0.0),
+                        "home_talent_adjustment":float(p["home_rating"].get("talent_adjustment") or 0.0),
+                        "away_returning_adjustment":float(p["away_rating"].get("returning_adjustment") or 0.0),
+                        "home_returning_adjustment":float(p["home_rating"].get("returning_adjustment") or 0.0),
                     })
 
                 all_rows.extend(_bt_candidate_rows(g, p, market, season, "v0.3.1"))
@@ -2916,6 +3106,9 @@ if app_section == "Backtest":
         if not walkforward_bets.empty:
             bt_df = pd.concat([bt_df, walkforward_bets], ignore_index=True, sort=False)
 
+        signal_research = _run_signal_research(feature_df, bt_holdout)
+        signal_walkforward = _walkforward_signal_research(feature_df)
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -2927,6 +3120,8 @@ if app_section == "Backtest":
         st.session_state["cfb_walkforward_bets_df"] = walkforward_bets
         st.session_state["cfb_walkforward_holdouts_df"] = walkforward_holdouts
         st.session_state["cfb_walkforward_diag"] = walkforward_diag
+        st.session_state["cfb_signal_research_df"] = signal_research
+        st.session_state["cfb_signal_walkforward_df"] = signal_walkforward
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
             "method": bt_method, "policy": bt_policy,
@@ -3044,8 +3239,8 @@ if app_section == "Backtest":
                 & (wf_signal["verdict"].isin(["BET", "STRONG BET"]))
             ]
             if not official_wf_spreads.empty:
-                wins = int((official_wf_spreads["result"]=="W").sum())
-                losses = int((official_wf_spreads["result"]=="L").sum())
+                wins = int((official_wf_spreads["result"]=="WIN").sum())
+                losses = int((official_wf_spreads["result"]=="LOSS").sum())
                 units = float(official_wf_spreads["profit_units"].sum())
                 decided = wins + losses
                 c1, c2, c3, c4 = st.columns(4)
@@ -3058,6 +3253,57 @@ if app_section == "Backtest":
                 "Promotion rule: do not move v0.5.1 to the live betting board unless spread signals "
                 "are credible across multiple unseen seasons, not just the 2025 holdout."
             )
+
+        research_df = st.session_state.get("cfb_signal_research_df", pd.DataFrame())
+        research_wf = st.session_state.get("cfb_signal_walkforward_df", pd.DataFrame())
+
+        st.markdown("### v0.6.0 Signal Research")
+        st.caption(
+            "Research mode only. Signals are ranked using development seasons only. "
+            "The holdout never affects signal direction, cutoff, or ranking."
+        )
+
+        if isinstance(research_df, pd.DataFrame) and not research_df.empty:
+            show = research_df.drop(columns=["Dev score"], errors="ignore").copy()
+            for c in ["Dev win %","Dev ROI","Holdout win %","Holdout ROI"]:
+                show[c] = show[c].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+            show["Dev corr"] = show["Dev corr"].map(lambda x: f"{x:+.3f}")
+            show["Frozen cutoff"] = show["Frozen cutoff"].map(lambda x: f"{x:.3f}")
+            show["Holdout units"] = show["Holdout units"].map(lambda x: f"{x:+.2f}")
+            st.markdown("#### Development-ranked signals → untouched holdout")
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+        if isinstance(research_wf, pd.DataFrame) and not research_wf.empty:
+            wf_show = research_wf.copy()
+            wf_show["Frozen cutoff"] = wf_show["Frozen cutoff"].map(lambda x: f"{x:.3f}")
+            wf_show["Win %"] = wf_show["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+            wf_show["Units"] = wf_show["Units"].map(lambda x: f"{x:+.2f}")
+            wf_show["ROI"] = wf_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+            st.markdown("#### Signal survival by unseen season")
+            st.dataframe(wf_show, use_container_width=True, hide_index=True)
+
+            agg = research_wf.groupby("Signal", as_index=False).agg(
+                Seasons=("Test season","nunique"),
+                Bets=("Bets","sum"),
+                Units=("Units","sum"),
+            )
+            profitable = research_wf.assign(Pos=lambda x: x["Units"] > 0).groupby("Signal")["Pos"].sum()
+            agg["Profitable unseen seasons"] = agg["Signal"].map(profitable).fillna(0).astype(int)
+            agg["ROI"] = agg["Units"] / agg["Bets"].replace(0, np.nan)
+            agg = agg.sort_values(
+                ["Profitable unseen seasons","ROI","Bets"],
+                ascending=[False,False,False]
+            )
+            agg_show = agg.copy()
+            agg_show["Units"] = agg_show["Units"].map(lambda x: f"{x:+.2f}")
+            agg_show["ROI"] = agg_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+            st.markdown("#### Multi-season survival summary")
+            st.dataframe(agg_show, use_container_width=True, hide_index=True)
+
+        st.warning(
+            "v0.6.0 does not create new official bets. A signal should only be considered for the "
+            "live model after it survives multiple unseen seasons with enough sample size."
+        )
 
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
         if len(official):
@@ -3093,7 +3339,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v051_walkforward_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v060_signal_research_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -4093,4 +4339,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.5.1-WALKFORWARD-SPREAD • Rolling unseen-season validation; totals research-only.")
+st.caption("CFB Edge • v0.6.0-SIGNAL-RESEARCH • Find football signals that survive unseen seasons before live promotion.")
