@@ -18,7 +18,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.0.0-POINT-IN-TIME-LAB"
+MODEL_VERSION = "1.0.1-PIT-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4201,6 +4201,45 @@ def ios_save_button(label, csv_text, filename):
 
 # ===== v1.0 point-in-time historical data layer =====
 
+
+def _pit_game_allowed(game, scope):
+    """
+    Point-in-Time Lab game-universe filter.
+    Uses the classifications already present on CFBD game rows and does not
+    depend on the legacy backtest helper naming.
+    """
+    if scope == "All college games":
+        return True
+
+    home_class = str(
+        game.get("homeClassification")
+        or game.get("home_classification")
+        or ""
+    ).lower()
+    away_class = str(
+        game.get("awayClassification")
+        or game.get("away_classification")
+        or ""
+    ).lower()
+
+    # CFBD game endpoint can omit classification on some historical rows.
+    # For All FBS, require both sides to be FBS when classification is known.
+    if scope == "All FBS":
+        if home_class or away_class:
+            return home_class == "fbs" and away_class == "fbs"
+        return True
+
+    # "Major FBS": use the same broad FBS universe at the data-build stage.
+    # Conference/major filtering can be applied downstream without losing rows.
+    if scope == "Major FBS":
+        if home_class or away_class:
+            return home_class == "fbs" and away_class == "fbs"
+        return True
+
+    return True
+
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_week_team_box_stats(year, week):
     """
@@ -4613,7 +4652,7 @@ def _build_point_in_time_dataset(seasons, scope, market_df, avail_df, progress=N
         season_games = [
             g for g in games or []
             if g.get("week") is not None and
-            _bt_game_allowed(g, scope)
+            _pit_game_allowed(g, scope)
         ]
         weeks = sorted({int(g.get("week")) for g in season_games if g.get("week") is not None})
 
@@ -6920,4 +6959,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.0.0-POINT-IN-TIME-LAB • Pregame-only rolling data architecture with timestamped market and availability ingestion.")
+st.caption("CFB Edge • v1.0.1-PIT-HOTFIX • Pregame-only rolling data architecture with fixed historical game-universe filtering.")
