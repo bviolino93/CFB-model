@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.8.1-SIGNAL-AUDIT"
+MODEL_VERSION = "0.9.0-CANDIDATE-VALIDATION"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -3410,6 +3410,279 @@ def _build_signal_audit_tables(classifier_rows, classifier_tests):
     tables["survival"] = pd.concat(survival, ignore_index=True) if survival else pd.DataFrame()
     return d, tables
 
+
+# ===== v0.9.0 locked candidate validation =====
+
+CANDIDATE_VERSION = "v0.9.0-candidate-validation"
+CANDIDATE_MIN_PROB = 0.56
+CANDIDATE_MAX_PROB = 0.57
+COVID_SEASON = 2020
+
+def _wilson_interval(wins, losses, z=1.96):
+    n = wins + losses
+    if n <= 0:
+        return (np.nan, np.nan)
+    phat = wins / n
+    denom = 1.0 + z*z/n
+    center = (phat + z*z/(2*n)) / denom
+    half = z*np.sqrt((phat*(1-phat)/n) + (z*z/(4*n*n))) / denom
+    return max(0.0, center-half), min(1.0, center+half)
+
+def _candidate_rows_from_classifier(rows_df):
+    if rows_df.empty:
+        return pd.DataFrame()
+    d = rows_df.copy()
+    p = pd.to_numeric(d["model_pick_prob"], errors="coerce")
+    d = d[(p >= CANDIDATE_MIN_PROB) & (p < CANDIDATE_MAX_PROB)].copy()
+    d["candidate_rule"] = "56.0%-<57.0%"
+    d["is_covid_2020"] = pd.to_numeric(d["season"], errors="coerce") == COVID_SEASON
+    return d
+
+def _candidate_stats(df, label="All"):
+    if df.empty:
+        return {
+            "Sample": label, "Bets": 0, "W-L-P": "0-0-0",
+            "Win %": np.nan, "Units": 0.0, "ROI": np.nan,
+            "Wilson low": np.nan, "Wilson high": np.nan,
+            "Edge over -110 BE": np.nan,
+        }
+
+    w = int((df["result"] == "WIN").sum())
+    l = int((df["result"] == "LOSS").sum())
+    p = int((df["result"] == "PUSH").sum())
+    decided = w + l
+    units = float(pd.to_numeric(df["profit_units"], errors="coerce").fillna(0).sum())
+    lo, hi = _wilson_interval(w, l)
+    winp = w/decided if decided else np.nan
+    be = implied_prob(-110)
+
+    return {
+        "Sample": label,
+        "Bets": len(df),
+        "W-L-P": f"{w}-{l}-{p}",
+        "Win %": winp,
+        "Units": units,
+        "ROI": units/len(df) if len(df) else np.nan,
+        "Wilson low": lo,
+        "Wilson high": hi,
+        "Edge over -110 BE": winp - be if pd.notna(winp) and be is not None else np.nan,
+    }
+
+def _candidate_season_table(candidate_df):
+    if candidate_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for season in sorted(candidate_df["season"].dropna().astype(int).unique()):
+        s = candidate_df[candidate_df["season"] == season]
+        row = _candidate_stats(s, str(season))
+        row["COVID flag"] = "COVID / separate" if season == COVID_SEASON else ""
+        rows.append(row)
+
+    # Primary aggregate explicitly excludes 2020.
+    primary = candidate_df[candidate_df["season"] != COVID_SEASON]
+    rows.append(_candidate_stats(primary, "Primary combined (ex-2020)"))
+    rows.append(_candidate_stats(candidate_df, "Combined incl. 2020"))
+    return pd.DataFrame(rows)
+
+def _candidate_era_table(candidate_df):
+    if candidate_df.empty:
+        return pd.DataFrame()
+
+    d = candidate_df.copy()
+    season = pd.to_numeric(d["season"], errors="coerce")
+    d["Era"] = np.select(
+        [
+            season.isin([2019]),
+            season.isin([2020]),
+            season.isin([2021, 2022]),
+            season.isin([2023, 2024, 2025]),
+        ],
+        [
+            "2019 pre-COVID test",
+            "2020 COVID",
+            "2021-22 post-COVID",
+            "2023-25 recent",
+        ],
+        default="Other"
+    )
+
+    rows = []
+    for era, g in d.groupby("Era", observed=False):
+        rows.append(_candidate_stats(g, era))
+    return pd.DataFrame(rows)
+
+def _candidate_side_table(candidate_df):
+    if candidate_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for col, values in [
+        ("side", ["home", "away"]),
+    ]:
+        for value in values:
+            g = candidate_df[candidate_df[col] == value]
+            if not g.empty:
+                rows.append(_candidate_stats(g, value.title()))
+
+    # Favorite / underdog from selected side relative to home spread.
+    if "market_home_spread" in candidate_df.columns:
+        d = candidate_df.copy()
+        hs = pd.to_numeric(d["market_home_spread"], errors="coerce")
+        is_fav = np.where(d["side"] == "home", hs < 0, hs > 0)
+        d["candidate_favdog"] = np.where(is_fav, "Favorite", "Underdog")
+        for value, g in d.groupby("candidate_favdog", observed=False):
+            rows.append(_candidate_stats(g, value))
+
+    return pd.DataFrame(rows)
+
+def _candidate_leave_one_season_out(candidate_df):
+    """
+    Stress test the locked candidate's dependence on any one non-COVID season.
+    This is not model refitting; it is robustness reporting only.
+    """
+    if candidate_df.empty:
+        return pd.DataFrame()
+
+    base = candidate_df[candidate_df["season"] != COVID_SEASON].copy()
+    seasons = sorted(base["season"].dropna().astype(int).unique())
+    rows = []
+
+    for omitted in seasons:
+        g = base[base["season"] != omitted]
+        row = _candidate_stats(g, f"Excluding {omitted}")
+        row["Omitted season"] = omitted
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+def _run_classifier_walkforward_excluding_2020(feature_df):
+    """
+    COVID-excluded training stress test:
+      - 2020 is never used as a training season
+      - 2020 is not tested
+      - every other test year is predicted only from earlier non-2020 seasons
+
+    This addresses the concern that the unusual 2020 season could distort
+    parameters carried into 2021+.
+    """
+    d = _classifier_feature_frame(feature_df)
+    seasons = sorted(d["season"].dropna().astype(int).unique().tolist())
+    test_seasons = [s for s in seasons[1:] if s != COVID_SEASON]
+
+    all_tests = []
+    all_rows = []
+    diagnostics = {}
+
+    for test_season in test_seasons:
+        train = d[(d["season"] < test_season) & (d["season"] != COVID_SEASON)].copy()
+        test = d[d["season"] == test_season].copy()
+        train_seasons = sorted(train["season"].dropna().astype(int).unique().tolist())
+
+        if train.empty or test.empty:
+            continue
+
+        if len(train_seasons) <= 1:
+            l2, cv = 10.0, pd.DataFrame()
+        else:
+            # Hyperparameter choice remains fully inside the non-COVID development set.
+            l2, cv = _choose_logistic_l2(train, train_seasons)
+
+        model = _logistic_fit(train, CLASSIFIER_FEATURES, "home_cover_target", l2=l2)
+        test["p_home_cover"] = _logistic_predict(model, test)
+        test["p_away_cover"] = 1.0 - test["p_home_cover"]
+
+        diagnostics[test_season] = {
+            "test_season": int(test_season),
+            "train_seasons": train_seasons,
+            "l2": float(l2),
+            "cv": cv,
+            "importance": _classifier_importance(model),
+            "n_train": 0 if model is None else model["n"],
+            "covid_excluded_training": True,
+        }
+
+        all_tests.append(test)
+        rr = _classifier_research_rows(test)
+        if not rr.empty:
+            all_rows.append(rr)
+
+    tests_df = pd.concat(all_tests, ignore_index=True) if all_tests else pd.DataFrame()
+    rows_df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+    return tests_df, rows_df, diagnostics
+
+def _candidate_validation_bundle(classifier_rows, classifier_tests, feature_df):
+    """
+    Produce two independent stress-test views of the same predeclared rule:
+
+    A) Standard rolling walk-forward, with 2020 reported separately.
+    B) COVID-excluded-training walk-forward, where 2020 cannot influence 2021+.
+    """
+    standard_candidate = _candidate_rows_from_classifier(classifier_rows)
+
+    covid_tests, covid_rows, covid_diag = _run_classifier_walkforward_excluding_2020(feature_df)
+    covid_candidate = _candidate_rows_from_classifier(covid_rows)
+
+    bundle = {
+        "standard_candidate": standard_candidate,
+        "standard_seasons": _candidate_season_table(standard_candidate),
+        "standard_eras": _candidate_era_table(standard_candidate),
+        "standard_sides": _candidate_side_table(standard_candidate),
+        "standard_loso": _candidate_leave_one_season_out(standard_candidate),
+
+        "covid_excluded_tests": covid_tests,
+        "covid_excluded_candidate": covid_candidate,
+        "covid_excluded_seasons": _candidate_season_table(covid_candidate),
+        "covid_excluded_eras": _candidate_era_table(covid_candidate),
+        "covid_excluded_sides": _candidate_side_table(covid_candidate),
+        "covid_excluded_loso": _candidate_leave_one_season_out(covid_candidate),
+        "covid_excluded_diag": covid_diag,
+    }
+    return bundle
+
+def _candidate_pass_fail(candidate_df, min_bets=150, min_positive_seasons=4):
+    """
+    Conservative, predeclared promotion screen.
+    This is a research gate, not a claim of statistical certainty.
+    """
+    if candidate_df.empty:
+        return "FAIL", "No candidate bets."
+
+    d = candidate_df[candidate_df["season"] != COVID_SEASON].copy()
+    stats = _candidate_stats(d, "Primary")
+    seasons = sorted(d["season"].dropna().astype(int).unique())
+    positive = 0
+    qualifying = 0
+
+    for season in seasons:
+        s = d[d["season"] == season]
+        if len(s) < 12:
+            continue
+        qualifying += 1
+        roi = float(pd.to_numeric(s["profit_units"], errors="coerce").fillna(0).sum()) / len(s)
+        if roi > 0:
+            positive += 1
+
+    checks = [
+        len(d) >= min_bets,
+        pd.notna(stats["Win %"]) and stats["Win %"] > implied_prob(-110),
+        stats["ROI"] is not None and pd.notna(stats["ROI"]) and stats["ROI"] > 0,
+        qualifying >= min_positive_seasons,
+        positive >= min_positive_seasons,
+    ]
+
+    if all(checks):
+        return "PASS TO LIVE-CANDIDATE REVIEW", (
+            f"{len(d)} ex-2020 bets; {positive}/{qualifying} qualifying seasons positive; "
+            f"combined ROI {stats['ROI']*100:+.1f}%."
+        )
+
+    return "RESEARCH ONLY", (
+        f"{len(d)} ex-2020 bets; {positive}/{qualifying} qualifying seasons positive; "
+        f"combined ROI {stats['ROI']*100:+.1f}% if available."
+    )
+
+# ===== End v0.9.0 locked candidate validation =====
+
 # ===== End v0.8.1 signal audit =====
 
 # ===== End v0.8.0 cover classification model =====
@@ -3945,7 +4218,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Model validation • v0.8.1 signal audit")
+    st.markdown("### Model validation • v0.9 locked candidate")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -3957,8 +4230,8 @@ if app_section == "Backtest":
     with c1:
         bt_seasons = st.multiselect(
             "Seasons",
-            [2021, 2022, 2023, 2024, 2025],
-            default=[2022, 2023, 2024, 2025],
+            [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+            default=[2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
         )
         bt_scope = st.selectbox("Game universe", ["Major FBS", "All FBS", "All college games"], index=0)
     with c2:
@@ -4179,6 +4452,10 @@ if app_section == "Backtest":
 
         audit_rows, audit_tables = _build_signal_audit_tables(classifier_rows, classifier_tests)
 
+        candidate_validation = _candidate_validation_bundle(
+            classifier_rows, classifier_tests, feature_df
+        )
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -4208,6 +4485,7 @@ if app_section == "Backtest":
 
         st.session_state["cfb_signal_audit_rows_df"] = audit_rows
         st.session_state["cfb_signal_audit_tables"] = audit_tables
+        st.session_state["cfb_candidate_validation"] = candidate_validation
 
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
@@ -4339,6 +4617,125 @@ if app_section == "Backtest":
             st.info(
                 "Promotion rule: do not move v0.5.1 to the live betting board unless spread signals "
                 "are credible across multiple unseen seasons, not just the 2025 holdout."
+            )
+
+        candidate_validation = st.session_state.get("cfb_candidate_validation", {})
+
+        st.markdown("### v0.9.0 Locked Candidate Validation • 56–57%")
+        st.caption(
+            "The candidate rule is frozen before this test: select only classifier probabilities "
+            "56.0% ≤ P < 57.0%. No probability threshold or subgroup is optimized here. "
+            "The primary aggregate excludes 2020, and a second stress test removes 2020 from "
+            "training entirely."
+        )
+
+        if isinstance(candidate_validation, dict) and candidate_validation:
+            std = candidate_validation.get("standard_candidate", pd.DataFrame())
+            std_seasons = candidate_validation.get("standard_seasons", pd.DataFrame())
+            std_eras = candidate_validation.get("standard_eras", pd.DataFrame())
+            std_sides = candidate_validation.get("standard_sides", pd.DataFrame())
+            std_loso = candidate_validation.get("standard_loso", pd.DataFrame())
+
+            covid = candidate_validation.get("covid_excluded_candidate", pd.DataFrame())
+            covid_seasons = candidate_validation.get("covid_excluded_seasons", pd.DataFrame())
+            covid_eras = candidate_validation.get("covid_excluded_eras", pd.DataFrame())
+            covid_sides = candidate_validation.get("covid_excluded_sides", pd.DataFrame())
+            covid_loso = candidate_validation.get("covid_excluded_loso", pd.DataFrame())
+
+            gate, gate_note = _candidate_pass_fail(covid if isinstance(covid, pd.DataFrame) else pd.DataFrame())
+
+            if isinstance(std, pd.DataFrame) and not std.empty:
+                primary = std[std["season"] != COVID_SEASON]
+                s = _candidate_stats(primary, "Primary")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Ex-2020 bets", f"{s['Bets']}")
+                c2.metric("Record", s["W-L-P"])
+                c3.metric("Win %", f"{100*s['Win %']:.1f}%" if pd.notna(s["Win %"]) else "—")
+                c4.metric("ROI", f"{100*s['ROI']:+.1f}%" if pd.notna(s["ROI"]) else "—")
+
+            if gate == "PASS TO LIVE-CANDIDATE REVIEW":
+                st.success(f"Candidate gate: {gate}. {gate_note}")
+            else:
+                st.warning(f"Candidate gate: {gate}. {gate_note}")
+
+            def _format_candidate_table(df):
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    return df
+                x = df.copy()
+                for c in ["Win %","ROI","Wilson low","Wilson high","Edge over -110 BE"]:
+                    if c in x.columns:
+                        x[c] = x[c].map(lambda v: f"{100*v:.1f}%" if pd.notna(v) else "—")
+                if "Units" in x.columns:
+                    x["Units"] = x["Units"].map(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+                return x
+
+            st.markdown("#### Standard rolling walk-forward")
+            st.caption("2020 is shown separately and excluded from the primary combined result.")
+            if isinstance(std_seasons, pd.DataFrame) and not std_seasons.empty:
+                st.dataframe(_format_candidate_table(std_seasons), use_container_width=True, hide_index=True)
+
+            st.markdown("#### COVID-excluded-training stress test")
+            st.caption(
+                "2020 is never used for fitting and is never a test season. This checks whether "
+                "the unusual 2020 season distorted parameters used in 2021 and later."
+            )
+            if isinstance(covid_seasons, pd.DataFrame) and not covid_seasons.empty:
+                st.dataframe(_format_candidate_table(covid_seasons), use_container_width=True, hide_index=True)
+
+            with st.expander("Era stability", expanded=False):
+                if isinstance(std_eras, pd.DataFrame) and not std_eras.empty:
+                    st.markdown("**Standard walk-forward**")
+                    st.dataframe(_format_candidate_table(std_eras), use_container_width=True, hide_index=True)
+                if isinstance(covid_eras, pd.DataFrame) and not covid_eras.empty:
+                    st.markdown("**COVID-excluded training**")
+                    st.dataframe(_format_candidate_table(covid_eras), use_container_width=True, hide_index=True)
+
+            with st.expander("Home/Away and Favorite/Underdog diagnostics", expanded=False):
+                if isinstance(covid_sides, pd.DataFrame) and not covid_sides.empty:
+                    st.dataframe(_format_candidate_table(covid_sides), use_container_width=True, hide_index=True)
+
+            with st.expander("Leave-one-season-out robustness", expanded=False):
+                if isinstance(covid_loso, pd.DataFrame) and not covid_loso.empty:
+                    st.dataframe(_format_candidate_table(covid_loso), use_container_width=True, hide_index=True)
+
+            # Exports: the three files we actually need for promotion review.
+            if isinstance(covid, pd.DataFrame) and not covid.empty:
+                ios_save_button(
+                    "Save v0.9 Candidate Bets CSV",
+                    covid.to_csv(index=False),
+                    f"cfb_v090_candidate_bets_{min(cfg.get('seasons',[2018]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                )
+
+            if isinstance(covid_seasons, pd.DataFrame) and not covid_seasons.empty:
+                ios_save_button(
+                    "Save v0.9 Season Validation CSV",
+                    covid_seasons.to_csv(index=False),
+                    f"cfb_v090_candidate_seasons_{min(cfg.get('seasons',[2018]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                )
+
+            stress_parts = []
+            for section, frame in [
+                ("standard_eras", std_eras),
+                ("covid_excluded_eras", covid_eras),
+                ("covid_excluded_sides", covid_sides),
+                ("covid_excluded_leave_one_out", covid_loso),
+            ]:
+                if isinstance(frame, pd.DataFrame) and not frame.empty:
+                    z = frame.copy()
+                    z.insert(0, "Section", section)
+                    stress_parts.append(z)
+            stress_export = pd.concat(stress_parts, ignore_index=True, sort=False) if stress_parts else pd.DataFrame()
+            if not stress_export.empty:
+                ios_save_button(
+                    "Save v0.9 Stress Tests CSV",
+                    stress_export.to_csv(index=False),
+                    f"cfb_v090_candidate_stress_{min(cfg.get('seasons',[2018]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                )
+
+            st.info(
+                "Primary promotion logic is intentionally conservative. The locked 56–57% rule "
+                "must survive the longer history and the COVID-excluded-training test before it "
+                "can be considered for the live board."
             )
 
         audit_rows = st.session_state.get("cfb_signal_audit_rows_df", pd.DataFrame())
@@ -4724,7 +5121,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v081_signal_audit_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v090_candidate_validation_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -5724,4 +6121,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.8.1-SIGNAL-AUDIT • 56–58% classifier bucket audited across market context and matchup subgroups.")
+st.caption("CFB Edge • v0.9.0-CANDIDATE-VALIDATION • Locked 56–57% ATS candidate stress-tested over longer history with 2020 handled separately.")
