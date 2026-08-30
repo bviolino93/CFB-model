@@ -5,7 +5,6 @@ import numpy as np
 import base64
 import html
 import json
-import re
 import streamlit.components.v1 as components
 from datetime import date
 
@@ -18,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.0.1-PIT-HOTFIX"
+MODEL_VERSION = "1.1.0-ALL-MARKET"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1242,57 +1241,241 @@ def juice_thresholds(odds):
     if odds >= -249: return .05, .08
     return .07, .12
 
-def grade(prob, odds, confidence=75, market_type="side", projection_gap=None, week=1):
+# ===== v1.0 ROBUST LIVE guardrails =====
+# Historical research through 2019-2025 did not establish a durable ATS edge.
+# v1.0 therefore separates "model opinion" from "official bet" and refuses to
+# manufacture action. The purpose is to maximize decision quality, not bet count.
+
+ROBUST_LIVE_MIN_CONFIDENCE = 78
+ROBUST_LIVE_MIN_EDGE = 0.045       # 4.5 percentage points above implied probability
+ROBUST_LIVE_MIN_EV = 0.075         # +7.5% expected value
+ROBUST_LIVE_MAX_SIDE_GAP = 8.0     # very large model/market gaps are review-only
+ROBUST_LIVE_MAX_TOTAL_GAP = 9.0
+ROBUST_LIVE_EARLY_WEEKS = {1, 2, 3}
+ROBUST_LIVE_EARLY_EXTRA_EDGE = 0.015
+ROBUST_LIVE_EARLY_EXTRA_EV = 0.020
+
+def robust_live_grade(prob, odds, confidence, market_type="spread",
+                      model_line=None, market_line=None, week=None):
     """
-    v0.3.2 guarded betting grade.
-    - Higher thresholds than v0.3.1.
-    - Totals require more evidence.
-    - Weeks 1-2 require extra edge/EV.
-    - Very large raw model/market gaps are review-only until calibrated.
+    Production decision layer.
+    Returns one of: BET / LEAN / PASS / REVIEW.
+
+    BET is intentionally rare because the historical research did not prove
+    a stable automated edge. Large disagreements are not treated as stronger
+    evidence; past testing showed the opposite.
+    """
+    try:
+        p = float(prob)
+        o = int(odds)
+        conf = float(confidence)
+    except Exception:
+        return "PASS", np.nan, np.nan, "invalid input"
+
+    imp = implied_prob(o)
+    ev = expected_value(p, o)
+    if imp is None or ev is None:
+        return "PASS", np.nan, np.nan, "invalid odds"
+
+    edge = p - imp
+    min_edge = ROBUST_LIVE_MIN_EDGE
+    min_ev = ROBUST_LIVE_MIN_EV
+
+    if week is not None:
+        try:
+            if int(week) in ROBUST_LIVE_EARLY_WEEKS:
+                min_edge += ROBUST_LIVE_EARLY_EXTRA_EDGE
+                min_ev += ROBUST_LIVE_EARLY_EXTRA_EV
+        except Exception:
+            pass
+
+    # Totals remain research-only because they were consistently weak.
+    if str(market_type).lower() == "total":
+        if edge > 0 and ev > 0:
+            return "LEAN", edge, ev, "totals remain research-only"
+        return "PASS", edge, ev, "totals remain research-only"
+
+    # Historical ML quality was not trustworthy enough for automatic promotion.
+    if str(market_type).lower() in {"ml", "moneyline", "money line"}:
+        if edge >= min_edge and ev >= min_ev and conf >= ROBUST_LIVE_MIN_CONFIDENCE:
+            return "REVIEW", edge, ev, "moneyline requires manual review"
+        if edge > 0 and ev > 0:
+            return "LEAN", edge, ev, "moneyline requires manual review"
+        return "PASS", edge, ev, "moneyline requires manual review"
+
+    # Extreme disagreement is review-only, not an automatic bet.
+    if model_line is not None and market_line is not None:
+        try:
+            gap = abs(float(model_line) - float(market_line))
+            cap = ROBUST_LIVE_MAX_TOTAL_GAP if str(market_type).lower() == "total" else ROBUST_LIVE_MAX_SIDE_GAP
+            if gap >= cap:
+                if edge > 0 and ev > 0:
+                    return "REVIEW", edge, ev, f"extreme model/market gap ({gap:.1f})"
+                return "PASS", edge, ev, f"extreme model/market gap ({gap:.1f})"
+        except Exception:
+            pass
+
+    if conf >= ROBUST_LIVE_MIN_CONFIDENCE and edge >= min_edge and ev >= min_ev:
+        return "BET", edge, ev, "passes robust production gate"
+    if edge >= 0.02 and ev >= 0.03:
+        return "LEAN", edge, ev, "positive but below production gate"
+    return "PASS", edge, ev, "insufficient edge"
+
+def robust_live_stake(verdict, edge, confidence, bankroll_units=100.0):
+    """
+    Conservative flat/ramped sizing. No Kelly escalation.
+    One unit = 1% of the user's designated betting bankroll.
+    """
+    if verdict != "BET":
+        return 0.0
+    try:
+        e = float(edge)
+        c = float(confidence)
+    except Exception:
+        return 0.0
+
+    # 0.5u base, 0.75u for stronger qualified edges, 1.0u max.
+    stake = 0.50
+    if e >= 0.060 and c >= 82:
+        stake = 0.75
+    if e >= 0.080 and c >= 86:
+        stake = 1.00
+    return stake
+
+# ===== End v1.0 ROBUST LIVE guardrails =====
+
+
+def grade(prob, odds, confidence=75, market_type="spread", projection_gap=None, week=1):
+    """
+    v1.1 unified all-market grader.
+
+    Philosophy:
+    - Produce a model opinion for spreads, moneylines and totals.
+    - Preserve the lessons from historical testing by making totals and
+      long-price moneylines harder to promote than spreads.
+    - Large model/market disagreements are NOT treated as stronger evidence.
+    - LEAN is still a real directional estimate; BET requires a much higher bar.
     """
     if not _valid_american_odds(odds):
         return "PASS", 0.0, 0.0, None
+
+    market_type = str(market_type or "spread").lower()
     imp = implied_prob(odds)
-    edge = prob - imp
+    if imp is None:
+        return "PASS", 0.0, 0.0, None
+
+    edge = float(prob) - float(imp)
     ev = expected_value(prob, odds)
-    me, mv = juice_thresholds(odds)
+    if ev is None:
+        return "PASS", edge, 0.0, imp
 
-    # Base hurdle increase: the opening 1-5 card showed that the prior mapping
-    # from projection -> probability -> BET was too aggressive.
-    me += 0.015
-    mv += 0.025
-
-    if market_type == "total":
-        me += 0.010
-        mv += 0.015
-
+    conf = float(confidence)
     w = _week_num(week)
-    if w <= 1:
-        me += 0.010
-        mv += 0.015
-    elif w == 2:
-        me += 0.005
-        mv += 0.010
 
-    # Extreme disagreements are not promoted to BET solely because the normal
-    # distribution creates a large probability edge. Keep them review-only.
+    # Fixed, market-specific production hurdles.
+    # Spreads have the best historical support of the three.
+    if market_type in {"spread", "side"}:
+        bet_conf = 78
+        bet_edge = 0.045
+        bet_ev = 0.075
+        strong_conf = 84
+        strong_edge = 0.065
+        strong_ev = 0.110
+        review_gap = 8.0
+
+    # Totals remain usable, but require substantially more evidence because
+    # historical total performance was materially weaker.
+    elif market_type == "total":
+        bet_conf = 82
+        bet_edge = 0.065
+        bet_ev = 0.100
+        strong_conf = 87
+        strong_edge = 0.085
+        strong_ev = 0.140
+        review_gap = 9.0
+
+    # Moneylines use stricter price-aware hurdles.
+    elif market_type in {"moneyline", "ml", "money line"}:
+        bet_conf = 80
+        bet_edge = 0.050
+        bet_ev = 0.085
+        strong_conf = 85
+        strong_edge = 0.070
+        strong_ev = 0.125
+        review_gap = None
+
+        # Extra skepticism for very large underdogs / heavy favorite prices.
+        o = int(odds)
+        if o >= 200:
+            bet_edge += 0.015
+            bet_ev += 0.025
+            strong_edge += 0.020
+            strong_ev += 0.030
+        elif o <= -180:
+            bet_edge += 0.010
+            bet_ev += 0.020
+            strong_edge += 0.015
+            strong_ev += 0.025
+
+    else:
+        bet_conf = 80
+        bet_edge = 0.055
+        bet_ev = 0.090
+        strong_conf = 85
+        strong_edge = 0.075
+        strong_ev = 0.130
+        review_gap = None
+
+    # Early-season penalty across all markets.
+    if w <= 3:
+        bet_edge += 0.015
+        bet_ev += 0.020
+        strong_edge += 0.015
+        strong_ev += 0.020
+
+        # Totals get one more notch of caution in Weeks 1-3.
+        if market_type == "total":
+            bet_edge += 0.005
+            bet_ev += 0.010
+            strong_edge += 0.005
+            strong_ev += 0.010
+
+    # Extreme model-vs-market disagreement was not a positive historical
+    # signal. Cap it at LEAN rather than turning it into an automatic bet.
     review_only = False
-    if projection_gap is not None:
-        gap = abs(float(projection_gap))
-        if market_type == "total" and gap >= 10.0:
-            review_only = True
-        elif market_type in {"side", "spread"} and gap >= 9.0:
-            review_only = True
+    if projection_gap is not None and review_gap is not None:
+        try:
+            if abs(float(projection_gap)) >= review_gap:
+                review_only = True
+        except Exception:
+            pass
 
-    if (not review_only) and confidence >= 80 and edge >= me + .025 and ev >= mv + .04:
+    # Historical ML data was particularly suspect at very long dog prices.
+    # Still give the directional estimate, but do not auto-promote >= +300.
+    if market_type in {"moneyline", "ml", "money line"} and int(odds) >= 300:
+        review_only = True
+
+    if (
+        not review_only
+        and conf >= strong_conf
+        and edge >= strong_edge
+        and ev >= strong_ev
+    ):
         verdict = "STRONG BET"
-    elif (not review_only) and confidence >= 72 and edge >= me and ev >= mv:
+    elif (
+        not review_only
+        and conf >= bet_conf
+        and edge >= bet_edge
+        and ev >= bet_ev
+    ):
         verdict = "BET"
     elif edge > 0 and ev > 0:
         verdict = "LEAN"
     else:
         verdict = "PASS"
+
     return verdict, edge, ev, imp
+
 
 def fetch_lines(api_key, year=None, week=None, game_id=None, provider=None):
     params = {"seasonType": "regular"}
@@ -3709,6 +3892,12 @@ st.set_page_config(
 )
 
 # ---------- Professional app theme ----------
+
+st.info(
+    "v1.1 ALL-MARKET: the model now gives estimates for spreads, moneylines and totals. "
+    "Spreads retain the lowest promotion hurdle; totals and moneylines require stronger evidence "
+    "because their historical validation was weaker."
+)
 st.markdown("""
 <style>
     /* App shell */
@@ -4198,580 +4387,6 @@ def ios_save_button(label, csv_text, filename):
     )
 
 
-
-# ===== v1.0 point-in-time historical data layer =====
-
-
-def _pit_game_allowed(game, scope):
-    """
-    Point-in-Time Lab game-universe filter.
-    Uses the classifications already present on CFBD game rows and does not
-    depend on the legacy backtest helper naming.
-    """
-    if scope == "All college games":
-        return True
-
-    home_class = str(
-        game.get("homeClassification")
-        or game.get("home_classification")
-        or ""
-    ).lower()
-    away_class = str(
-        game.get("awayClassification")
-        or game.get("away_classification")
-        or ""
-    ).lower()
-
-    # CFBD game endpoint can omit classification on some historical rows.
-    # For All FBS, require both sides to be FBS when classification is known.
-    if scope == "All FBS":
-        if home_class or away_class:
-            return home_class == "fbs" and away_class == "fbs"
-        return True
-
-    # "Major FBS": use the same broad FBS universe at the data-build stage.
-    # Conference/major filtering can be applied downstream without losing rows.
-    if scope == "Major FBS":
-        if home_class or away_class:
-            return home_class == "fbs" and away_class == "fbs"
-        return True
-
-    return True
-
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_week_team_box_stats(year, week):
-    """
-    One CFBD request per week. These are completed-game team box scores.
-    v1.0 only uses rows from weeks strictly before the game being modeled.
-    """
-    return cfbd_get(
-        "/games/teams",
-        API_KEY,
-        {
-            "year": int(year),
-            "week": int(week),
-            "seasonType": "regular",
-            "classification": "fbs",
-        },
-    )
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_core_ratings(year):
-    """
-    CFBD CORE includes throughWeek metadata. We only select a row whose
-    throughWeek is strictly earlier than the target game week.
-    Note: CFBD describes historical CORE as retrospective methodology, so this
-    is useful as a weekly-snapshot feature but not claimed as a literal vintage.
-    """
-    try:
-        return cfbd_get("/ratings/core", API_KEY, {"year": int(year)})
-    except Exception:
-        return []
-
-def _pt_num(v):
-    if v is None:
-        return np.nan
-    if isinstance(v, (int, float, np.number)):
-        try:
-            return float(v)
-        except Exception:
-            return np.nan
-    s = str(v).strip().replace(",", "")
-    if not s:
-        return np.nan
-    # percentages such as "42.9"
-    try:
-        return float(s.replace("%", ""))
-    except Exception:
-        pass
-    # ratios such as "6-13"
-    if "-" in s:
-        try:
-            a, b = s.split("-", 1)
-            a, b = float(a), float(b)
-            return a / b if b else np.nan
-        except Exception:
-            return np.nan
-    return np.nan
-
-def _pt_pct(v):
-    if v is None:
-        return np.nan
-    s = str(v).strip()
-    if "-" in s:
-        try:
-            a, b = s.split("-", 1)
-            a, b = float(a), float(b)
-            return a / b if b else np.nan
-        except Exception:
-            return np.nan
-    x = _pt_num(v)
-    if pd.isna(x):
-        return np.nan
-    if x > 1.0:
-        return x / 100.0
-    return x
-
-def _norm_stat_name(x):
-    return re.sub(r"[^a-z0-9]+", "", str(x or "").lower())
-
-def _box_stat_dict(team_obj):
-    out = {}
-    for s in team_obj.get("stats") or []:
-        key = _norm_stat_name(s.get("category"))
-        if key:
-            out[key] = s.get("stat")
-    return out
-
-def _first_stat(stats, names, pct=False):
-    for name in names:
-        k = _norm_stat_name(name)
-        if k in stats:
-            return _pt_pct(stats[k]) if pct else _pt_num(stats[k])
-    return np.nan
-
-def _parse_team_box_row(game_id, season, week, team_obj):
-    s = _box_stat_dict(team_obj)
-
-    total_yards = _first_stat(s, ["totalYards", "total yards"])
-    rush_yards = _first_stat(s, ["rushingYards", "rushing yards"])
-    pass_yards = _first_stat(s, ["netPassingYards", "passingYards", "net passing yards"])
-    first_downs = _first_stat(s, ["firstDowns", "first downs"])
-    turnovers = _first_stat(s, ["turnovers"])
-    plays = _first_stat(s, ["totalPlays", "plays", "total plays"])
-    ypp = _first_stat(s, ["yardsPerPlay", "yards per play"])
-    third = _first_stat(s, ["thirdDownEff", "thirdDownEfficiency", "third down efficiency"], pct=True)
-    fourth = _first_stat(s, ["fourthDownEff", "fourthDownEfficiency", "fourth down efficiency"], pct=True)
-    penalties = _first_stat(s, ["penalties"])
-    sacks = _first_stat(s, ["sacks"])
-    tackles_for_loss = _first_stat(s, ["tacklesForLoss", "tackles for loss"])
-
-    if pd.isna(ypp) and pd.notna(total_yards) and pd.notna(plays) and plays > 0:
-        ypp = total_yards / plays
-
-    return {
-        "game_id": game_id,
-        "season": int(season),
-        "week": int(week),
-        "team": team_obj.get("team"),
-        "home_away": team_obj.get("homeAway"),
-        "points": _pt_num(team_obj.get("points")),
-        "total_yards": total_yards,
-        "rush_yards": rush_yards,
-        "pass_yards": pass_yards,
-        "plays": plays,
-        "yards_per_play": ypp,
-        "first_downs": first_downs,
-        "turnovers": turnovers,
-        "third_down_pct": third,
-        "fourth_down_pct": fourth,
-        "penalties": penalties,
-        "sacks": sacks,
-        "tackles_for_loss": tackles_for_loss,
-    }
-
-def _collect_season_team_boxes(year, weeks):
-    rows = []
-    failures = []
-    for wk in sorted(set(int(w) for w in weeks if pd.notna(w))):
-        try:
-            payload = get_week_team_box_stats(year, wk)
-        except Exception as e:
-            failures.append({"season": year, "week": wk, "error": str(e)})
-            continue
-        for g in payload or []:
-            gid = g.get("id")
-            for t in g.get("teams") or []:
-                rows.append(_parse_team_box_row(gid, year, wk, t))
-    return pd.DataFrame(rows), pd.DataFrame(failures)
-
-def _rolling_team_features(box_df):
-    """
-    Build snapshots after each completed game. A target game in Week N will
-    read only snapshots from weeks < N.
-    """
-    if box_df.empty:
-        return pd.DataFrame()
-
-    d = box_df.copy()
-    numeric = [
-        "points","total_yards","rush_yards","pass_yards","plays","yards_per_play",
-        "first_downs","turnovers","third_down_pct","fourth_down_pct","penalties",
-        "sacks","tackles_for_loss"
-    ]
-    for c in numeric:
-        d[c] = pd.to_numeric(d[c], errors="coerce")
-    d = d.sort_values(["season","team","week","game_id"])
-
-    out = []
-    for (season, team), g in d.groupby(["season","team"], dropna=False):
-        g = g.sort_values(["week","game_id"]).reset_index(drop=True)
-        for i in range(len(g)):
-            hist = g.iloc[:i]
-            row = {
-                "season": season,
-                "team": team,
-                "through_week": int(g.iloc[i]["week"]) - 1,
-                "next_game_week": int(g.iloc[i]["week"]),
-                "pregame_games": len(hist),
-            }
-            for c in numeric:
-                vals = pd.to_numeric(hist[c], errors="coerce")
-                row[f"pregame_{c}_avg"] = float(vals.mean()) if vals.notna().any() else np.nan
-                if len(hist) >= 3:
-                    recent = vals.tail(3)
-                    row[f"pregame_{c}_last3"] = float(recent.mean()) if recent.notna().any() else np.nan
-                else:
-                    row[f"pregame_{c}_last3"] = np.nan
-            out.append(row)
-
-        # Also add a post-last-game snapshot usable for later weeks.
-        if len(g):
-            hist = g
-            row = {
-                "season": season,
-                "team": team,
-                "through_week": int(g.iloc[-1]["week"]),
-                "next_game_week": int(g.iloc[-1]["week"]) + 1,
-                "pregame_games": len(hist),
-            }
-            for c in numeric:
-                vals = pd.to_numeric(hist[c], errors="coerce")
-                row[f"pregame_{c}_avg"] = float(vals.mean()) if vals.notna().any() else np.nan
-                recent = vals.tail(3)
-                row[f"pregame_{c}_last3"] = float(recent.mean()) if len(hist) >= 3 and recent.notna().any() else np.nan
-            out.append(row)
-
-    return pd.DataFrame(out)
-
-def _lookup_pregame_snapshot(roll_df, season, team, week):
-    if roll_df.empty or not team:
-        return {}
-    d = roll_df[
-        (roll_df["season"] == int(season)) &
-        (roll_df["team"] == team) &
-        (roll_df["through_week"] < int(week))
-    ]
-    if d.empty:
-        return {}
-    return d.sort_values("through_week").iloc[-1].to_dict()
-
-def _core_snapshot_map(core_rows):
-    by_team = {}
-    for r in core_rows or []:
-        team = r.get("team")
-        wk = r.get("throughWeek")
-        if not team or wk is None:
-            continue
-        try:
-            wk = int(wk)
-        except Exception:
-            continue
-        by_team.setdefault(team, []).append(r)
-    for team in by_team:
-        by_team[team].sort(key=lambda r: int(r.get("throughWeek") or -1))
-    return by_team
-
-def _lookup_core(core_map, team, game_week):
-    rows = core_map.get(team, [])
-    eligible = []
-    for r in rows:
-        try:
-            if int(r.get("throughWeek")) < int(game_week):
-                eligible.append(r)
-        except Exception:
-            continue
-    if not eligible:
-        return {}
-    return eligible[-1]
-
-def _read_uploaded_csv(uploaded):
-    if uploaded is None:
-        return pd.DataFrame()
-    try:
-        uploaded.seek(0)
-    except Exception:
-        pass
-    return pd.read_csv(uploaded)
-
-def _prepare_market_history(df):
-    """
-    Supported columns:
-      game_id, snapshot_time, provider, home_spread, total, home_ml, away_ml
-    Extra columns are preserved.
-    """
-    if df.empty:
-        return df
-    d = df.copy()
-    if "game_id" not in d.columns or "snapshot_time" not in d.columns:
-        return pd.DataFrame()
-    d["game_id"] = pd.to_numeric(d["game_id"], errors="coerce")
-    d["snapshot_time"] = pd.to_datetime(d["snapshot_time"], utc=True, errors="coerce")
-    for c in ["home_spread","total","home_ml","away_ml"]:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
-    return d.dropna(subset=["game_id","snapshot_time"])
-
-def _market_snapshot_features(market_df, game_id, kickoff):
-    if market_df.empty:
-        return {
-            "market_history_source": "none",
-            "market_snapshot_count": 0,
-        }
-    gid = pd.to_numeric(pd.Series([game_id]), errors="coerce").iloc[0]
-    if pd.isna(gid):
-        return {"market_history_source": "none", "market_snapshot_count": 0}
-    g = market_df[market_df["game_id"] == gid].copy()
-    if g.empty:
-        return {"market_history_source": "none", "market_snapshot_count": 0}
-
-    ko = pd.to_datetime(kickoff, utc=True, errors="coerce")
-    if pd.notna(ko):
-        g = g[g["snapshot_time"] < ko]
-    if g.empty:
-        return {"market_history_source": "none", "market_snapshot_count": 0}
-
-    # Median across providers at each timestamp, then first/latest timestamps.
-    cols = [c for c in ["home_spread","total","home_ml","away_ml"] if c in g.columns]
-    snap = g.groupby("snapshot_time", as_index=False)[cols].median(numeric_only=True).sort_values("snapshot_time")
-    first = snap.iloc[0]
-    last = snap.iloc[-1]
-    out = {
-        "market_history_source": "uploaded_snapshots",
-        "market_snapshot_count": len(snap),
-        "market_open_time": first["snapshot_time"],
-        "market_latest_time": last["snapshot_time"],
-    }
-    for c in cols:
-        out[f"open_{c}"] = first.get(c, np.nan)
-        out[f"latest_{c}"] = last.get(c, np.nan)
-        a, b = first.get(c, np.nan), last.get(c, np.nan)
-        out[f"move_{c}"] = (b-a) if pd.notna(a) and pd.notna(b) else np.nan
-    return out
-
-def _prepare_availability(df):
-    """
-    Supported columns:
-      game_id, snapshot_time, team, player, position, status, snap_share, impact_rating
-
-    impact_rating is optional and user/provider-defined. v1.0 does not invent
-    injury values; it only aggregates supplied point-in-time records.
-    """
-    if df.empty:
-        return df
-    d = df.copy()
-    required = {"game_id","snapshot_time","team","position","status"}
-    if not required.issubset(set(d.columns)):
-        return pd.DataFrame()
-    d["game_id"] = pd.to_numeric(d["game_id"], errors="coerce")
-    d["snapshot_time"] = pd.to_datetime(d["snapshot_time"], utc=True, errors="coerce")
-    if "snap_share" in d.columns:
-        d["snap_share"] = pd.to_numeric(d["snap_share"], errors="coerce")
-    if "impact_rating" in d.columns:
-        d["impact_rating"] = pd.to_numeric(d["impact_rating"], errors="coerce")
-    return d.dropna(subset=["game_id","snapshot_time","team","position","status"])
-
-def _availability_features(avail_df, game_id, kickoff, team, prefix):
-    out = {
-        f"{prefix}_availability_source": "none",
-        f"{prefix}_availability_rows": 0,
-        f"{prefix}_qb_out": 0,
-        f"{prefix}_qb_questionable": 0,
-        f"{prefix}_impact_out_sum": np.nan,
-    }
-    if avail_df.empty:
-        return out
-    gid = pd.to_numeric(pd.Series([game_id]), errors="coerce").iloc[0]
-    ko = pd.to_datetime(kickoff, utc=True, errors="coerce")
-    g = avail_df[(avail_df["game_id"] == gid) & (avail_df["team"] == team)].copy()
-    if pd.notna(ko):
-        g = g[g["snapshot_time"] < ko]
-    if g.empty:
-        return out
-
-    # Keep latest point-in-time record per player/position.
-    keycols = ["player"] if "player" in g.columns else ["position"]
-    g = g.sort_values("snapshot_time").groupby(keycols, as_index=False).tail(1)
-    status = g["status"].astype(str).str.lower()
-    pos = g["position"].astype(str).str.upper()
-
-    out[f"{prefix}_availability_source"] = "uploaded_point_in_time"
-    out[f"{prefix}_availability_rows"] = len(g)
-    out[f"{prefix}_qb_out"] = int(((pos == "QB") & status.str.contains("out|doubtful", regex=True)).any())
-    out[f"{prefix}_qb_questionable"] = int(((pos == "QB") & status.str.contains("questionable|game.?time", regex=True)).any())
-
-    if "impact_rating" in g.columns:
-        bad = status.str.contains("out|doubtful", regex=True)
-        vals = pd.to_numeric(g.loc[bad, "impact_rating"], errors="coerce")
-        out[f"{prefix}_impact_out_sum"] = float(vals.sum()) if vals.notna().any() else np.nan
-    return out
-
-def _cfbd_consensus_for_game(line_payload, gid):
-    rows = []
-    for lr in line_payload or []:
-        try:
-            same = int(lr.get("id")) == int(gid)
-        except Exception:
-            same = lr.get("id") == gid
-        if same:
-            rows.append(lr)
-    if not rows:
-        return {}
-    try:
-        x = normalize_game_lines(rows, game_id=gid)
-    except Exception:
-        return {}
-    if not x:
-        return {}
-    return {
-        "cfbd_home_spread": x.get("home_spread"),
-        "cfbd_total": x.get("total"),
-        "cfbd_home_ml": x.get("home_ml"),
-        "cfbd_away_ml": x.get("away_ml"),
-        "cfbd_market_source": "generic_single_snapshot",
-    }
-
-def _build_point_in_time_dataset(seasons, scope, market_df, avail_df, progress=None):
-    rows = []
-    failures = []
-
-    seasons = sorted(int(s) for s in seasons)
-    for si, season in enumerate(seasons):
-        if progress is not None:
-            progress.progress(si/max(1,len(seasons)), text=f"{season}: loading schedule and market…")
-
-        try:
-            games = get_backtest_games(season)
-            lines = get_backtest_lines(season)
-        except Exception as e:
-            failures.append({"season":season,"stage":"schedule/lines","error":str(e)})
-            continue
-
-        season_games = [
-            g for g in games or []
-            if g.get("week") is not None and
-            _pit_game_allowed(g, scope)
-        ]
-        weeks = sorted({int(g.get("week")) for g in season_games if g.get("week") is not None})
-
-        if progress is not None:
-            progress.progress((si+0.20)/max(1,len(seasons)), text=f"{season}: loading weekly box scores…")
-        box_df, box_fail = _collect_season_team_boxes(season, weeks)
-        if not box_fail.empty:
-            failures.extend(box_fail.assign(stage="team_box").to_dict("records"))
-        roll = _rolling_team_features(box_df)
-
-        if progress is not None:
-            progress.progress((si+0.65)/max(1,len(seasons)), text=f"{season}: loading prior-week CORE snapshots…")
-        core_map = _core_snapshot_map(get_core_ratings(season))
-
-        for g in season_games:
-            gid = g.get("id")
-            wk = int(g.get("week"))
-            home = g.get("homeTeam")
-            away = g.get("awayTeam")
-            kickoff = g.get("startDate")
-
-            base = {
-                "game_id": gid,
-                "season": season,
-                "week": wk,
-                "start_time": kickoff,
-                "home_team": home,
-                "away_team": away,
-                "home_points": g.get("homePoints"),
-                "away_points": g.get("awayPoints"),
-                "neutral_site": g.get("neutralSite"),
-                "conference_game": g.get("conferenceGame"),
-            }
-
-            for prefix, team in [("home",home),("away",away)]:
-                snap = _lookup_pregame_snapshot(roll, season, team, wk)
-                base[f"{prefix}_pregame_games"] = snap.get("pregame_games", 0)
-                for k, v in snap.items():
-                    if str(k).startswith("pregame_") and k != "pregame_games":
-                        base[f"{prefix}_{k}"] = v
-
-                core = _lookup_core(core_map, team, wk)
-                base[f"{prefix}_core_through_week"] = core.get("throughWeek")
-                base[f"{prefix}_core_overall"] = core.get("overall")
-                base[f"{prefix}_core_offense"] = core.get("offense")
-                base[f"{prefix}_core_defense"] = core.get("defense")
-                base[f"{prefix}_core_model_version"] = core.get("modelVersion")
-
-            # Diffs from the perspective of the home team.
-            diff_pairs = [
-                "pregame_points_avg","pregame_total_yards_avg","pregame_rush_yards_avg",
-                "pregame_pass_yards_avg","pregame_yards_per_play_avg","pregame_first_downs_avg",
-                "pregame_turnovers_avg","pregame_third_down_pct_avg",
-                "pregame_points_last3","pregame_yards_per_play_last3",
-                "core_overall","core_offense","core_defense",
-            ]
-            for k in diff_pairs:
-                hv = pd.to_numeric(pd.Series([base.get(f"home_{k}")]), errors="coerce").iloc[0]
-                av = pd.to_numeric(pd.Series([base.get(f"away_{k}")]), errors="coerce").iloc[0]
-                base[f"diff_{k}"] = hv-av if pd.notna(hv) and pd.notna(av) else np.nan
-
-            base.update(_cfbd_consensus_for_game(lines, gid))
-            base.update(_market_snapshot_features(market_df, gid, kickoff))
-            base.update(_availability_features(avail_df, gid, kickoff, home, "home"))
-            base.update(_availability_features(avail_df, gid, kickoff, away, "away"))
-
-            # Prefer uploaded latest pregame market, otherwise generic CFBD snapshot.
-            base["model_market_home_spread"] = (
-                base.get("latest_home_spread")
-                if pd.notna(base.get("latest_home_spread", np.nan))
-                else base.get("cfbd_home_spread")
-            )
-            base["model_market_total"] = (
-                base.get("latest_total")
-                if pd.notna(base.get("latest_total", np.nan))
-                else base.get("cfbd_total")
-            )
-
-            base["has_true_line_movement"] = int(base.get("market_snapshot_count", 0) >= 2)
-            base["has_availability"] = int(
-                base.get("home_availability_rows", 0) > 0 or
-                base.get("away_availability_rows", 0) > 0
-            )
-            base["has_2plus_pregame_games"] = int(
-                (base.get("home_pregame_games",0) or 0) >= 2 and
-                (base.get("away_pregame_games",0) or 0) >= 2
-            )
-            base["pit_core_available"] = int(
-                pd.notna(base.get("home_core_overall")) and pd.notna(base.get("away_core_overall"))
-            )
-
-            rows.append(base)
-
-    if progress is not None:
-        progress.progress(1.0, text="Point-in-time dataset complete.")
-
-    return pd.DataFrame(rows), pd.DataFrame(failures)
-
-def _pit_quality_summary(df):
-    if df.empty:
-        return pd.DataFrame()
-    rows = []
-    for season, g in df.groupby("season"):
-        rows.append({
-            "Season": int(season),
-            "Games": len(g),
-            "2+ prior games both teams": int(g["has_2plus_pregame_games"].sum()),
-            "2+ prior games coverage": float(g["has_2plus_pregame_games"].mean()),
-            "Prior-week CORE both": int(g["pit_core_available"].sum()),
-            "CORE coverage": float(g["pit_core_available"].mean()),
-            "True line movement games": int(g["has_true_line_movement"].sum()),
-            "Line movement coverage": float(g["has_true_line_movement"].mean()),
-            "Availability games": int(g["has_availability"].sum()),
-            "Availability coverage": float(g["has_availability"].mean()),
-        })
-    return pd.DataFrame(rows)
-
-# ===== End v1.0 point-in-time historical data layer =====
-
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_backtest_games(year):
     return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
@@ -4786,199 +4401,41 @@ def get_backtest_model_data(year):
 
 app_section = st.radio(
     "Workspace",
-    ["Live Model", "Backtest", "Point-in-Time Lab"],
+    ["Live Model", "Backtest"],
     horizontal=True,
     index=0,
 )
 
 
-if app_section == "Point-in-Time Lab":
-    st.markdown('<div class="section-kicker">v1.0 Data Architecture</div>', unsafe_allow_html=True)
-    st.markdown("### Point-in-Time Historical Dataset")
-    st.info(
-        "v1.0 changes the data architecture before changing the betting model. "
-        "Team-form features are built only from games completed before each matchup. "
-        "Uploaded market snapshots and availability records are filtered to timestamps before kickoff."
-    )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        pit_seasons = st.multiselect(
-            "Seasons",
-            [2018,2019,2020,2021,2022,2023,2024,2025],
-            default=[2022,2023,2024,2025],
-            key="pit_seasons",
-            help="Start with 2022-2025 to validate the pipeline; expand backward after it completes cleanly."
-        )
-    with c2:
-        pit_scope = st.selectbox(
-            "Game universe",
-            ["Major FBS","All FBS","All college games"],
-            index=0,
-            key="pit_scope"
-        )
-
-    st.markdown("#### Optional true point-in-time inputs")
+if app_section == "Live Model":
+    st.markdown("### v1.1 All-Market Decision Check")
     st.caption(
-        "CFBD's generic historical lines do not reliably identify opener/close timestamps. "
-        "For actual line movement, upload timestamped snapshots. Injury/QB status also requires "
-        "a point-in-time availability source; v1.0 will not backfill or invent those values."
+        "Use this on any live spread candidate after the slate model produces its probability. "
+        "It applies the production gate independently from the older research labels."
     )
-
-    market_upload = st.file_uploader(
-        "Market snapshot CSV (optional)",
-        type=["csv"],
-        key="pit_market_upload",
-        help="Columns: game_id, snapshot_time, provider, home_spread, total, home_ml, away_ml"
-    )
-    avail_upload = st.file_uploader(
-        "Player availability CSV (optional)",
-        type=["csv"],
-        key="pit_avail_upload",
-        help="Columns: game_id, snapshot_time, team, player, position, status, snap_share, impact_rating"
-    )
-
-    market_template = pd.DataFrame(columns=[
-        "game_id","snapshot_time","provider","home_spread","total","home_ml","away_ml"
-    ])
-    availability_template = pd.DataFrame(columns=[
-        "game_id","snapshot_time","team","player","position","status","snap_share","impact_rating"
-    ])
-    t1, t2 = st.columns(2)
-    with t1:
-        ios_save_button(
-            "Save Market Snapshot Template",
-            market_template.to_csv(index=False),
-            "cfb_v100_market_snapshot_template.csv"
+    with st.expander("Grade a live candidate", expanded=False):
+        cg1, cg2 = st.columns(2)
+        with cg1:
+            cg_prob = st.number_input("Model win/cover probability", min_value=0.0, max_value=1.0, value=0.55, step=0.005, format="%.3f", key="v100_prob")
+            cg_odds = st.number_input("American odds", value=-110, step=5, key="v100_odds")
+            cg_conf = st.number_input("Confidence", min_value=0, max_value=100, value=78, step=1, key="v100_conf")
+        with cg2:
+            cg_type = st.selectbox("Market type", ["spread","moneyline","total"], index=0, key="v100_type")
+            cg_week = st.number_input("Week", min_value=1, max_value=20, value=1, step=1, key="v100_week")
+            cg_market = st.number_input("Market line", value=0.0, step=0.5, key="v100_market")
+            cg_model = st.number_input("Model fair line", value=0.0, step=0.5, key="v100_model")
+        gap = None
+        if cg_type in {"spread","total"}:
+            gap = cg_model - cg_market
+        verdict, edge, ev, _ = grade(
+            cg_prob, cg_odds, cg_conf, market_type=cg_type,
+            projection_gap=gap, week=cg_week
         )
-    with t2:
-        ios_save_button(
-            "Save Availability Template",
-            availability_template.to_csv(index=False),
-            "cfb_v100_availability_template.csv"
-        )
-
-    run_pit = st.button("Build Point-in-Time Dataset", type="primary", use_container_width=True)
-
-    if run_pit:
-        if not pit_seasons:
-            st.error("Select at least one season.")
-            st.stop()
-
-        raw_market = _read_uploaded_csv(market_upload)
-        raw_avail = _read_uploaded_csv(avail_upload)
-        market_df = _prepare_market_history(raw_market)
-        avail_df = _prepare_availability(raw_avail)
-
-        if market_upload is not None and market_df.empty:
-            st.error(
-                "Market snapshot file was uploaded but required columns were not found. "
-                "Use game_id and snapshot_time plus market columns."
-            )
-            st.stop()
-
-        if avail_upload is not None and avail_df.empty:
-            st.error(
-                "Availability file was uploaded but required columns were not found. "
-                "Use game_id, snapshot_time, team, position and status."
-            )
-            st.stop()
-
-        progress = st.progress(0, text="Starting point-in-time build…")
-        try:
-            pit_df, pit_failures = _build_point_in_time_dataset(
-                pit_seasons, pit_scope, market_df, avail_df, progress=progress
-            )
-        except Exception as e:
-            progress.empty()
-            st.error(f"Point-in-time build failed: {e}")
-            st.exception(e)
-            st.stop()
-        progress.empty()
-
-        st.session_state["cfb_v100_pit_df"] = pit_df
-        st.session_state["cfb_v100_pit_failures"] = pit_failures
-        st.session_state["cfb_v100_pit_config"] = {
-            "seasons": pit_seasons,
-            "scope": pit_scope,
-            "market_upload": market_upload is not None,
-            "availability_upload": avail_upload is not None,
-        }
-        st.success(f"Built {len(pit_df):,} point-in-time game rows.")
-
-    pit_df = st.session_state.get("cfb_v100_pit_df", pd.DataFrame())
-    pit_failures = st.session_state.get("cfb_v100_pit_failures", pd.DataFrame())
-    pit_cfg = st.session_state.get("cfb_v100_pit_config", {})
-
-    if isinstance(pit_df, pd.DataFrame) and not pit_df.empty:
-        quality = _pit_quality_summary(pit_df)
-
-        st.markdown("### Data Quality Gate")
-        show = quality.copy()
-        for c in [c for c in show.columns if "coverage" in c.lower()]:
-            show[c] = show[c].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
-        st.dataframe(show, use_container_width=True, hide_index=True)
-
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Games", f"{len(pit_df):,}")
-        c2.metric("2+ prior-game coverage", f"{100*pit_df['has_2plus_pregame_games'].mean():.1f}%")
-        c3.metric("True line movement", f"{100*pit_df['has_true_line_movement'].mean():.1f}%")
-        c4.metric("Availability coverage", f"{100*pit_df['has_availability'].mean():.1f}%")
-
-        st.markdown("### Leakage Audit")
-        future_core = pd.to_numeric(pit_df.get("home_core_through_week"), errors="coerce") >= pd.to_numeric(pit_df["week"], errors="coerce")
-        future_core |= pd.to_numeric(pit_df.get("away_core_through_week"), errors="coerce") >= pd.to_numeric(pit_df["week"], errors="coerce")
-        leakage_count = int(future_core.fillna(False).sum())
-        if leakage_count == 0:
-            st.success("No CORE row with throughWeek >= target game week was used.")
-        else:
-            st.error(f"Leakage check failed on {leakage_count} rows. Do not model from this export.")
-
-        st.caption(
-            "Rolling team box-score features are generated from weeks strictly before the target game. "
-            "CORE is also restricted to prior-week snapshots, but CFBD documents historical CORE as "
-            "retrospective methodology rather than literal archived vintage."
-        )
-
-        with st.expander("Preview point-in-time rows", expanded=True):
-            preview_cols = [
-                "season","week","away_team","home_team",
-                "home_pregame_games","away_pregame_games",
-                "diff_pregame_yards_per_play_avg",
-                "diff_pregame_turnovers_avg",
-                "diff_core_overall",
-                "cfbd_home_spread","open_home_spread","latest_home_spread","move_home_spread",
-                "home_qb_out","away_qb_out",
-                "has_true_line_movement","has_availability"
-            ]
-            preview_cols = [c for c in preview_cols if c in pit_df.columns]
-            st.dataframe(pit_df[preview_cols].head(250), use_container_width=True, hide_index=True)
-
-        ios_save_button(
-            "Save v1.0 Point-in-Time Dataset CSV",
-            pit_df.to_csv(index=False),
-            f"cfb_v100_point_in_time_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
-        )
-        ios_save_button(
-            "Save v1.0 Data Quality CSV",
-            quality.to_csv(index=False),
-            f"cfb_v100_data_quality_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
-        )
-        if isinstance(pit_failures, pd.DataFrame) and not pit_failures.empty:
-            with st.expander("API/data failures", expanded=False):
-                st.dataframe(pit_failures, use_container_width=True, hide_index=True)
-            ios_save_button(
-                "Save v1.0 Failures CSV",
-                pit_failures.to_csv(index=False),
-                f"cfb_v100_failures_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
-            )
-
-        st.warning(
-            "v1.0 is a data-validation build, not a betting promotion. Do not train the next model "
-            "until the quality table shows acceptable pregame coverage and the leakage audit is clean."
-        )
-
-    st.stop()
+        units = robust_live_stake(verdict, edge, cg_conf)
+        st.metric("Production verdict", verdict)
+        if pd.notna(edge):
+            st.write(f"Edge: **{edge*100:+.1f} pts** • EV: **{ev*100:+.1f}%** • Recommended stake: **{units:.2f}u**")
+        st.caption("LEAN = directional estimate below the official BET threshold.")
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
@@ -6195,11 +5652,11 @@ if run_mode == "Slate":
 
             if market.get("away_ml") is not None:
                 v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
-                                 market_type="side", projection_gap=None, week=gp["week"])
+                                 market_type="moneyline", projection_gap=None, week=gp["week"])
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
             if market.get("home_ml") is not None:
                 v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
-                                 market_type="side", projection_gap=None, week=gp["week"])
+                                 market_type="moneyline", projection_gap=None, week=gp["week"])
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
@@ -6875,7 +6332,7 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     adj_away_wp = 1.0 - adj_home_wp
 
     for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
-        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="side",week=p["week"])
+        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="moneyline",week=p["week"])
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     spread_gap = p["model_home_spread"] - home_spread
@@ -6959,4 +6416,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.0.1-PIT-HOTFIX • Pregame-only rolling data architecture with fixed historical game-universe filtering.")
+st.caption("CFB Edge • v1.1.0-ALL-MARKET • Spread, moneyline and total estimates with market-specific guardrails and conservative staking.")
