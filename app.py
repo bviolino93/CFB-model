@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.2.0-PLAYABLE"
+MODEL_VERSION = "1.2.1-PRO-UI"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1515,6 +1515,128 @@ def playable_stake(verdict, edge, confidence):
         return 0.25
     return 0.0
 
+
+
+
+def verdict_meta(verdict):
+    mapping = {
+        "STRONG BET": {
+            "grade": "A",
+            "label": "BEST BET",
+            "emoji": "🟢",
+            "class": "grade-a",
+        },
+        "BET": {
+            "grade": "B",
+            "label": "BET",
+            "emoji": "🔵",
+            "class": "grade-b",
+        },
+        "LEAN": {
+            "grade": "C",
+            "label": "LEAN",
+            "emoji": "🟡",
+            "class": "grade-c",
+        },
+        "PASS": {
+            "grade": "D",
+            "label": "PASS",
+            "emoji": "⚪",
+            "class": "grade-d",
+        },
+        "NO LINE": {
+            "grade": "—",
+            "label": "NO LINE",
+            "emoji": "⚪",
+            "class": "grade-d",
+        },
+    }
+    return mapping.get(str(verdict), mapping["PASS"])
+
+
+def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None, stake=None):
+    meta = verdict_meta(verdict)
+
+    odds_txt = ""
+    try:
+        o = int(odds)
+        odds_txt = f"{o:+d}"
+    except Exception:
+        if odds not in (None, "", "nan"):
+            odds_txt = str(odds)
+
+    title = f"{bet_label} {odds_txt}".strip()
+
+    details = []
+    if prob is not None and pd.notna(prob):
+        details.append(f"Model {float(prob)*100:.1f}%")
+    if edge is not None and pd.notna(edge):
+        details.append(f"Edge {float(edge)*100:+.1f}%")
+    if ev is not None and pd.notna(ev):
+        details.append(f"EV {float(ev)*100:+.1f}%")
+    if fair is not None:
+        try:
+            details.append(f"Fair {int(round(float(fair))):+d}")
+        except Exception:
+            pass
+    if stake is not None and float(stake) > 0:
+        details.append(f"Stake {float(stake):.2f}u")
+
+    detail_txt = " • ".join(details)
+
+    st.markdown(
+        f"""
+        <div class="pro-card {meta['class']}">
+            <div class="pro-card-top">
+                <div class="pro-grade">{meta['grade']}</div>
+                <div class="pro-card-main">
+                    <div class="pro-card-label">{meta['label']}</div>
+                    <div class="pro-card-title">{title}</div>
+                </div>
+            </div>
+            <div class="pro-card-details">{detail_txt}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None):
+    meta = verdict_meta(verdict)
+
+    try:
+        odds_txt = f"{int(odds):+d}"
+    except Exception:
+        odds_txt = str(odds)
+
+    metrics = []
+    if prob is not None and pd.notna(prob):
+        metrics.append(f"Model {float(prob)*100:.1f}%")
+    if edge is not None and pd.notna(edge):
+        metrics.append(f"Edge {float(edge)*100:+.1f}%")
+    if ev is not None and pd.notna(ev):
+        metrics.append(f"EV {float(ev)*100:+.1f}%")
+    if fair is not None:
+        try:
+            metrics.append(f"Fair {int(round(float(fair))):+d}")
+        except Exception:
+            pass
+
+    st.markdown(
+        f"""
+        <div class="market-row">
+            <div class="market-row-grade {meta['class']}">{meta['grade']}</div>
+            <div class="market-row-body">
+                <div class="market-row-head">
+                    <span class="market-row-verdict">{meta['label']}</span>
+                    <span class="market-row-pick">{bet_label} {odds_txt}</span>
+                </div>
+                <div class="market-row-metrics">{" • ".join(metrics)}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def fetch_lines(api_key, year=None, week=None, game_id=None, provider=None):
     params = {"seasonType": "regular"}
@@ -3931,6 +4053,177 @@ st.set_page_config(
 )
 
 # ---------- Professional app theme ----------
+
+
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background:
+            radial-gradient(circle at 20% 0%, rgba(34,94,168,.16), transparent 32%),
+            linear-gradient(180deg, #081522 0%, #07111d 100%);
+    }
+
+    .block-container {
+        max-width: 980px;
+        padding-top: 1.25rem;
+        padding-bottom: 4rem;
+    }
+
+    h1, h2, h3 {
+        letter-spacing: -0.02em;
+    }
+
+    .pro-card {
+        border: 1px solid rgba(255,255,255,.09);
+        border-radius: 18px;
+        padding: 18px 20px;
+        margin: 10px 0 18px 0;
+        box-shadow: 0 10px 28px rgba(0,0,0,.20);
+        backdrop-filter: blur(8px);
+    }
+
+    .pro-card-top {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .pro-grade {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.35rem;
+        font-weight: 800;
+        background: rgba(255,255,255,.09);
+        border: 1px solid rgba(255,255,255,.10);
+    }
+
+    .pro-card-main {
+        flex: 1;
+    }
+
+    .pro-card-label {
+        font-size: .78rem;
+        font-weight: 800;
+        letter-spacing: .14em;
+        opacity: .78;
+        margin-bottom: 3px;
+    }
+
+    .pro-card-title {
+        font-size: 1.34rem;
+        font-weight: 760;
+        line-height: 1.2;
+    }
+
+    .pro-card-details {
+        margin-top: 12px;
+        font-size: .97rem;
+        opacity: .83;
+    }
+
+    .grade-a {
+        background: linear-gradient(135deg, rgba(26,115,78,.26), rgba(14,75,57,.18));
+        border-color: rgba(94,214,154,.26);
+    }
+
+    .grade-b {
+        background: linear-gradient(135deg, rgba(34,94,168,.28), rgba(20,64,123,.18));
+        border-color: rgba(101,161,255,.28);
+    }
+
+    .grade-c {
+        background: linear-gradient(135deg, rgba(133,105,18,.24), rgba(78,65,22,.18));
+        border-color: rgba(235,196,74,.24);
+    }
+
+    .grade-d {
+        background: linear-gradient(135deg, rgba(105,113,125,.18), rgba(62,70,82,.15));
+        border-color: rgba(190,198,211,.16);
+    }
+
+    .market-row {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 14px 2px;
+        border-bottom: 1px solid rgba(255,255,255,.075);
+    }
+
+    .market-row:last-child {
+        border-bottom: none;
+    }
+
+    .market-row-grade {
+        min-width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+        border: 1px solid rgba(255,255,255,.10);
+    }
+
+    .market-row-body {
+        flex: 1;
+    }
+
+    .market-row-head {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: baseline;
+    }
+
+    .market-row-verdict {
+        font-size: .78rem;
+        font-weight: 800;
+        letter-spacing: .12em;
+        opacity: .72;
+    }
+
+    .market-row-pick {
+        font-size: 1.05rem;
+        font-weight: 700;
+    }
+
+    .market-row-metrics {
+        margin-top: 4px;
+        font-size: .92rem;
+        opacity: .76;
+    }
+
+    .section-kicker {
+        font-size: .80rem;
+        letter-spacing: .14em;
+        font-weight: 800;
+        color: #79c9f2;
+        margin-top: 26px;
+        margin-bottom: 6px;
+    }
+
+    div[data-testid="stButton"] > button,
+    div[data-testid="stDownloadButton"] > button {
+        border-radius: 14px !important;
+        font-weight: 700 !important;
+        min-height: 3.15rem;
+    }
+
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,.035);
+        border: 1px solid rgba(255,255,255,.06);
+        border-radius: 14px;
+        padding: 12px 14px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.info(
     "v1.2 PLAYABLE: every market still gets an estimate, but confidence is now a modifier rather than a hard veto. "
@@ -6354,7 +6647,7 @@ ios_save_button(
 )
 st.caption("Use this to save the projection file for audit/upload.")
 
-if st.button("Should I Bet?",type="primary",use_container_width=True):
+if st.button("Model Recommendation",type="primary",use_container_width=True):
     markets=[]
 
     # v0.3.2 guarded single-game calibration.
@@ -6454,4 +6747,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.2.0-PLAYABLE • A/B/C/D all-market grading with confidence-weighted thresholds and conservative unit sizing.")
+st.caption("CFB Edge • v1.2.1-PRO-UI • Professional A/B/C/D market board with confidence-weighted all-market grading.")
