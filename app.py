@@ -16,7 +16,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.3.2-CALIBRATION-GUARDRAILS"
+MODEL_VERSION = "0.4.0-BACKTEST"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1335,6 +1335,354 @@ def normalize_game_lines(rows, game_id=None):
                 "home_ml": home_ml,
             })
     return providers
+
+# ===== v0.4.0 backtest engine =====
+
+def grade_v031(prob, odds, confidence=75):
+    """Exact v0.3.1 betting-layer grading retained for A/B comparison."""
+    imp = implied_prob(odds)
+    edge = prob - imp
+    ev = expected_value(prob, odds)
+    me, mv = juice_thresholds(odds)
+    if confidence >= 80 and edge >= me + .02 and ev >= mv + .03:
+        verdict = "STRONG BET"
+    elif confidence >= 70 and edge >= me and ev >= mv:
+        verdict = "BET"
+    elif edge > 0 and ev > 0:
+        verdict = "LEAN"
+    else:
+        verdict = "PASS"
+    return verdict, edge, ev, imp
+
+
+def _bt_prior_only_data(data):
+    """
+    Leakage-safe Stage 1 input set.
+    Removes current-season SP/SRS/PPA/advanced results and retains prior-season
+    performance plus current-season talent/returning-production inputs.
+    This is intentionally a preseason-prior backtest, not a claim that it exactly
+    recreates the live in-season engine.
+    """
+    d = dict(data)
+    d["sp_current"] = {}
+    d["srs_current"] = {}
+    d["ppa_current"] = {}
+    d["adv_current"] = {}
+    return d
+
+
+def _bt_project_game(game, data, hfa=DEFAULT_HFA):
+    """
+    Historical projection path used by Backtest mode.
+    It reproduces the football-rating math while setting travel/weather to zero,
+    because the live environmental layer is not archived point-in-time in this app.
+    """
+    away, home = game["awayTeam"], game["homeTeam"]
+    week = game.get("week", 1)
+    neutral = bool(game.get("neutralSite"))
+    applied_hfa = 0.0 if neutral else float(hfa)
+
+    away_power, ar = _team_base_power(away, data, week)
+    home_power, hr = _team_base_power(home, data, week)
+    away_match = _matchup_adjustment(ar, hr)
+    home_match = _matchup_adjustment(hr, ar)
+    matchup_margin_adj = home_match - away_match
+    base_margin = home_power - away_power
+    home_margin = base_margin + matchup_margin_adj + applied_hfa
+
+    raw_sp_total = _total_from_sp(ar, hr)
+    efficiency_adj = _total_efficiency_adjustment(ar, hr)
+    pace_adj = _pace_adjustment(ar, hr)
+    total = raw_sp_total + efficiency_adj + pace_adj
+    total = max(34.0, min(82.0, total))
+
+    home_score = max(7.0, (total + home_margin) / 2.0)
+    away_score = max(7.0, (total - home_margin) / 2.0)
+    total = home_score + away_score
+    home_margin = home_score - away_score
+
+    margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
+    home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
+
+    return {
+        "away": away,
+        "home": home,
+        "away_rating": ar,
+        "home_rating": hr,
+        "home_margin": home_margin,
+        "model_home_spread": -home_margin,
+        "model_total": total,
+        "away_score": away_score,
+        "home_score": home_score,
+        "home_win_prob": home_wp,
+        "away_win_prob": 1.0 - home_wp,
+        "neutral": neutral,
+        "hfa": applied_hfa,
+        "week": week,
+        "margin_sd": margin_sd,
+        "total_sd": total_sd,
+        "confidence": confidence,
+        "data_completeness": completeness,
+        "components": {
+            "base_power_margin": base_margin,
+            "matchup_margin_adjustment": matchup_margin_adj,
+            "hfa_adjustment": applied_hfa,
+            "sp_total_base": raw_sp_total,
+            "efficiency_total_adjustment": efficiency_adj,
+            "pace_total_adjustment": pace_adj,
+            "environment_margin_adjustment": 0.0,
+            "environment_total_adjustment": 0.0,
+        },
+    }
+
+
+def _bt_consensus_line(rows):
+    if not rows:
+        return {}
+    df = pd.DataFrame(rows)
+    def med(col):
+        if col not in df.columns:
+            return None
+        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        return None if s.empty else float(s.median())
+    away_ml = med("away_ml")
+    home_ml = med("home_ml")
+    home_spread = med("home_spread")
+    total = med("total")
+    return {
+        "provider": "Consensus median",
+        "away_ml": int(round(away_ml)) if away_ml is not None else None,
+        "home_ml": int(round(home_ml)) if home_ml is not None else None,
+        "home_spread": home_spread,
+        "away_spread": -home_spread if home_spread is not None else None,
+        "total": total,
+    }
+
+
+def _bt_profit(result, odds):
+    if result == "PUSH":
+        return 0.0
+    if result != "WIN":
+        return -1.0
+    odds = float(odds)
+    return odds / 100.0 if odds > 0 else 100.0 / abs(odds)
+
+
+def _bt_settle(market_type, side, home_points, away_points, line=None):
+    hp, ap = float(home_points), float(away_points)
+    if market_type == "moneyline":
+        if hp == ap:
+            return "PUSH"
+        won = (hp > ap) if side == "home" else (ap > hp)
+        return "WIN" if won else "LOSS"
+    if market_type == "spread":
+        home_spread = float(line)
+        margin = hp - ap + home_spread
+        if abs(margin) < 1e-9:
+            home_result = "PUSH"
+        else:
+            home_result = "WIN" if margin > 0 else "LOSS"
+        if side == "home":
+            return home_result
+        return "PUSH" if home_result == "PUSH" else ("LOSS" if home_result == "WIN" else "WIN")
+    if market_type == "total":
+        diff = hp + ap - float(line)
+        if abs(diff) < 1e-9:
+            return "PUSH"
+        if side == "over":
+            return "WIN" if diff > 0 else "LOSS"
+        return "WIN" if diff < 0 else "LOSS"
+    return None
+
+
+def _bt_game_scope(game, scope):
+    major_confs = {"ACC", "SEC", "Big Ten", "Big 12", "Pac-12"}
+    major_ind = {"Notre Dame"}
+    def cls(side):
+        return str(game.get(f"{side}Classification") or "").lower()
+    def conf(side):
+        return str(game.get(f"{side}Conference") or "")
+    def team(side):
+        return str(game.get(f"{side}Team") or "")
+    def is_fbs(side):
+        c = cls(side)
+        return c == "fbs" if c else bool(conf(side))
+    def is_major(side):
+        return conf(side) in major_confs or team(side) in major_ind
+    if scope == "Major FBS":
+        return is_major("home") or is_major("away")
+    if scope == "All FBS":
+        return is_fbs("home") or is_fbs("away")
+    return True
+
+
+def _bt_candidate_rows(game, p, market, season, version):
+    """Create graded individual markets for one historical game/version."""
+    rows = []
+    week = int(game.get("week") or 1)
+    raw_home_spread = float(p["model_home_spread"])
+    raw_total = float(p["model_total"])
+
+    if version == "v0.3.2":
+        margin_sd, total_sd = calibrated_sigmas(p["margin_sd"], p["total_sd"], week)
+        adj_home_spread, side_weight, side_shrink = calibrated_market_projection(
+            raw_home_spread, market.get("home_spread"), week, "side"
+        )
+        adj_total, total_weight, total_shrink = calibrated_market_projection(
+            raw_total, market.get("total"), week, "total"
+        )
+        home_margin = -adj_home_spread
+        home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
+        away_wp = 1.0 - home_wp
+        grader = grade
+    else:
+        margin_sd, total_sd = float(p["margin_sd"]), float(p["total_sd"])
+        adj_home_spread, side_weight, side_shrink = raw_home_spread, 1.0, 0.0
+        adj_total, total_weight, total_shrink = raw_total, 1.0, 0.0
+        home_margin = -raw_home_spread
+        home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
+        away_wp = 1.0 - home_wp
+        grader = grade_v031
+
+    base = {
+        "season": season,
+        "week": week,
+        "game_id": game.get("id"),
+        "away_team": game.get("awayTeam"),
+        "home_team": game.get("homeTeam"),
+        "home_points": game.get("homePoints"),
+        "away_points": game.get("awayPoints"),
+        "version": version,
+        "confidence": p["confidence"],
+        "raw_model_home_spread": raw_home_spread,
+        "adjusted_model_home_spread": adj_home_spread,
+        "market_home_spread": market.get("home_spread"),
+        "raw_model_total": raw_total,
+        "adjusted_model_total": adj_total,
+        "market_total": market.get("total"),
+        "side_market_weight": side_weight,
+        "side_shrink_points": side_shrink,
+        "total_market_weight": total_weight,
+        "total_shrink_points": total_shrink,
+        "margin_sd": margin_sd,
+        "total_sd": total_sd,
+    }
+
+    # Moneyline
+    for side, prob, odds, name in [
+        ("away", away_wp, market.get("away_ml"), f"{p['away']} ML"),
+        ("home", home_wp, market.get("home_ml"), f"{p['home']} ML"),
+    ]:
+        if odds is None:
+            continue
+        if version == "v0.3.2":
+            verdict, edge, ev, imp = grader(prob, odds, p["confidence"], market_type="side", week=week)
+        else:
+            verdict, edge, ev, imp = grader(prob, odds, p["confidence"])
+        result = _bt_settle("moneyline", side, game["homePoints"], game["awayPoints"])
+        rows.append({**base, "market_type":"moneyline", "side":side, "market":name,
+                     "line":None, "odds":int(odds), "prob":prob, "implied_prob":imp,
+                     "edge":edge, "ev":ev, "verdict":verdict, "result":result,
+                     "profit_units":_bt_profit(result, odds)})
+
+    # Spread; CFBD generic feed does not reliably carry side-specific juice, so -110.
+    if market.get("home_spread") is not None:
+        line = float(market["home_spread"])
+        hp = cover_probability(home_margin, line, "home", margin_sd)
+        ap = 1.0 - hp
+        spread_gap = raw_home_spread - line
+        for side, prob, name in [
+            ("home", hp, f"{p['home']} {line:+.1f}"),
+            ("away", ap, f"{p['away']} {-line:+.1f}"),
+        ]:
+            if version == "v0.3.2":
+                verdict, edge, ev, imp = grader(prob, -110, p["confidence"], market_type="spread",
+                                                 projection_gap=spread_gap, week=week)
+            else:
+                verdict, edge, ev, imp = grader(prob, -110, p["confidence"])
+            result = _bt_settle("spread", side, game["homePoints"], game["awayPoints"], line)
+            rows.append({**base, "market_type":"spread", "side":side, "market":name,
+                         "line":line if side=="home" else -line, "odds":-110, "prob":prob,
+                         "implied_prob":imp, "edge":edge, "ev":ev, "verdict":verdict,
+                         "result":result, "profit_units":_bt_profit(result, -110)})
+
+    # Total; -110 generic price assumption.
+    if market.get("total") is not None:
+        line = float(market["total"])
+        op = total_probability(adj_total, line, "over", total_sd)
+        up = 1.0 - op
+        total_gap = raw_total - line
+        for side, prob, name in [
+            ("over", op, f"Over {line:g}"),
+            ("under", up, f"Under {line:g}"),
+        ]:
+            if version == "v0.3.2":
+                verdict, edge, ev, imp = grader(prob, -110, p["confidence"], market_type="total",
+                                                 projection_gap=total_gap, week=week)
+            else:
+                verdict, edge, ev, imp = grader(prob, -110, p["confidence"])
+            result = _bt_settle("total", side, game["homePoints"], game["awayPoints"], line)
+            rows.append({**base, "market_type":"total", "side":side, "market":name,
+                         "line":line, "odds":-110, "prob":prob, "implied_prob":imp,
+                         "edge":edge, "ev":ev, "verdict":verdict, "result":result,
+                         "profit_units":_bt_profit(result, -110)})
+    return rows
+
+
+def _bt_best_per_game(df):
+    if df.empty:
+        return df
+    d = df.copy()
+    rank = {"STRONG BET": 4, "BET": 3, "LEAN": 2, "PASS": 1}
+    d["_vrank"] = d["verdict"].map(rank).fillna(0)
+    d = d.sort_values(["version","season","game_id","_vrank","ev","edge"],
+                      ascending=[True,True,True,False,False,False])
+    return d.groupby(["version","season","game_id"], as_index=False).head(1).drop(columns=["_vrank"])
+
+
+def _bt_summary(df, label="All"):
+    if df.empty:
+        return {"Sample":label,"Bets":0,"W-L-P":"0-0-0","Win %":None,"ROI":None,"Profit (u)":0.0}
+    bets = df[df["verdict"].isin(["BET","STRONG BET"])].copy()
+    w = int((bets["result"]=="WIN").sum())
+    l = int((bets["result"]=="LOSS").sum())
+    p = int((bets["result"]=="PUSH").sum())
+    denom = w+l
+    roi = bets["profit_units"].sum()/len(bets) if len(bets) else None
+    return {
+        "Sample": label,
+        "Bets": int(len(bets)),
+        "W-L-P": f"{w}-{l}-{p}",
+        "Win %": (w/denom) if denom else None,
+        "ROI": roi,
+        "Profit (u)": float(bets["profit_units"].sum()) if len(bets) else 0.0,
+    }
+
+
+def _bt_error_table(game_df):
+    if game_df.empty:
+        return pd.DataFrame()
+    rows=[]
+    for version, d in game_df.groupby("version"):
+        actual_margin = d["home_points"] - d["away_points"]
+        market_margin = -d["market_home_spread"]
+        raw_margin = -d["raw_model_home_spread"]
+        adj_margin = -d["adjusted_model_home_spread"]
+        actual_total = d["home_points"] + d["away_points"]
+        rows.append({
+            "Version": version,
+            "Games": len(d),
+            "Raw spread MAE": (actual_margin-raw_margin).abs().mean(),
+            "Adjusted spread MAE": (actual_margin-adj_margin).abs().mean(),
+            "Market spread MAE": (actual_margin-market_margin).abs().mean(),
+            "Raw total MAE": (actual_total-d["raw_model_total"]).abs().mean(),
+            "Adjusted total MAE": (actual_total-d["adjusted_model_total"]).abs().mean(),
+            "Market total MAE": (actual_total-d["market_total"]).abs().mean(),
+        })
+    return pd.DataFrame(rows)
+
+# ===== End v0.4.0 backtest engine =====
+
 # ===== End embedded model engine =====
 
 
@@ -1826,6 +2174,248 @@ def ios_save_button(label, csv_text, filename):
         """,
         height=58,
     )
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_backtest_games(year):
+    return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_backtest_lines(year):
+    return fetch_lines(API_KEY, year=int(year))
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_backtest_model_data(year):
+    return load_model_data(API_KEY, int(year))
+
+app_section = st.radio(
+    "Workspace",
+    ["Live Model", "Backtest"],
+    horizontal=True,
+    index=0,
+)
+
+if app_section == "Backtest":
+    st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
+    st.markdown("### v0.3.1 vs v0.3.2 betting-layer comparison")
+    st.info(
+        "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
+        "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
+        "results. Historical travel/weather are excluded. This tests the betting layer conservatively; it is not "
+        "an exact replay of every live-model input."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        bt_seasons = st.multiselect(
+            "Seasons",
+            [2021, 2022, 2023, 2024, 2025],
+            default=[2022, 2023, 2024, 2025],
+        )
+        bt_scope = st.selectbox("Game universe", ["Major FBS", "All FBS", "All college games"], index=0)
+    with c2:
+        bt_method = st.selectbox(
+            "Historical rating method",
+            ["Leakage-safe preseason prior", "Retrospective full-season diagnostic"],
+            index=0,
+            help=(
+                "Retrospective mode uses full-season historical rating files and therefore has look-ahead bias. "
+                "Use it only to inspect mechanics, never as proof of historical ROI."
+            ),
+        )
+        bt_policy = st.selectbox(
+            "Signal policy",
+            ["Best market per game", "All qualifying markets"],
+            index=0,
+            help="Best market per game prevents multiple official bets from the same matchup in the backtest.",
+        )
+
+    holdout_default = max(bt_seasons) if bt_seasons else 2025
+    bt_holdout = st.selectbox("Untouched holdout season", bt_seasons if bt_seasons else [2025],
+                              index=(len(bt_seasons)-1 if bt_seasons else 0))
+
+    if bt_method == "Retrospective full-season diagnostic":
+        st.warning(
+            "This mode contains look-ahead bias because CFBD's SP+, SRS, PPA and season-advanced historical "
+            "endpoints are season-level, not archived week-by-week snapshots. Do not use its ROI as validation."
+        )
+
+    run_bt = st.button("Run Backtest", type="primary", use_container_width=True)
+    if run_bt:
+        if not bt_seasons:
+            st.error("Select at least one season.")
+            st.stop()
+
+        all_rows = []
+        game_rows = []
+        progress = st.progress(0, text="Preparing historical data…")
+        total_seasons = len(bt_seasons)
+
+        for si, season in enumerate(sorted(bt_seasons)):
+            progress.progress(si/total_seasons, text=f"Loading {season} games, lines and ratings…")
+            try:
+                games = get_backtest_games(season)
+                line_payload = get_backtest_lines(season)
+                data_full = get_backtest_model_data(season)
+            except Exception as e:
+                st.error(f"{season} data request failed: {e}")
+                continue
+
+            data = _bt_prior_only_data(data_full) if bt_method == "Leakage-safe preseason prior" else data_full
+
+            # Build O(1) line lookup by game ID.
+            line_index = {}
+            for lr in line_payload or []:
+                gid = lr.get("id")
+                if gid is None:
+                    continue
+                try:
+                    key = int(gid)
+                except Exception:
+                    key = gid
+                line_index[key] = normalize_game_lines([lr], game_id=gid)
+
+            season_games = [
+                g for g in games or []
+                if g.get("completed") is True
+                and g.get("homePoints") is not None
+                and g.get("awayPoints") is not None
+                and _bt_game_scope(g, bt_scope)
+            ]
+
+            for gi, g in enumerate(season_games):
+                gid = g.get("id")
+                try:
+                    lookup_gid = int(gid)
+                except Exception:
+                    lookup_gid = gid
+                market = _bt_consensus_line(line_index.get(lookup_gid, []))
+                if not market or (market.get("home_spread") is None and market.get("total") is None
+                                  and market.get("home_ml") is None and market.get("away_ml") is None):
+                    continue
+                try:
+                    p = _bt_project_game(g, data, hfa=DEFAULT_HFA)
+                except Exception:
+                    continue
+
+                # One game-level row per version for MAE diagnostics.
+                for version in ["v0.3.1", "v0.3.2"]:
+                    if version == "v0.3.2":
+                        adj_spread, _, _ = calibrated_market_projection(
+                            p["model_home_spread"], market.get("home_spread"), p["week"], "side")
+                        adj_total, _, _ = calibrated_market_projection(
+                            p["model_total"], market.get("total"), p["week"], "total")
+                    else:
+                        adj_spread, adj_total = p["model_home_spread"], p["model_total"]
+                    game_rows.append({
+                        "version":version, "season":season, "week":p["week"], "game_id":gid,
+                        "away_team":p["away"], "home_team":p["home"],
+                        "away_points":float(g["awayPoints"]), "home_points":float(g["homePoints"]),
+                        "raw_model_home_spread":float(p["model_home_spread"]),
+                        "adjusted_model_home_spread":float(adj_spread),
+                        "market_home_spread":market.get("home_spread"),
+                        "raw_model_total":float(p["model_total"]),
+                        "adjusted_model_total":float(adj_total),
+                        "market_total":market.get("total"),
+                    })
+
+                all_rows.extend(_bt_candidate_rows(g, p, market, season, "v0.3.1"))
+                all_rows.extend(_bt_candidate_rows(g, p, market, season, "v0.3.2"))
+
+            progress.progress((si+1)/total_seasons, text=f"Finished {season}")
+
+        progress.empty()
+        bt_df = pd.DataFrame(all_rows)
+        bt_games_df = pd.DataFrame(game_rows)
+
+        if bt_df.empty:
+            st.error("No historical games with usable CFBD lines were returned for the selected sample.")
+            st.stop()
+
+        signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
+        official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
+
+        st.session_state["cfb_backtest_df"] = bt_df
+        st.session_state["cfb_backtest_signal_df"] = signal_df
+        st.session_state["cfb_backtest_games_df"] = bt_games_df
+        st.session_state["cfb_backtest_config"] = {
+            "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
+            "method": bt_method, "policy": bt_policy,
+        }
+
+    if "cfb_backtest_signal_df" in st.session_state:
+        bt_df = st.session_state["cfb_backtest_df"]
+        signal_df = st.session_state["cfb_backtest_signal_df"]
+        bt_games_df = st.session_state["cfb_backtest_games_df"]
+        cfg = st.session_state.get("cfb_backtest_config", {})
+        holdout = cfg.get("holdout", bt_holdout)
+
+        train = signal_df[signal_df["season"] != holdout]
+        test = signal_df[signal_df["season"] == holdout]
+
+        summaries=[]
+        for version in ["v0.3.1","v0.3.2"]:
+            summaries.append(_bt_summary(train[train["version"]==version], f"{version} • Train"))
+            summaries.append(_bt_summary(test[test["version"]==version], f"{version} • Holdout {holdout}"))
+            summaries.append(_bt_summary(signal_df[signal_df["version"]==version], f"{version} • All"))
+        summary_df = pd.DataFrame(summaries)
+        for col in ["Win %","ROI"]:
+            summary_df[col] = summary_df[col].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+        summary_df["Profit (u)"] = summary_df["Profit (u)"].map(lambda x: f"{x:+.2f}")
+
+        st.markdown("### Betting results")
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        err = _bt_error_table(bt_games_df.dropna(subset=["market_home_spread","market_total"], how="all"))
+        if not err.empty:
+            for c in [x for x in err.columns if "MAE" in x]:
+                err[c] = err[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+            st.markdown("### Projection error vs market")
+            st.dataframe(err, use_container_width=True, hide_index=True)
+
+        official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
+        if len(official):
+            by_type=[]
+            for (version, mtype), d in official.groupby(["version","market_type"]):
+                s=_bt_summary(d, mtype)
+                by_type.append({"Version":version,"Market":mtype.title(),"Bets":s["Bets"],
+                                "W-L-P":s["W-L-P"],
+                                "Win %":f"{(d['result'].eq('WIN').sum()/max(1,(d['result'].isin(['WIN','LOSS'])).sum())):.1%}",
+                                "ROI":f"{(d['profit_units'].sum()/len(d)):.1%}",
+                                "Profit (u)":f"{d['profit_units'].sum():+.2f}"})
+            st.markdown("### Official bets by market")
+            st.dataframe(pd.DataFrame(by_type), use_container_width=True, hide_index=True)
+
+            by_week=[]
+            for (version, week), d in official.groupby(["version","week"]):
+                denom=(d["result"].isin(["WIN","LOSS"])).sum()
+                by_week.append({"Version":version,"Week":int(week),"Bets":len(d),
+                                "Win %":f"{(d['result'].eq('WIN').sum()/denom):.1%}" if denom else "—",
+                                "ROI":f"{(d['profit_units'].sum()/len(d)):.1%}"})
+            with st.expander("Results by week", expanded=False):
+                st.dataframe(pd.DataFrame(by_week).sort_values(["Version","Week"]),
+                             use_container_width=True, hide_index=True)
+
+        st.markdown("### Historical bet log")
+        show_cols=["version","season","week","away_team","home_team","market_type","market",
+                   "odds","prob","edge","ev","verdict","result","profit_units"]
+        log = signal_df[show_cols].copy()
+        for c in ["prob","edge","ev"]:
+            log[c] = pd.to_numeric(log[c], errors="coerce").round(4)
+        log["profit_units"] = pd.to_numeric(log["profit_units"], errors="coerce").round(3)
+        st.dataframe(log, use_container_width=True, hide_index=True, height=520)
+
+        csv = signal_df.to_csv(index=False)
+        ios_save_button("Save Backtest CSV", csv,
+                        f"cfb_v040_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+
+        st.caption(
+            "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
+            "label them opening or closing lines. Spread and total prices are standardized at -110 because the generic "
+            "CFBD line structure does not reliably include side-specific juice. Absolute ROI from retrospective full-season "
+            "mode is not valid because of look-ahead bias."
+        )
+    st.stop()
 
 selected_date = st.date_input("Game date", value=date.today())
 year = selected_date.year
