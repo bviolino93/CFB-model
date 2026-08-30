@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.6.0-APP-POLISH"
+MODEL_VERSION = "1.6.1-LOGO-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6455,14 +6455,12 @@ if run_mode == "Full Slate":
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_moneyline_guard(v, market["away_ml"], gp.get("fcs_fallback_used", False))
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
             if market.get("home_ml") is not None:
                 v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_moneyline_guard(v, market["home_ml"], gp.get("fcs_fallback_used", False))
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
@@ -6472,11 +6470,9 @@ if run_mode == "Full Slate":
                 v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
                                  projection_gap=spread_gap, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
                 v,e,ev,_ = grade(ap, -110, gp["confidence"], market_type="spread",
                                  projection_gap=spread_gap, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
@@ -6487,11 +6483,9 @@ if run_mode == "Full Slate":
                 v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
                 v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
@@ -6520,8 +6514,8 @@ if run_mode == "Full Slate":
                 "game_id": g.get("id"),
                 "away_team": gp["away"],
                 "home_team": gp["home"],
-                "away_logo": _team_logo_url(data, gp["away"]),
-                "home_logo": _team_logo_url(data, gp["home"]),
+                "away_logo": _team_logo_url(model_data_s, gp["away"]),
+                "home_logo": _team_logo_url(model_data_s, gp["home"]),
                 "neutral_site": gp["neutral"],
                 "away_rating_source": gp["away_rating"]["source"],
                 "home_rating_source": gp["home_rating"]["source"],
@@ -6718,7 +6712,7 @@ if run_mode == "Full Slate":
                 ios_save_button(
                     f"Save {slate_choice} Ranked Bets CSV",
                     market_board[market_cols].to_csv(index=False),
-                    f"cfb_v160_{selected_date}_{slate_choice.lower().replace(' ','_')}_ranked_bets.csv",
+                    f"cfb_v161_{selected_date}_{slate_choice.lower().replace(' ','_')}_ranked_bets.csv",
                 )
 
             display_cols = [
@@ -6730,7 +6724,7 @@ if run_mode == "Full Slate":
             ios_save_button(
                 f"Save {slate_choice} Slate CSV",
                 slate_df.to_csv(index=False),
-                f"cfb_v160_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+                f"cfb_v161_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
             )
             st.caption(
                 "Slate lines use the median across available CFBD providers. "
@@ -7249,4 +7243,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v1.6.0-APP-POLISH • Team logos, premium slate header, chronological game navigation and ranked all-market betting cards.")
+st.caption("CFB Edge • v1.6.1-LOGO-HOTFIX • Team-logo scope fix with premium ranked-slate UI.")
