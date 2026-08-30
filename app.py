@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.4.1-PREMIUM-SLATE-UI"
+MODEL_VERSION = "1.5.0-RANKED-SLATE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -914,6 +914,15 @@ def load_rating_maps(api_key, year):
     d = load_model_data(api_key, year)
     return d["sp_current"], d["sp_previous"]
 
+
+# ===== v1.4.2 FCS protection =====
+# CFBD's FBS team endpoint is used as the membership list. If a scheduled team
+# is not in that list and also lacks usable SP+ data, it must NOT be treated
+# as an average FBS team.
+FCS_FALLBACK_POWER = -20.0
+FCS_CONFIDENCE_CAP = 62
+FCS_OFFICIAL_BET_CAP = "LEAN"
+
 def _team_snapshot(team, data, week):
     cw = _current_weight_for_week(week)
 
@@ -952,17 +961,26 @@ def _team_snapshot(team, data, week):
     ]
     completeness = sum(x is not None for x in completeness_items) / len(completeness_items)
 
-    source = "Current-year SP+" if team in data["sp_current"] else (
-        "Prior-year SP+ fallback" if team in data["sp_previous"] else "Average fallback"
-    )
+    is_fbs = team in (data.get("teams") or {})
+    has_sp = sp["rating"] is not None
+    fcs_fallback = (not is_fbs) and (not has_sp)
+
+    if fcs_fallback:
+        # Critical fix: previously this became 0.0, effectively "average FBS".
+        sp["rating"] = FCS_FALLBACK_POWER
+        source = "FCS fallback"
+    else:
+        source = "Current-year SP+" if team in data["sp_current"] else (
+            "Prior-year SP+ fallback" if team in data["sp_previous"] else "Average fallback"
+        )
 
     return {
         "team": team,
-        "rating": sp["rating"] or 0.0,
-        "offense": sp["offense"] or 0.0,
-        "defense": sp["defense"] or 0.0,
-        "special": sp["special"] or 0.0,
-        "pace": sp["pace"] or 0.0,
+        "rating": sp["rating"] if sp["rating"] is not None else 0.0,
+        "offense": sp["offense"] if sp["offense"] is not None else 0.0,
+        "defense": sp["defense"] if sp["defense"] is not None else 0.0,
+        "special": sp["special"] if sp["special"] is not None else 0.0,
+        "pace": sp["pace"] if sp["pace"] is not None else 0.0,
         "source": source,
         "sp": sp,
         "srs": srs,
@@ -976,6 +994,8 @@ def _team_snapshot(team, data, week):
         "returning_z": returning_z,
         "current_data_weight": cw,
         "completeness": completeness,
+        "is_fbs": is_fbs,
+        "fcs_fallback": fcs_fallback,
     }
 
 def _team_base_power(team, data, week):
@@ -1162,6 +1182,12 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
 
     margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
     confidence = max(60, confidence - int(environment.get("confidence_penalty", 0)))
+
+    fcs_fallback_used = bool(ar.get("fcs_fallback") or hr.get("fcs_fallback"))
+    if fcs_fallback_used:
+        confidence = min(confidence, FCS_CONFIDENCE_CAP)
+        margin_sd = min(18.0, margin_sd + 1.0)
+
     home_wp = 1.0 - NormalDist(mu=home_margin, sigma=margin_sd).cdf(0)
 
     components = {
@@ -1194,6 +1220,9 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
         "total_sd": total_sd,
         "confidence": confidence,
         "data_completeness": completeness,
+        "fcs_fallback_used": fcs_fallback_used,
+        "away_is_fbs": ar.get("is_fbs"),
+        "home_is_fbs": hr.get("is_fbs"),
         "components": components,
         "environment": environment,
     }
@@ -1344,6 +1373,191 @@ def robust_live_stake(verdict, edge, confidence, bankroll_units=100.0):
 
 # ===== End v1.0 ROBUST LIVE guardrails =====
 
+
+
+def apply_fcs_guard(verdict, fcs_fallback_used):
+    """
+    Missing FCS team-specific inputs are too weak for an official A/B play.
+    Preserve the model opinion, but cap STRONG BET/BET at LEAN.
+    """
+    if fcs_fallback_used and verdict in {"STRONG BET", "BET"}:
+        return "LEAN"
+    return verdict
+
+
+def _slate_market_type(name):
+    s = str(name or "")
+    if s.endswith(" ML"):
+        return "MONEYLINE"
+    if s.startswith("Over ") or s.startswith("Under "):
+        return "TOTAL"
+    return "SPREAD"
+
+
+def _slate_grade_meta(verdict):
+    return {
+        "STRONG BET": ("A", 4, "BEST BET"),
+        "BET": ("B", 3, "BET"),
+        "LEAN": ("C", 2, "LEAN"),
+        "PASS": ("D", 1, "PASS"),
+        "NO LINE": ("D", 0, "NO LINE"),
+    }.get(str(verdict), ("D", 0, "PASS"))
+
+
+def _slate_rank_score(verdict, edge, ev, confidence):
+    """Ordering only; never changes the underlying market verdict."""
+    _, grade_rank, _ = _slate_grade_meta(verdict)
+    try:
+        edge = float(edge)
+    except Exception:
+        edge = 0.0
+    try:
+        ev = float(ev)
+    except Exception:
+        ev = 0.0
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 60.0
+    return grade_rank * 100.0 + ev * 20.0 + edge * 16.0 + confidence / 25.0
+
+
+def _ranked_market_board(slate_df):
+    rows = []
+    if slate_df is None or len(slate_df) == 0:
+        return pd.DataFrame()
+
+    for _, game_row in slate_df.iterrows():
+        try:
+            markets = json.loads(game_row.get("market_grades_json", "[]") or "[]")
+        except Exception:
+            markets = []
+
+        game = f"{game_row['away_team']} @ {game_row['home_team']}"
+        conf = game_row.get("model_confidence", 0)
+        fcs = bool(game_row.get("fcs_fallback_used", False))
+
+        for m in markets:
+            verdict = str(m.get("verdict", "PASS"))
+            grade, grade_rank, grade_label = _slate_grade_meta(verdict)
+            odds = m.get("odds")
+            edge = m.get("edge")
+            ev = m.get("ev")
+            try:
+                prob = implied_prob(float(odds)) + float(edge)
+            except Exception:
+                prob = None
+
+            rows.append({
+                "game": game,
+                "kickoff_et": game_row.get("kickoff_et", ""),
+                "away_team": game_row.get("away_team"),
+                "home_team": game_row.get("home_team"),
+                "market": m.get("market", ""),
+                "market_type": _slate_market_type(m.get("market")),
+                "odds": odds,
+                "prob": prob,
+                "edge": edge,
+                "ev": ev,
+                "verdict": verdict,
+                "grade": grade,
+                "grade_rank": grade_rank,
+                "grade_label": grade_label,
+                "confidence": conf,
+                "fcs_fallback_used": fcs,
+                "rank_score": _slate_rank_score(verdict, edge, ev, conf),
+            })
+
+    out = pd.DataFrame(rows)
+    if len(out):
+        out = out.sort_values(
+            ["grade_rank", "rank_score", "ev", "edge"],
+            ascending=[False, False, False, False],
+            na_position="last",
+        ).reset_index(drop=True)
+    return out
+
+
+def _fmt_market_pct(v, signed=False):
+    try:
+        x = float(v) * 100
+        return f"{x:+.1f}%" if signed else f"{x:.1f}%"
+    except Exception:
+        return "—"
+
+
+def _render_top_slate_bet(row, rank):
+    grade = str(row.get("grade", "D"))
+    cls = grade.lower()
+    game = str(row.get("game", ""))
+    market = str(row.get("market", ""))
+    mtype = str(row.get("market_type", ""))
+    kickoff = str(row.get("kickoff_et", ""))
+    try:
+        odds_txt = f"{int(float(row.get('odds'))):+d}"
+    except Exception:
+        odds_txt = ""
+
+    note = "FCS fallback • capped at C" if bool(row.get("fcs_fallback_used", False)) else f"{row.get('grade_label','')} • {mtype}"
+
+    st.markdown(
+        f"""
+        <div class="topbet-card {cls}">
+          <div class="topbet-rank">#{rank}</div>
+          <div class="topbet-copy">
+            <div class="topbet-game">{html.escape(kickoff)} • {html.escape(game)}</div>
+            <div class="topbet-pick">{html.escape(market)} {html.escape(odds_txt)}</div>
+            <div class="topbet-note">{html.escape(note)}</div>
+          </div>
+          <div class="topbet-grade {cls}">{grade}</div>
+          <div class="topbet-metrics">
+            <div><span>Model</span><b>{_fmt_market_pct(row.get("prob"))}</b></div>
+            <div><span>Edge</span><b>{_fmt_market_pct(row.get("edge"), True)}</b></div>
+            <div><span>EV</span><b>{_fmt_market_pct(row.get("ev"), True)}</b></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_game_market_stack(game_markets):
+    g = game_markets.sort_values(
+        ["grade_rank", "rank_score", "ev", "edge"],
+        ascending=[False, False, False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+
+    if len(g) == 0:
+        st.caption("No market lines available.")
+        return
+
+    top = g.iloc[0]
+    st.markdown('<div class="game-best-label">TOP BET FOR THIS GAME</div>', unsafe_allow_html=True)
+    _render_top_slate_bet(top, 1)
+
+    if len(g) > 1:
+        st.markdown('<div class="game-best-label">OTHER MARKETS · RANKED</div>', unsafe_allow_html=True)
+        for i in range(1, len(g)):
+            r = g.iloc[i]
+            grade = str(r.get("grade", "D"))
+            try:
+                odds_txt = f"{int(float(r.get('odds'))):+d}"
+            except Exception:
+                odds_txt = ""
+            st.markdown(
+                f"""
+                <div class="game-market-row">
+                  <div class="game-market-rank">#{i+1}</div>
+                  <div class="game-market-grade {grade.lower()}">{grade}</div>
+                  <div class="game-market-body">
+                    <div class="game-market-pick">{html.escape(str(r.get('market','')))} {html.escape(odds_txt)}</div>
+                    <div class="game-market-meta">{html.escape(str(r.get('market_type','')))} • Edge {_fmt_market_pct(r.get("edge"), True)} • EV {_fmt_market_pct(r.get("ev"), True)}</div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 def grade(prob, odds, confidence=75, market_type="spread", projection_gap=None, week=1):
     """
@@ -4584,6 +4798,113 @@ div[data-testid="stMetric"]{
   .slate-matchup{font-size:.96rem}
 }
 
+
+.slate-summary{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:8px;
+  margin:8px 0 16px 0;
+}
+.slate-summary-box{
+  padding:11px 12px;
+  border-radius:12px;
+  background:rgba(255,255,255,.03);
+  border:1px solid rgba(148,163,184,.09);
+}
+.slate-summary-label{
+  font-size:.58rem;
+  color:#71869f;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.slate-summary-value{
+  margin-top:3px;
+  font-size:1.06rem;
+  color:#f8fafc;
+  font-weight:950;
+}
+.slate-note{
+  margin:7px 0 13px 0;
+  padding:10px 12px;
+  border-radius:11px;
+  background:rgba(56,189,248,.05);
+  border:1px solid rgba(56,189,248,.10);
+  color:#8ca2ba;
+  font-size:.73rem;
+}
+@media(max-width:700px){
+  .slate-summary{grid-template-columns:repeat(2,1fr)}
+}
+
+
+.topbet-card{
+  display:grid;
+  grid-template-columns:38px 1fr 42px;
+  gap:9px;
+  padding:12px;
+  margin:8px 0;
+  border-radius:15px;
+  background:linear-gradient(180deg,rgba(14,29,49,.97),rgba(9,21,37,.97));
+  border:1px solid rgba(148,163,184,.10);
+}
+.topbet-card.a{border-color:rgba(34,197,94,.34)}
+.topbet-card.b{border-color:rgba(56,189,248,.30)}
+.topbet-card.c{border-color:rgba(250,204,21,.22)}
+.topbet-rank{font-weight:950;color:#7890aa;font-size:.82rem;padding-top:2px}
+.topbet-copy{min-width:0}
+.topbet-game{
+  color:#70869f;font-size:.60rem;font-weight:850;letter-spacing:.05em;
+  text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.topbet-pick{
+  margin-top:3px;color:#f7f9fc;font-weight:950;font-size:1rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.topbet-note{margin-top:3px;color:#7890aa;font-size:.66rem}
+.topbet-grade{
+  width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:.96rem;font-weight:950;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+}
+.topbet-grade.a{border-color:rgba(34,197,94,.34)}
+.topbet-grade.b{border-color:rgba(56,189,248,.30)}
+.topbet-grade.c{border-color:rgba(250,204,21,.23)}
+.topbet-metrics{
+  grid-column:2 / 4;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:1px;
+}
+.topbet-metrics div{
+  padding:6px 8px;border-radius:9px;background:rgba(255,255,255,.025);
+  border:1px solid rgba(255,255,255,.045);
+}
+.topbet-metrics span{
+  display:block;color:#60768e;font-size:.54rem;font-weight:850;text-transform:uppercase;letter-spacing:.06em;
+}
+.topbet-metrics b{display:block;margin-top:2px;color:#dfe8f2;font-size:.74rem}
+.game-best-label{
+  margin:4px 0 7px;color:#6f859d;font-size:.61rem;font-weight:900;letter-spacing:.10em;text-transform:uppercase;
+}
+.game-market-row{
+  display:grid;grid-template-columns:28px 30px 1fr;gap:8px;align-items:center;
+  padding:9px 2px;border-bottom:1px solid rgba(148,163,184,.07);
+}
+.game-market-row:last-child{border-bottom:none}
+.game-market-rank{color:#657b93;font-size:.67rem;font-weight:850}
+.game-market-grade{
+  width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
+  color:#e8eef6;font-size:.74rem;font-weight:900;
+}
+.game-market-grade.a{border-color:rgba(34,197,94,.30)}
+.game-market-grade.b{border-color:rgba(56,189,248,.28)}
+.game-market-grade.c{border-color:rgba(250,204,21,.22)}
+.game-market-pick{color:#e7eef7;font-size:.84rem;font-weight:850}
+.game-market-meta{margin-top:2px;color:#71869f;font-size:.64rem}
+@media(max-width:700px){
+  .topbet-card{grid-template-columns:34px 1fr 38px;padding:11px}
+  .topbet-pick{font-size:.93rem}
+  .topbet-metrics{grid-column:1 / 4}
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -5965,10 +6286,14 @@ if run_mode == "Full Slate":
             if market.get("away_ml") is not None:
                 v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
             if market.get("home_ml") is not None:
                 v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
@@ -5977,9 +6302,13 @@ if run_mode == "Full Slate":
                 ap = 1 - hp
                 v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
                                  projection_gap=spread_gap, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
                 v,e,ev,_ = grade(ap, -110, gp["confidence"], market_type="spread",
                                  projection_gap=spread_gap, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
             if market.get("total") is not None:
@@ -5988,9 +6317,13 @@ if run_mode == "Full Slate":
                 up = 1 - op
                 v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
                 v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
             if candidates:
@@ -6030,6 +6363,9 @@ if run_mode == "Full Slate":
                 "away_win_prob": round(gp["away_win_prob"], 6),
                 "home_win_prob": round(gp["home_win_prob"], 6),
                 "model_confidence": gp["confidence"],
+                "fcs_fallback_used": gp.get("fcs_fallback_used", False),
+                "away_is_fbs": gp.get("away_is_fbs"),
+                "home_is_fbs": gp.get("home_is_fbs"),
                 "margin_sd": round(gp["margin_sd"], 3),
                 "total_sd": round(gp["total_sd"], 3),
                 "data_completeness": round(gp["data_completeness"], 4),
@@ -6077,218 +6413,82 @@ if run_mode == "Full Slate":
 
         st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
-        actionable = slate_df[slate_df["best_verdict"].isin(["BET","STRONG BET"])]
-        leans = slate_df[slate_df["best_verdict"].eq("LEAN")]
+        market_board = _ranked_market_board(slate_df)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Games", len(slate_df))
-        c2.metric("Bet Signals", len(actionable))
-        c3.metric("Leans", len(leans))
+        st.markdown('<div class="section-kicker">SLATE BETTING CARD</div>', unsafe_allow_html=True)
+        st.caption("The model ranks individual bets across spreads, moneylines and totals. Open a game below for its complete market stack.")
 
-        if len(actionable):
-            st.success(f"{len(actionable)} ranked BET signal(s) currently clear the threshold.")
-        elif len(leans):
-            st.info("No full BET signals right now. There are LEAN-level edges.")
+        top_n = st.radio(
+            "Ranked card size",
+            options=[5, 10],
+            index=0,
+            horizontal=True,
+            key="ranked_slate_size",
+            format_func=lambda x: f"Top {x}",
+            label_visibility="collapsed",
+        )
+
+        playable_board = market_board[market_board["grade"].isin(["A","B","C"])].copy() if len(market_board) else pd.DataFrame()
+
+        if len(playable_board):
+            show_n = int(top_n or 5)
+            top_bets = playable_board.head(show_n)
+            st.markdown(f'<div class="section-kicker">TOP {len(top_bets)} BETS</div>', unsafe_allow_html=True)
+            for rank_num, (_, bet_row) in enumerate(top_bets.iterrows(), start=1):
+                _render_top_slate_bet(bet_row, rank_num)
+
+            a_n = int((market_board["grade"] == "A").sum())
+            b_n = int((market_board["grade"] == "B").sum())
+            c_n = int((market_board["grade"] == "C").sum())
+            st.caption(f"Qualified market pool: {a_n} A • {b_n} B • {c_n} C")
         else:
-            st.info("No games in this slate currently clear the LEAN threshold.")
+            st.info("No A/B/C markets currently qualify on this slate.")
 
-        def _fmt_spread(team, value):
-            if pd.isna(value):
-                return "—"
-            return f"{team} {float(value):+.1f}"
+        st.markdown('<div class="section-kicker">ALL GAMES</div>', unsafe_allow_html=True)
+        st.caption("Each matchup opens to its #1 market first, followed by every other available spread, ML and total ranked underneath.")
 
-        def _fmt_num(value, digits=1):
-            if pd.isna(value):
-                return "—"
-            return f"{float(value):.{digits}f}"
+        if len(market_board):
+            game_groups = []
+            for game_name, game_markets in market_board.groupby("game", sort=False):
+                game_markets = game_markets.sort_values(
+                    ["grade_rank","rank_score","ev","edge"],
+                    ascending=[False,False,False,False],
+                    na_position="last",
+                ).reset_index(drop=True)
+                best_game_market = game_markets.iloc[0]
+                game_groups.append((
+                    float(best_game_market.get("rank_score", 0)),
+                    str(game_name),
+                    game_markets,
+                ))
 
-        def _fmt_pct(value):
-            if pd.isna(value):
-                return "—"
-            return f"{float(value)*100:.1f}%"
+            game_groups.sort(key=lambda x: x[0], reverse=True)
 
-        def _slate_grade(verdict):
-            return {
-                "STRONG BET": ("A", "a", "BEST BET"),
-                "BET": ("B", "b", "BET"),
-                "LEAN": ("C", "c", "LEAN"),
-                "PASS": ("D", "d", "PASS"),
-                "NO LINE": ("D", "d", "NO LINE"),
-            }.get(str(verdict), ("D", "d", "PASS"))
-
-        # Rank games by verdict first, then edge, then EV.
-        verdict_rank = {
-            "STRONG BET": 4,
-            "BET": 3,
-            "LEAN": 2,
-            "PASS": 1,
-            "NO LINE": 0,
-        }
-        ranked_df = slate_df.copy()
-        ranked_df["_verdict_rank"] = ranked_df["best_verdict"].map(verdict_rank).fillna(0)
-        ranked_df["_edge_sort"] = pd.to_numeric(ranked_df["best_edge"], errors="coerce").fillna(-999)
-        ranked_df["_ev_sort"] = pd.to_numeric(ranked_df["best_ev"], errors="coerce").fillna(-999)
-        ranked_df = ranked_df.sort_values(
-            ["_verdict_rank", "_edge_sort", "_ev_sort"],
-            ascending=[False, False, False],
-        ).reset_index(drop=True)
-
-        def _render_slate_card(r, rank=None):
-            market_spread = _fmt_spread(r["home_team"], r["market_home_spread"])
-            model_spread = _fmt_spread(r["home_team"], r["model_home_spread"])
-            market_total = _fmt_num(r["market_total"])
-            model_total = _fmt_num(r["model_total"])
-            best_market = str(r["best_market"]) if pd.notna(r["best_market"]) and str(r["best_market"]).strip() else "No actionable market"
-            verdict = str(r["best_verdict"])
-            edge = _fmt_pct(r["best_edge"])
-            ev = _fmt_pct(r["best_ev"])
-            rank_text = f"#{rank} · " if rank is not None else ""
-            grade_letter, grade_class, grade_label = _slate_grade(verdict)
-
-            st.markdown(
-                f"""
-                <div class="slate-card {grade_class}">
-                  <div class="slate-card-top">
-                    <div>
-                      <div class="slate-time">{rank_text}{html.escape(str(r['kickoff_et']))}</div>
-                      <div class="slate-matchup">{html.escape(str(r['away_team']))} <span>@</span> {html.escape(str(r['home_team']))}</div>
-                    </div>
-                    <div class="slate-grade {grade_class}">{grade_letter}</div>
-                  </div>
-
-                  <div class="slate-reco">
-                    <div class="slate-reco-label">{grade_label}</div>
-                    <div class="slate-reco-value">{html.escape(best_market)}</div>
-                    <div class="slate-reco-meta">Edge {edge} &nbsp;•&nbsp; EV {ev}</div>
-                  </div>
-
-                  <div class="slate-grid">
-                    <div class="slate-box">
-                      <div class="slate-box-label">Model Spread</div>
-                      <div class="slate-box-value">{html.escape(model_spread)}</div>
-                    </div>
-                    <div class="slate-box">
-                      <div class="slate-box-label">Market Spread</div>
-                      <div class="slate-box-value">{html.escape(market_spread)}</div>
-                    </div>
-                    <div class="slate-box">
-                      <div class="slate-box-label">Model Total</div>
-                      <div class="slate-box-value">{model_total}</div>
-                    </div>
-                    <div class="slate-box">
-                      <div class="slate-box-label">Market Total</div>
-                      <div class="slate-box-value">{market_total}</div>
-                    </div>
-                  </div>
-
-                  <div class="slate-footer">
-                    Confidence {int(r['model_confidence'])}/100
-                    <span>•</span>
-                    Projected {html.escape(str(r['away_team']))} {float(r['projected_away_score']):.1f} – {html.escape(str(r['home_team']))} {float(r['projected_home_score']):.1f}
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # Full market audit for this game, ranked strongest to weakest.
-            try:
-                market_rows = json.loads(r.get("market_grades_json", "[]") or "[]")
-            except Exception:
-                market_rows = []
-
-            with st.expander(f"All Markets • {r['away_team']} @ {r['home_team']}", expanded=False):
-                if not market_rows:
-                    st.caption("No market lines are available for this game.")
-                else:
-                    market_rank = {"STRONG BET": 4, "BET": 3, "LEAN": 2, "PASS": 1, "NO LINE": 0}
-                    market_rows = sorted(
-                        market_rows,
-                        key=lambda x: (
-                            market_rank.get(str(x.get("verdict")), 0),
-                            float(x.get("edge") if x.get("edge") is not None else -999),
-                            float(x.get("ev") if x.get("ev") is not None else -999),
-                        ),
-                        reverse=True,
-                    )
-
-                    abc_rows = [m for m in market_rows if str(m.get("verdict")) in {"STRONG BET","BET","LEAN"}]
-                    pass_rows = [m for m in market_rows if str(m.get("verdict")) not in {"STRONG BET","BET","LEAN"}]
-
-                    for m in abc_rows:
-                        verdict_m = str(m.get("verdict", "PASS"))
-                        market_m = str(m.get("market", ""))
-                        odds_m = m.get("odds")
-                        edge_m = m.get("edge")
-                        ev_m = m.get("ev")
-                        grade_m, _, label_m = _slate_grade(verdict_m)
-                        odds_txt = f"{int(float(odds_m)):+d}" if odds_m is not None else ""
-                        edge_txt = f"{float(edge_m)*100:+.1f}%" if edge_m is not None else "—"
-                        ev_txt = f"{float(ev_m)*100:+.1f}%" if ev_m is not None else "—"
-                        st.markdown(
-                            f"""
-                            <div class="slate-market-row">
-                              <div class="slate-market-grade">{grade_m}</div>
-                              <div class="slate-market-body">
-                                <div class="slate-market-pick">{html.escape(market_m)} {html.escape(odds_txt)}</div>
-                                <div class="slate-market-sub">{label_m} • Edge {edge_txt} • EV {ev_txt}</div>
-                              </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                    if pass_rows:
-                        with st.expander(f"Passed markets • {len(pass_rows)}", expanded=False):
-                            for m in pass_rows:
-                                market_m = str(m.get("market", ""))
-                                odds_m = m.get("odds")
-                                edge_m = m.get("edge")
-                                ev_m = m.get("ev")
-                                odds_txt = f"{int(float(odds_m)):+d}" if odds_m is not None else ""
-                                edge_txt = f"{float(edge_m)*100:+.1f}%" if edge_m is not None else "—"
-                                ev_txt = f"{float(ev_m)*100:+.1f}%" if ev_m is not None else "—"
-                                st.markdown(
-                                    f"""
-                                    <div class="slate-market-row" style="opacity:.72">
-                                      <div class="slate-market-grade">D</div>
-                                      <div class="slate-market-body">
-                                        <div class="slate-market-pick">{html.escape(market_m)} {html.escape(odds_txt)}</div>
-                                        <div class="slate-market-sub">PASS • Edge {edge_txt} • EV {ev_txt}</div>
-                                      </div>
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True,
-                                )
-
-        # Top bets shown immediately, ordered strongest to weakest.
-        top_bets = ranked_df[ranked_df["best_verdict"].isin(["STRONG BET", "BET"])].copy()
-        if len(top_bets):
-            st.markdown('<div class="section-kicker">TOP PLAYS</div>', unsafe_allow_html=True)
-            for i, (_, r) in enumerate(top_bets.iterrows(), start=1):
-                _render_slate_card(r, rank=i)
+            for _, game_name, game_markets in game_groups:
+                best = game_markets.iloc[0]
+                grade = str(best.get("grade", "D"))
+                best_name = str(best.get("market", ""))
+                kickoff = str(best.get("kickoff_et", ""))
+                with st.expander(f"{grade} • {game_name} • {best_name}", expanded=False):
+                    st.caption(f"{kickoff} • Markets ranked strongest to weakest")
+                    _render_game_market_stack(game_markets)
         else:
-            st.info("No A/B plays currently qualify. Check Leans for lower-confidence opportunities.")
-
-        # Leans and passes stay out of the way until the user wants them.
-        lean_df = ranked_df[ranked_df["best_verdict"].eq("LEAN")].copy()
-        pass_df = ranked_df[ranked_df["best_verdict"].isin(["PASS", "NO LINE"])].copy()
-
-        with st.expander(f"Leans ({len(lean_df)})", expanded=False):
-            if len(lean_df):
-                for i, (_, r) in enumerate(lean_df.iterrows(), start=1):
-                    _render_slate_card(r, rank=i)
-            else:
-                st.caption("No lean-level signals on this slate.")
-
-        with st.expander(f"Passes / No Line ({len(pass_df)})", expanded=False):
-            if len(pass_df):
-                for i, (_, r) in enumerate(pass_df.iterrows(), start=1):
-                    _render_slate_card(r, rank=i)
-            else:
-                st.caption("No pass/no-line games on this slate.")
+            st.caption("No market data available for these games.")
 
         with st.expander("Export / Full Slate Data", expanded=False):
+            if "market_board" in locals() and isinstance(market_board, pd.DataFrame) and len(market_board):
+                st.markdown("**Ranked market-level board**")
+                market_cols = [
+                    "game","kickoff_et","market","market_type","odds","grade","verdict",
+                    "prob","edge","ev","confidence","fcs_fallback_used"
+                ]
+                st.dataframe(market_board[market_cols], use_container_width=True, hide_index=True)
+                ios_save_button(
+                    f"Save {slate_choice} Ranked Bets CSV",
+                    market_board[market_cols].to_csv(index=False),
+                    f"cfb_v150_{selected_date}_{slate_choice.lower().replace(' ','_')}_ranked_bets.csv",
+                )
+
             display_cols = [
                 "kickoff_et","away_team","home_team","projected_away_score","projected_home_score",
                 "model_home_spread","model_total","market_home_spread","market_total",
@@ -6298,7 +6498,7 @@ if run_mode == "Full Slate":
             ios_save_button(
                 f"Save {slate_choice} Slate CSV",
                 slate_df.to_csv(index=False),
-                f"cfb_v141_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+                f"cfb_v150_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
             )
             st.caption(
                 "Slate lines use the median across available CFBD providers. "
@@ -6710,6 +6910,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
 
     for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
         v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="moneyline",week=p["week"])
+        v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     spread_gap = p["model_home_spread"] - home_spread
@@ -6721,6 +6922,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     ]:
         v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="spread",
                          projection_gap=spread_gap,week=p["week"])
+        v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     total_gap = p["model_total"] - market_total
@@ -6729,9 +6931,13 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     for name,prob,odds in [(f"Over {market_total:g}",op,over_odds),(f"Under {market_total:g}",up,under_odds)]:
         v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="total",
                          projection_gap=total_gap,week=p["week"])
+        v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
+    if p.get("fcs_fallback_used", False):
+        st.warning("FCS opponent uses a generic fallback rating. Confidence is reduced and A/B plays are capped at C until better team-specific data is available.")
+
+        rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
     best=markets[0]
 
@@ -6810,4 +7016,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v1.4.1-PREMIUM-SLATE-UI • Premium single-game and slate boards with compact pass-market handling.")
+st.caption("CFB Edge • v1.5.0-RANKED-SLATE • Top-5/Top-10 cross-market slate rankings with game-level market stacks.")

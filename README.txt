@@ -1,28 +1,32 @@
-CFB Edge v1.4.1-PREMIUM-SLATE-UI
+CFB Edge v1.5.0-RANKED-SLATE
 
-UI-only refinement. Model logic and v1.2 playable thresholds are unchanged.
+Slate workflow
+==============
+1. Run the slate once.
+2. See a Top 5 or Top 10 ranked list of individual bets.
+3. Spread, moneyline, and total bets compete in the same ranking.
+4. Scroll to All Games.
+5. Open any matchup.
+6. The top bet for that game is highlighted first.
+7. Every other available market is ranked underneath.
 
-Single game
------------
-- A/B/C markets remain visible on the main board.
-- D/PASS markets move into a collapsed "Other markets" section.
-- Export/Audit moves into a collapsed expander.
-- Premium v1.4 top-play/no-play card remains unchanged.
+Ranking
+=======
+- A > B > C > D always.
+- Within the same grade, EV, edge, and confidence determine order.
+- Ranking changes presentation only; it does not manufacture a different probability or verdict.
 
-Full slate
-----------
-- Existing slate cards now use the same premium visual language.
-- Each game gets an A/B/C/D badge instead of raw STRONG BET/BET/LEAN/PASS text.
-- A/B games appear first under TOP PLAYS.
-- C games stay in a Leans expander.
-- D/PASS games stay in Passes / No Line.
-- Inside each game, A/B/C markets are shown first and D markets are collapsed.
-- Raw slate data and CSV export are moved into one "Export / Full Slate Data" expander.
-- Mobile layout is denser and consistent with the single-game board.
+Market coverage
+===============
+All are in play:
+- Home / away moneyline
+- Home / away spread
+- Over / under
 
-Grades
-------
-A = Best Bet
-B = Bet
-C = Lean
-D = Pass
+FCS protection
+==============
+The v1.4.2 FCS fallback guard remains in place. FCS fallback games are confidence-capped and cannot become A/B recommendations solely because of missing FCS data.
+
+Export
+======
+The app now includes a market-level ranked bets CSV in addition to the full game-level slate export.
