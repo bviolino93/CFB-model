@@ -1,33 +1,35 @@
-CFB Edge v1.3.0-SLEEK-UX
+CFB Edge v1.4.0-PREMIUM-UI
 
 Purpose
 -------
-A front-end overhaul focused on the end user, especially on mobile.
+Make the front end feel like a polished consumer betting product rather than
+a styled Streamlit research app.
 
-The betting model and v1.2 playable thresholds are intentionally unchanged.
+Model logic
+-----------
+No betting-model or threshold changes from v1.2/v1.3.
+This release is visual/UX only.
 
-New default workflow
+Major visual changes
 --------------------
-1. Choose your matchup
-2. Review the model projection
-3. Load/edit market odds
-4. Analyze markets
+- Premium dark navy visual system
+- Stronger typography and hierarchy
+- Cleaner hero and status strip
+- Smaller, denser A/B/C/D legend
+- Premium top-play card
+- Separate no-play state when every market is D
+- Compact market-board cards
+- Dense mobile layout so more markets fit on one screen
+- Cleaner metric chips for Model / Edge / EV / Fair
+- Refined buttons, tabs, inputs, metrics, expanders
+- Better spacing and reduced visual clutter
+- More professional mobile experience
 
-UX changes
-----------
-- Cleaner hero and live-status strip
-- Betting Board / Research Lab navigation
-- Custom probability grader moved into Advanced Tools
-- Date and game-level controls grouped together
-- Single Game / Full Slate language
-- Advanced HFA setting hidden by default
-- Spread / Moneyline / Total inputs separated into tabs
-- One primary "Analyze Markets" action
-- A/B/C/D legend directly beside the betting workflow
-- Projection export moved into an optional audit section
-- Cleaner mobile spacing and control styling
-- Existing professional recommendation cards retained
-- Slate workflow retained with "Analyze Slate"
+Top result behavior
+-------------------
+If the top market is:
+A/B/C -> header shows TOP PLAY and a premium result card.
+D     -> header shows NO PLAY and a quieter no-play card.
 
 Grades
 ------
@@ -36,10 +38,8 @@ B — Bet
 C — Lean
 D — Pass
 
-Suggested units remain:
-A 1.00u
-B 0.50–0.75u
-C 0.25u optional
-D 0u
-
-This release is a front-end/UX update, not a model retune.
+Suggested units are unchanged:
+A = 1.00u
+B = 0.50–0.75u
+C = 0.25u optional
+D = 0u

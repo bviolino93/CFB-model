@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.3.0-SLEEK-UX"
+MODEL_VERSION = "1.4.0-PREMIUM-UI"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1556,45 +1556,75 @@ def verdict_meta(verdict):
 
 def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None, stake=None):
     meta = verdict_meta(verdict)
+    cls = meta["grade"].lower() if meta["grade"] in {"A","B","C","D"} else "d"
 
-    odds_txt = ""
     try:
-        o = int(odds)
-        odds_txt = f"{o:+d}"
+        odds_txt = f"{int(odds):+d}"
     except Exception:
-        if odds not in (None, "", "nan"):
-            odds_txt = str(odds)
+        odds_txt = str(odds)
 
     title = f"{bet_label} {odds_txt}".strip()
 
-    details = []
+    if verdict == "PASS":
+        st.markdown(
+            f"""
+            <div class="no-play">
+              <div class="result-top">
+                <div class="result-badge">D</div>
+                <div>
+                  <div class="result-label">NO PLAY RECOMMENDED</div>
+                  <div class="no-play-title">{title}</div>
+                </div>
+              </div>
+              <div class="no-play-sub">
+                The best available market still falls below the model's playable threshold.
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    label = {
+        "STRONG BET":"BEST BET",
+        "BET":"BET",
+        "LEAN":"LEAN",
+    }.get(verdict, verdict)
+
+    metric_html = []
     if prob is not None and pd.notna(prob):
-        details.append(f"Model {float(prob)*100:.1f}%")
+        metric_html.append(("Model", f"{float(prob)*100:.1f}%"))
     if edge is not None and pd.notna(edge):
-        details.append(f"Edge {float(edge)*100:+.1f}%")
+        metric_html.append(("Edge", f"{float(edge)*100:+.1f}%"))
     if ev is not None and pd.notna(ev):
-        details.append(f"EV {float(ev)*100:+.1f}%")
+        metric_html.append(("EV", f"{float(ev)*100:+.1f}%"))
     if fair is not None:
         try:
-            details.append(f"Fair {int(round(float(fair))):+d}")
+            metric_html.append(("Fair", f"{int(round(float(fair))):+d}"))
         except Exception:
             pass
-    if stake is not None and float(stake) > 0:
-        details.append(f"Stake {float(stake):.2f}u")
 
-    detail_txt = " • ".join(details)
+    metrics = "".join(
+        f'<div class="metric-chip"><div class="k">{k}</div><div class="v">{v}</div></div>'
+        for k,v in metric_html[:4]
+    )
+
+    stake_txt = ""
+    if stake is not None and float(stake) > 0:
+        stake_txt = f'<div class="result-stake">{float(stake):.2f}u</div>'
 
     st.markdown(
         f"""
-        <div class="pro-card {meta['class']}">
-            <div class="pro-card-top">
-                <div class="pro-grade">{meta['grade']}</div>
-                <div class="pro-card-main">
-                    <div class="pro-card-label">{meta['label']}</div>
-                    <div class="pro-card-title">{title}</div>
-                </div>
+        <div class="result-hero {cls}">
+          <div class="result-top">
+            <div class="result-badge">{meta['grade']}</div>
+            <div>
+              <div class="result-label">{label}</div>
+              <div class="result-pick">{title}</div>
             </div>
-            <div class="pro-card-details">{detail_txt}</div>
+            {stake_txt}
+          </div>
+          <div class="result-metrics">{metrics}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1603,36 +1633,37 @@ def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, e
 
 def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None):
     meta = verdict_meta(verdict)
+    cls = meta["grade"].lower() if meta["grade"] in {"A","B","C","D"} else "d"
 
     try:
         odds_txt = f"{int(odds):+d}"
     except Exception:
         odds_txt = str(odds)
 
-    metrics = []
+    pieces = []
     if prob is not None and pd.notna(prob):
-        metrics.append(f"Model {float(prob)*100:.1f}%")
+        pieces.append(f"{float(prob)*100:.1f}% model")
     if edge is not None and pd.notna(edge):
-        metrics.append(f"Edge {float(edge)*100:+.1f}%")
+        pieces.append(f"{float(edge)*100:+.1f}% edge")
     if ev is not None and pd.notna(ev):
-        metrics.append(f"EV {float(ev)*100:+.1f}%")
+        pieces.append(f"{float(ev)*100:+.1f}% EV")
     if fair is not None:
         try:
-            metrics.append(f"Fair {int(round(float(fair))):+d}")
+            pieces.append(f"fair {int(round(float(fair))):+d}")
         except Exception:
             pass
 
+    sub = " • ".join(pieces)
+
     st.markdown(
         f"""
-        <div class="market-row">
-            <div class="market-row-grade {meta['class']}">{meta['grade']}</div>
-            <div class="market-row-body">
-                <div class="market-row-head">
-                    <span class="market-row-verdict">{meta['label']}</span>
-                    <span class="market-row-pick">{bet_label} {odds_txt}</span>
-                </div>
-                <div class="market-row-metrics">{" • ".join(metrics)}</div>
-            </div>
+        <div class="market-card">
+          <div class="market-grade {cls}">{meta['grade']}</div>
+          <div class="market-main">
+            <div class="market-pick">{bet_label} {odds_txt}</div>
+            <div class="market-sub">{sub}</div>
+          </div>
+          <div class="market-tag">{meta['label']}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -4056,503 +4087,360 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* App shell */
-    .stApp {
-        background:
-          radial-gradient(circle at 15% 0%, rgba(37,99,235,.12), transparent 32%),
-          radial-gradient(circle at 90% 8%, rgba(16,185,129,.08), transparent 26%),
-          #07101f;
-        color: #E8EEF8;
-    }
-    [data-testid="stHeader"] {
-        background: rgba(7,16,31,.76);
-        backdrop-filter: blur(14px);
-        border-bottom: 1px solid rgba(148,163,184,.10);
-    }
-    .block-container {
-        max-width: 1180px;
-        padding-top: 1.6rem;
-        padding-bottom: 4rem;
-    }
+:root{
+  --bg:#06111f;
+  --panel:#0b1728;
+  --panel2:#0e1d31;
+  --line:rgba(148,163,184,.12);
+  --text:#f8fafc;
+  --muted:#8fa3ba;
+  --blue:#3b82f6;
+  --cyan:#38bdf8;
+  --green:#22c55e;
+  --yellow:#facc15;
+  --red:#ef4444;
+}
+.stApp{
+  background:
+    radial-gradient(circle at 18% -4%, rgba(59,130,246,.18), transparent 30%),
+    radial-gradient(circle at 88% 4%, rgba(56,189,248,.08), transparent 22%),
+    linear-gradient(180deg,#071321 0%,#06111f 44%,#050d18 100%);
+  color:var(--text);
+}
+.block-container{
+  max-width:940px;
+  padding-top:1rem;
+  padding-bottom:4rem;
+}
+header[data-testid="stHeader"]{
+  background:rgba(6,17,31,.76);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid rgba(148,163,184,.08);
+}
+h1,h2,h3{
+  letter-spacing:-.03em;
+}
+[data-testid="stMarkdownContainer"] p{
+  line-height:1.45;
+}
 
-    /* Hide default Streamlit chrome */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
+/* Hero */
+.cfb-hero{
+  padding:20px 2px 12px;
+}
+.cfb-kicker{
+  font-size:.72rem;
+  font-weight:900;
+  letter-spacing:.18em;
+  color:#7dd3fc;
+  margin-bottom:6px;
+}
+.cfb-title{
+  font-size:2.55rem;
+  line-height:1;
+  font-weight:900;
+  letter-spacing:-.055em;
+  color:#fff;
+}
+.cfb-subtitle{
+  margin-top:10px;
+  color:#8fa3ba;
+  max-width:620px;
+  font-size:.95rem;
+}
+.version-pill{
+  display:inline-flex;
+  margin-top:12px;
+  padding:5px 9px;
+  border-radius:999px;
+  background:rgba(59,130,246,.11);
+  border:1px solid rgba(96,165,250,.22);
+  color:#bfdbfe;
+  font-size:.68rem;
+  font-weight:800;
+  letter-spacing:.05em;
+}
+.status-strip{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  padding:10px 12px;
+  margin:0 0 14px;
+  border-radius:13px;
+  background:rgba(11,23,40,.68);
+  border:1px solid rgba(148,163,184,.10);
+  color:#8fa3ba;
+  font-size:.76rem;
+}
+.status-live{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  color:#86efac;
+  font-weight:850;
+}
+.status-dot{
+  width:7px;height:7px;border-radius:999px;background:#22c55e;
+  box-shadow:0 0 0 4px rgba(34,197,94,.10);
+}
 
-    /* Typography */
-    h1, h2, h3 {
-        letter-spacing: -0.025em;
-        color: #F8FAFC !important;
-    }
-    p, label, .stCaption {
-        color: #AFC0D6 !important;
-    }
+/* Workflow */
+.workflow-step{
+  margin:1.05rem 0 .5rem;
+  display:flex;
+  align-items:center;
+  gap:.7rem;
+}
+.workflow-num{
+  width:30px;height:30px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(180deg,rgba(59,130,246,.25),rgba(37,99,235,.12));
+  border:1px solid rgba(96,165,250,.28);
+  color:#dbeafe;
+  font-size:.76rem;font-weight:900;
+}
+.workflow-title{
+  font-size:1.03rem;font-weight:850;color:#fff;letter-spacing:-.02em;
+}
+.workflow-sub{
+  color:#7f94ae;font-size:.75rem;margin-top:1px;
+}
 
-    /* Hero */
-    .cfb-hero {
-        padding: 22px 24px;
-        margin-bottom: 22px;
-        border: 1px solid rgba(148,163,184,.15);
-        border-radius: 22px;
-        background: linear-gradient(135deg, rgba(15,30,54,.96), rgba(10,22,42,.92));
-        box-shadow: 0 20px 60px rgba(0,0,0,.25);
-    }
-    .cfb-kicker {
-        font-size: .73rem;
-        font-weight: 800;
-        letter-spacing: .16em;
-        text-transform: uppercase;
-        color: #60A5FA;
-        margin-bottom: 7px;
-    }
-    .cfb-title {
-        font-size: clamp(1.9rem, 4vw, 3rem);
-        line-height: 1.02;
-        font-weight: 850;
-        color: #F8FAFC;
-        letter-spacing: -.045em;
-    }
-    .cfb-subtitle {
-        color: #AFC0D6;
-        font-size: .98rem;
-        margin-top: 8px;
-    }
-    .version-pill {
-        display: inline-block;
-        margin-top: 13px;
-        padding: 5px 10px;
-        border-radius: 999px;
-        background: rgba(96,165,250,.10);
-        border: 1px solid rgba(96,165,250,.25);
-        color: #93C5FD;
-        font-size: .72rem;
-        font-weight: 800;
-        letter-spacing: .05em;
-    }
+/* Inputs */
+[data-testid="stSelectbox"] label,
+[data-testid="stDateInput"] label,
+[data-testid="stNumberInput"] label,
+[data-testid="stRadio"] > label,
+[data-testid="stCheckbox"] label{
+  font-size:.76rem!important;
+  font-weight:800!important;
+  color:#93a8c2!important;
+}
+[data-baseweb="select"] > div,
+[data-testid="stDateInput"] input,
+[data-testid="stNumberInput"] input{
+  background:#0a1728!important;
+  border-color:rgba(148,163,184,.12)!important;
+}
+[data-testid="stTabs"] button{
+  font-weight:800!important;
+}
+[data-testid="stExpander"]{
+  border:1px solid rgba(148,163,184,.10)!important;
+  border-radius:14px!important;
+  background:rgba(10,22,40,.36)!important;
+}
 
-    /* Section labels */
-    .section-kicker {
-        margin-top: 1.1rem;
-        margin-bottom: .45rem;
-        font-size: .72rem;
-        font-weight: 800;
-        letter-spacing: .14em;
-        text-transform: uppercase;
-        color: #7DD3FC;
-    }
+/* Buttons */
+div[data-testid="stButton"] > button,
+div[data-testid="stDownloadButton"] > button{
+  border-radius:14px!important;
+  font-weight:850!important;
+  min-height:3.05rem!important;
+  border:1px solid rgba(255,255,255,.08)!important;
+}
+div[data-testid="stButton"] > button[kind="primary"]{
+  background:linear-gradient(135deg,#2563eb,#3b82f6)!important;
+  box-shadow:0 10px 30px rgba(37,99,235,.24)!important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover{
+  transform:translateY(-1px);
+  box-shadow:0 13px 36px rgba(37,99,235,.30)!important;
+}
 
-    /* Inputs */
-    div[data-baseweb="select"] > div,
-    div[data-baseweb="input"] > div,
-    div[data-baseweb="base-input"],
-    [data-testid="stDateInput"] input,
-    [data-testid="stNumberInput"] input {
-        background: #0D1A2D !important;
-        border-color: rgba(148,163,184,.18) !important;
-        color: #F8FAFC !important;
-        border-radius: 12px !important;
-    }
-    div[data-baseweb="select"] span {
-        color: #F8FAFC !important;
-    }
+/* Projection metrics */
+div[data-testid="stMetric"]{
+  background:linear-gradient(180deg,rgba(14,29,49,.95),rgba(10,23,40,.95));
+  border:1px solid rgba(148,163,184,.10);
+  border-radius:14px;
+  padding:11px 13px;
+  box-shadow:0 8px 20px rgba(0,0,0,.14);
+}
 
-    /* Radio segmented control */
-    div[role="radiogroup"] {
-        gap: .45rem;
-        background: rgba(13,26,45,.75);
-        border: 1px solid rgba(148,163,184,.14);
-        padding: 5px;
-        border-radius: 14px;
-    }
-    div[role="radiogroup"] label {
-        border-radius: 10px;
-        padding: 3px 10px;
-    }
+/* Compact legend */
+.grade-legend-inline{
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap;
+  margin:5px 0 10px;
+}
+.grade-pill{
+  padding:6px 9px;
+  border-radius:999px;
+  background:#0b1728;
+  border:1px solid rgba(148,163,184,.10);
+  font-size:.70rem;
+  color:#93a8c2;
+  font-weight:760;
+}
+.grade-pill b{color:#fff;margin-right:4px}
+.grade-pill.a{border-color:rgba(34,197,94,.24)}
+.grade-pill.b{border-color:rgba(56,189,248,.24)}
+.grade-pill.c{border-color:rgba(250,204,21,.20)}
+.grade-pill.d{border-color:rgba(148,163,184,.12)}
 
-    /* Buttons */
-    .stButton > button {
-        width: 100%;
-        border-radius: 12px;
-        min-height: 45px;
-        font-weight: 750;
-        border: 1px solid rgba(96,165,250,.30);
-        background: linear-gradient(135deg, #2563EB, #1D4ED8);
-        color: white;
-        box-shadow: 0 10px 24px rgba(37,99,235,.18);
-        transition: .15s ease;
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        border-color: rgba(147,197,253,.65);
-        box-shadow: 0 12px 30px rgba(37,99,235,.28);
-        color: white;
-    }
+/* Top result card */
+.result-hero{
+  position:relative;
+  overflow:hidden;
+  border-radius:20px;
+  padding:18px;
+  margin:8px 0 16px;
+  background:
+    linear-gradient(135deg,rgba(15,31,54,.98),rgba(9,22,39,.98));
+  border:1px solid rgba(148,163,184,.12);
+  box-shadow:0 18px 50px rgba(0,0,0,.26);
+}
+.result-hero:after{
+  content:"";
+  position:absolute;
+  inset:auto -60px -90px auto;
+  width:180px;height:180px;border-radius:999px;
+  background:radial-gradient(circle,rgba(59,130,246,.16),transparent 66%);
+}
+.result-hero.a{border-color:rgba(34,197,94,.32);box-shadow:0 18px 50px rgba(20,83,45,.16)}
+.result-hero.b{border-color:rgba(56,189,248,.30);box-shadow:0 18px 50px rgba(14,116,144,.13)}
+.result-hero.c{border-color:rgba(250,204,21,.22)}
+.result-hero.d{border-color:rgba(148,163,184,.12)}
+.result-top{
+  display:flex;align-items:center;gap:12px;
+}
+.result-badge{
+  width:44px;height:44px;border-radius:13px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.18rem;font-weight:950;color:#fff;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+}
+.result-label{
+  font-size:.68rem;letter-spacing:.14em;font-weight:900;color:#8fa3ba;
+}
+.result-pick{
+  font-size:1.28rem;font-weight:900;color:#fff;letter-spacing:-.025em;margin-top:1px;
+}
+.result-stake{
+  margin-left:auto;
+  padding:7px 10px;border-radius:999px;
+  background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.08);
+  font-size:.73rem;font-weight:850;color:#cbd5e1;
+}
+.result-metrics{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:8px;
+  margin-top:14px;
+}
+.metric-chip{
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:12px;
+  padding:9px 10px;
+}
+.metric-chip .k{
+  font-size:.63rem;text-transform:uppercase;letter-spacing:.10em;color:#6f849d;font-weight:850;
+}
+.metric-chip .v{
+  margin-top:2px;font-size:.90rem;color:#e2e8f0;font-weight:850;
+}
 
-    /* Metrics */
-    [data-testid="stMetric"] {
-        background: linear-gradient(180deg, rgba(16,31,53,.96), rgba(12,24,43,.96));
-        border: 1px solid rgba(148,163,184,.14);
-        border-radius: 16px;
-        padding: 15px 16px;
-        box-shadow: 0 12px 30px rgba(0,0,0,.13);
-    }
-    [data-testid="stMetricLabel"] {
-        color: #93A8C2 !important;
-        font-weight: 700;
-    }
-    [data-testid="stMetricValue"] {
-        color: #F8FAFC !important;
-        letter-spacing: -.03em;
-    }
+/* No-play state */
+.no-play{
+  border-radius:20px;
+  padding:18px;
+  margin:8px 0 16px;
+  background:linear-gradient(135deg,rgba(15,23,42,.92),rgba(9,18,32,.92));
+  border:1px solid rgba(148,163,184,.11);
+}
+.no-play-title{
+  font-size:1.16rem;font-weight:900;color:#f8fafc;
+}
+.no-play-sub{
+  margin-top:5px;color:#8fa3ba;font-size:.83rem;
+}
 
-    /* Scoreboard */
-    .scoreboard {
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
-        align-items: center;
-        gap: 18px;
-        padding: 22px;
-        border-radius: 20px;
-        background: linear-gradient(145deg, rgba(15,31,54,.98), rgba(9,20,38,.98));
-        border: 1px solid rgba(148,163,184,.16);
-        box-shadow: 0 20px 55px rgba(0,0,0,.22);
-        margin-bottom: 12px;
-    }
-    .score-team { min-width: 0; }
-    .score-team.right { text-align: right; }
-    .team-name {
-        color: #C6D4E7;
-        font-size: .84rem;
-        font-weight: 750;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .team-score {
-        color: #F8FAFC;
-        font-weight: 900;
-        font-size: clamp(2rem, 6vw, 3.3rem);
-        letter-spacing: -.06em;
-        line-height: 1;
-        margin-top: 4px;
-    }
-    .score-center {
-        text-align: center;
-        padding: 0 9px;
-    }
-    .score-at {
-        font-size: .72rem;
-        color: #64748B;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: .12em;
-    }
-    .score-total {
-        margin-top: 5px;
-        color: #7DD3FC;
-        font-size: .78rem;
-        font-weight: 800;
-    }
+/* Market board */
+.market-board{
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+  margin-top:8px;
+}
+.market-card{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:12px 13px;
+  border-radius:15px;
+  background:linear-gradient(180deg,rgba(14,29,49,.92),rgba(10,23,40,.92));
+  border:1px solid rgba(148,163,184,.10);
+}
+.market-card:hover{
+  border-color:rgba(96,165,250,.20);
+}
+.market-grade{
+  flex:0 0 38px;
+  width:38px;height:38px;
+  border-radius:11px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1rem;font-weight:950;color:#fff;
+  background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.08);
+}
+.market-grade.a{border-color:rgba(34,197,94,.28)}
+.market-grade.b{border-color:rgba(56,189,248,.28)}
+.market-grade.c{border-color:rgba(250,204,21,.23)}
+.market-grade.d{border-color:rgba(148,163,184,.13)}
+.market-main{min-width:0;flex:1}
+.market-pick{
+  font-size:.98rem;font-weight:850;color:#f8fafc;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.market-sub{
+  margin-top:3px;
+  font-size:.74rem;color:#7f94ae;
+}
+.market-tag{
+  margin-left:auto;
+  font-size:.66rem;font-weight:900;letter-spacing:.08em;
+  color:#94a3b8;
+}
 
-    /* Edge strip */
-    .edge-strip {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 10px;
-        margin: 12px 0 18px 0;
-    }
-    .edge-cell {
-        padding: 12px 14px;
-        border-radius: 13px;
-        background: rgba(13,26,45,.88);
-        border: 1px solid rgba(148,163,184,.12);
-    }
-    .edge-label {
-        color: #7890AC;
-        font-size: .68rem;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: .10em;
-    }
-    .edge-value {
-        color: #F8FAFC;
-        margin-top: 3px;
-        font-weight: 800;
-        font-size: .98rem;
-    }
+/* Section titles */
+.section-kicker{
+  font-size:.72rem;
+  letter-spacing:.17em;
+  font-weight:900;
+  color:#7dd3fc;
+  margin-top:23px;
+  margin-bottom:6px;
+}
 
-    /* Expanders/data */
-    [data-testid="stExpander"] {
-        background: rgba(10,22,42,.76);
-        border: 1px solid rgba(148,163,184,.12);
-        border-radius: 14px;
-    }
-    [data-testid="stDataFrame"] {
-        border: 1px solid rgba(148,163,184,.12);
-        border-radius: 14px;
-        overflow: hidden;
-    }
+/* Audit/export */
+.help-card{
+  padding:11px 13px;
+  border-radius:12px;
+  background:rgba(15,31,54,.55);
+  border:1px solid rgba(148,163,184,.09);
+  color:#8fa3ba;
+  font-size:.76rem;
+  line-height:1.45;
+  margin:.35rem 0 .75rem;
+}
 
-    hr {
-        border-color: rgba(148,163,184,.12) !important;
-    }
-
-    /* Alerts */
-    [data-testid="stAlert"] {
-        border-radius: 14px;
-        border: 1px solid rgba(148,163,184,.14);
-    }
-
-    @media (max-width: 700px) {
-        .block-container { padding-left: 1rem; padding-right: 1rem; }
-        .cfb-hero { padding: 18px; border-radius: 18px; }
-        .scoreboard { padding: 17px 14px; gap: 8px; }
-        .edge-strip { grid-template-columns: 1fr; }
-    }
-
-    /* Mobile-first slate cards */
-    .slate-card {
-        margin: 14px 0;
-        padding: 17px;
-        border-radius: 18px;
-        background: linear-gradient(145deg, rgba(15,31,54,.98), rgba(9,20,38,.98));
-        border: 1px solid rgba(148,163,184,.14);
-        box-shadow: 0 16px 40px rgba(0,0,0,.18);
-    }
-    .slate-card-top {
-        display:flex;
-        align-items:flex-start;
-        justify-content:space-between;
-        gap:14px;
-        margin-bottom:14px;
-    }
-    .slate-time {
-        color:#7890AC;
-        font-size:.70rem;
-        font-weight:800;
-        letter-spacing:.10em;
-        text-transform:uppercase;
-    }
-    .slate-matchup {
-        margin-top:3px;
-        color:#F8FAFC;
-        font-size:1.08rem;
-        font-weight:850;
-        letter-spacing:-.02em;
-    }
-    .slate-matchup span { color:#64748B; font-weight:700; }
-    .slate-badge {
-        flex:0 0 auto;
-        border-radius:999px;
-        padding:5px 9px;
-        font-size:.67rem;
-        font-weight:900;
-        letter-spacing:.07em;
-        border:1px solid rgba(148,163,184,.16);
-    }
-    .slate-badge.strong {
-        color:#BBF7D0; background:rgba(22,163,74,.16); border-color:rgba(34,197,94,.30);
-    }
-    .slate-badge.bet {
-        color:#BAE6FD; background:rgba(2,132,199,.16); border-color:rgba(56,189,248,.30);
-    }
-    .slate-badge.lean {
-        color:#FDE68A; background:rgba(202,138,4,.14); border-color:rgba(250,204,21,.25);
-    }
-    .slate-badge.pass, .slate-badge.noline {
-        color:#CBD5E1; background:rgba(100,116,139,.12);
-    }
-    .slate-reco {
-        padding:13px 14px;
-        margin-bottom:12px;
-        border-radius:13px;
-        background:rgba(37,99,235,.09);
-        border:1px solid rgba(96,165,250,.16);
-    }
-    .slate-reco-label, .slate-box-label {
-        color:#7890AC;
-        font-size:.66rem;
-        font-weight:850;
-        letter-spacing:.10em;
-        text-transform:uppercase;
-    }
-    .slate-reco-value {
-        margin-top:3px;
-        color:#F8FAFC;
-        font-size:1.12rem;
-        font-weight:900;
-    }
-    .slate-reco-meta {
-        margin-top:3px;
-        color:#93C5FD;
-        font-size:.76rem;
-        font-weight:750;
-    }
-    .slate-grid {
-        display:grid;
-        grid-template-columns:repeat(4, 1fr);
-        gap:8px;
-    }
-    .slate-box {
-        padding:10px 11px;
-        border-radius:11px;
-        background:rgba(13,26,45,.82);
-        border:1px solid rgba(148,163,184,.10);
-    }
-    .slate-box-value {
-        margin-top:3px;
-        color:#E8EEF8;
-        font-size:.88rem;
-        font-weight:800;
-    }
-    .slate-footer {
-        margin-top:11px;
-        color:#7890AC;
-        font-size:.74rem;
-        font-weight:650;
-    }
-    .slate-footer span { padding:0 5px; color:#475569; }
-
-    @media (max-width: 700px) {
-        .slate-grid { grid-template-columns:repeat(2, 1fr); }
-        .slate-card { padding:15px; border-radius:16px; }
-        .slate-reco-value { font-size:1.06rem; }
-    }
-
-
-    .market-row {
-        margin: 7px 0;
-        padding: 11px 12px;
-        border-radius: 11px;
-        background: rgba(13,26,45,.72);
-        border: 1px solid rgba(148,163,184,.10);
-    }
-    .market-row-title {
-        color: #E8EEF8;
-        font-size: .88rem;
-        font-weight: 800;
-    }
-    .market-row-sub {
-        margin-top: 3px;
-        color: #8EA4BE;
-        font-size: .74rem;
-        font-weight: 650;
-    }
-
-
-    /* End-user workflow cards */
-    .workflow-step {
-        margin: 1.15rem 0 .55rem 0;
-        display:flex;
-        align-items:center;
-        gap:.65rem;
-    }
-    .workflow-num {
-        width:28px;
-        height:28px;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        border-radius:9px;
-        background:rgba(37,99,235,.18);
-        border:1px solid rgba(96,165,250,.26);
-        color:#BFDBFE;
-        font-size:.76rem;
-        font-weight:900;
-    }
-    .workflow-title {
-        color:#F8FAFC;
-        font-size:1.02rem;
-        font-weight:850;
-        letter-spacing:-.02em;
-    }
-    .workflow-sub {
-        color:#7F94AE;
-        font-size:.75rem;
-        margin-top:1px;
-    }
-    .status-strip {
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:12px;
-        padding:10px 13px;
-        margin:-8px 0 18px 0;
-        border-radius:13px;
-        background:rgba(13,26,45,.62);
-        border:1px solid rgba(148,163,184,.10);
-        color:#93A8C2;
-        font-size:.77rem;
-        font-weight:650;
-    }
-    .status-live {
-        display:inline-flex;
-        align-items:center;
-        gap:6px;
-        color:#86EFAC;
-        font-weight:850;
-    }
-    .status-dot {
-        width:7px;height:7px;border-radius:999px;background:#22C55E;
-        box-shadow:0 0 0 4px rgba(34,197,94,.10);
-    }
-    .help-card {
-        padding:12px 14px;
-        border-radius:13px;
-        background:rgba(15,31,54,.58);
-        border:1px solid rgba(148,163,184,.10);
-        color:#92A8C3;
-        font-size:.78rem;
-        line-height:1.45;
-        margin:.4rem 0 .8rem 0;
-    }
-    .grade-legend {
-        display:grid;
-        grid-template-columns:repeat(4,1fr);
-        gap:7px;
-        margin:7px 0 12px;
-    }
-    .grade-chip {
-        padding:8px 9px;
-        border-radius:10px;
-        border:1px solid rgba(148,163,184,.10);
-        background:rgba(13,26,45,.66);
-        text-align:center;
-        font-size:.70rem;
-        color:#9FB2C9;
-        font-weight:750;
-    }
-    .grade-chip b { display:block; color:#F8FAFC; font-size:.82rem; margin-bottom:1px; }
-    .grade-chip.a {border-color:rgba(34,197,94,.22);}
-    .grade-chip.b {border-color:rgba(56,189,248,.22);}
-    .grade-chip.c {border-color:rgba(250,204,21,.18);}
-    .grade-chip.d {border-color:rgba(148,163,184,.12);}
-
-    /* Make native controls feel like one product */
-    [data-testid="stSelectbox"] label,
-    [data-testid="stDateInput"] label,
-    [data-testid="stNumberInput"] label,
-    [data-testid="stRadio"] > label,
-    [data-testid="stCheckbox"] label {
-        font-size:.78rem !important;
-        font-weight:750 !important;
-        color:#94A9C3 !important;
-    }
-    [data-testid="stExpander"] {
-        border:1px solid rgba(148,163,184,.11);
-        border-radius:14px;
-        background:rgba(10,22,40,.34);
-    }
-    hr {
-        border-color:rgba(148,163,184,.08) !important;
-    }
-
-    @media (max-width: 700px) {
-        .status-strip { align-items:flex-start; flex-direction:column; gap:5px; }
-        .grade-legend { grid-template-columns:repeat(2,1fr); }
-        .workflow-step { margin-top:1rem; }
-    }
-
+@media (max-width:700px){
+  .block-container{padding-left:1rem;padding-right:1rem}
+  .cfb-title{font-size:2.15rem}
+  .status-strip{align-items:flex-start;flex-direction:column;gap:5px}
+  .result-hero{padding:15px}
+  .result-pick{font-size:1.10rem}
+  .result-stake{display:none}
+  .result-metrics{grid-template-columns:repeat(2,1fr)}
+  .market-card{padding:11px 12px}
+  .market-pick{font-size:.94rem}
+  .market-sub{font-size:.71rem}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -6627,11 +6515,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="grade-legend">'
-    '<div class="grade-chip a"><b>A</b>Best Bet</div>'
-    '<div class="grade-chip b"><b>B</b>Bet</div>'
-    '<div class="grade-chip c"><b>C</b>Lean</div>'
-    '<div class="grade-chip d"><b>D</b>Pass</div>'
+    '<div class="grade-legend-inline">'
+    '<div class="grade-pill a"><b>A</b>Best Bet</div>'
+    '<div class="grade-pill b"><b>B</b>Bet</div>'
+    '<div class="grade-pill c"><b>C</b>Lean</div>'
+    '<div class="grade-pill d"><b>D</b>Pass</div>'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -6678,7 +6566,8 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
     best=markets[0]
 
-    st.markdown('<div class="section-kicker">TOP RECOMMENDATION</div>', unsafe_allow_html=True)
+    top_label = "NO PLAY" if best[0] == "PASS" else "TOP PLAY"
+    st.markdown(f'<div class="section-kicker">{top_label}</div>', unsafe_allow_html=True)
     best_stake = playable_stake(best[0], best[4], p["confidence"])
     render_recommendation_card(
         best[0], best[1], best[2],
@@ -6687,14 +6576,10 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     )
 
     st.markdown('<div class="section-kicker">MARKET BOARD</div>', unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:.86rem;opacity:.68;margin:-2px 0 8px 0'>"
-        "A = Best Bet &nbsp;•&nbsp; B = Bet &nbsp;•&nbsp; C = Lean &nbsp;•&nbsp; D = Pass"
-        "</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="market-board">', unsafe_allow_html=True)
     for v,name,odds,prob,e,ev,fair in markets:
         render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     market_export = {
         "line_provider": selected_line.get("provider") if selected_line else None,
@@ -6743,4 +6628,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.3.0-SLEEK-UX • Mobile-first four-step betting workflow with professional all-market cards.")
+st.caption("CFB Edge • v1.4.0-PREMIUM-UI • Premium mobile-first betting board with compact professional result cards.")
