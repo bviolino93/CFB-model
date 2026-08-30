@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import base64
 import html
 import json
@@ -16,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.1-BACKTEST-ODDS-FIX"
+MODEL_VERSION = "0.5.0-RESIDUAL-LAB"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1696,6 +1697,363 @@ def _bt_error_table(game_df):
         })
     return pd.DataFrame(rows)
 
+
+# ===== v0.5.0 residual-market model =====
+
+RESIDUAL_VERSION = "v0.5.0-residual"
+
+def _ridge_fit(df, feature_cols, target_col, alpha=10.0):
+    """Standardized ridge regression with an unpenalized intercept."""
+    d = df[feature_cols + [target_col]].replace([np.inf, -np.inf], np.nan).dropna().copy()
+    if len(d) < max(40, len(feature_cols) * 8):
+        return None
+
+    X = d[feature_cols].astype(float).to_numpy()
+    y = d[target_col].astype(float).to_numpy()
+
+    mu = X.mean(axis=0)
+    sd = X.std(axis=0)
+    sd[sd < 1e-8] = 1.0
+    Z = (X - mu) / sd
+
+    X1 = np.column_stack([np.ones(len(Z)), Z])
+    penalty = np.eye(X1.shape[1]) * float(alpha)
+    penalty[0, 0] = 0.0
+    beta = np.linalg.pinv(X1.T @ X1 + penalty) @ X1.T @ y
+
+    return {
+        "features": list(feature_cols),
+        "mu": mu,
+        "sd": sd,
+        "beta": beta,
+        "alpha": float(alpha),
+        "n": int(len(d)),
+    }
+
+def _ridge_predict(model, df):
+    if model is None or df.empty:
+        return np.full(len(df), np.nan)
+    X = df[model["features"]].replace([np.inf, -np.inf], np.nan).astype(float)
+    good = X.notna().all(axis=1).to_numpy()
+    out = np.full(len(df), np.nan)
+    if good.any():
+        Z = (X.to_numpy()[good] - model["mu"]) / model["sd"]
+        X1 = np.column_stack([np.ones(len(Z)), Z])
+        out[good] = X1 @ model["beta"]
+    return out
+
+def _residual_feature_frame(game_df):
+    """
+    One row per game with targets expressed as the amount by which the market
+    missed the final margin/total. The model is trained to predict that residual,
+    rather than trying to predict the entire score from scratch.
+    """
+    if game_df.empty:
+        return pd.DataFrame()
+
+    d = game_df.sort_values(["season", "game_id"]).drop_duplicates(["season", "game_id"]).copy()
+
+    d["actual_margin"] = pd.to_numeric(d["home_points"], errors="coerce") - pd.to_numeric(d["away_points"], errors="coerce")
+    d["actual_total"] = pd.to_numeric(d["home_points"], errors="coerce") + pd.to_numeric(d["away_points"], errors="coerce")
+    d["market_margin"] = -pd.to_numeric(d["market_home_spread"], errors="coerce")
+    d["raw_model_margin"] = -pd.to_numeric(d["raw_model_home_spread"], errors="coerce")
+
+    d["spread_target_residual"] = d["actual_margin"] - d["market_margin"]
+    d["spread_model_delta"] = d["raw_model_margin"] - d["market_margin"]
+    d["total_target_residual"] = d["actual_total"] - pd.to_numeric(d["market_total"], errors="coerce")
+    d["total_model_delta"] = pd.to_numeric(d["raw_model_total"], errors="coerce") - pd.to_numeric(d["market_total"], errors="coerce")
+
+    d["abs_market_margin"] = d["market_margin"].abs()
+    d["week_num"] = pd.to_numeric(d["week"], errors="coerce").clip(lower=1, upper=16)
+    d["confidence_num"] = pd.to_numeric(d["confidence"], errors="coerce")
+
+    d["sp_base_minus_market"] = pd.to_numeric(d["base_power_margin"], errors="coerce") - d["market_margin"]
+    d["sp_matchup_adj"] = pd.to_numeric(d["matchup_margin_adjustment"], errors="coerce")
+    d["sp_hfa"] = pd.to_numeric(d["hfa_adjustment"], errors="coerce")
+
+    d["total_base_minus_market"] = pd.to_numeric(d["sp_total_base"], errors="coerce") - pd.to_numeric(d["market_total"], errors="coerce")
+    d["total_eff_adj"] = pd.to_numeric(d["efficiency_total_adjustment"], errors="coerce")
+    d["total_pace_adj"] = pd.to_numeric(d["pace_total_adjustment"], errors="coerce")
+    return d
+
+SPREAD_RESIDUAL_FEATURES = [
+    "spread_model_delta",
+    "sp_base_minus_market",
+    "sp_matchup_adj",
+    "sp_hfa",
+    "market_margin",
+    "abs_market_margin",
+    "week_num",
+    "confidence_num",
+]
+
+TOTAL_RESIDUAL_FEATURES = [
+    "total_model_delta",
+    "total_base_minus_market",
+    "total_eff_adj",
+    "total_pace_adj",
+    "market_total",
+    "week_num",
+    "confidence_num",
+]
+
+def _choose_ridge_alpha(dev, features, target, seasons):
+    """
+    Tune regularization on the latest development season only.
+    Earlier development seasons train the candidate models.
+    The untouched holdout is never used here.
+    """
+    seasons = sorted([int(s) for s in seasons])
+    if len(seasons) < 2:
+        return 10.0, pd.DataFrame()
+
+    val_season = seasons[-1]
+    train_seasons = seasons[:-1]
+    train = dev[dev["season"].isin(train_seasons)].copy()
+    val = dev[dev["season"] == val_season].copy()
+
+    rows = []
+    for alpha in [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]:
+        model = _ridge_fit(train, features, target, alpha=alpha)
+        pred = _ridge_predict(model, val)
+        y = pd.to_numeric(val[target], errors="coerce").to_numpy()
+        mask = np.isfinite(pred) & np.isfinite(y)
+        mae = float(np.mean(np.abs(y[mask] - pred[mask]))) if mask.any() else np.nan
+        rows.append({"alpha": alpha, "validation_season": val_season, "validation_mae": mae})
+
+    tbl = pd.DataFrame(rows)
+    usable = tbl.dropna(subset=["validation_mae"])
+    if usable.empty:
+        return 10.0, tbl
+    best = float(usable.sort_values(["validation_mae", "alpha"]).iloc[0]["alpha"])
+    return best, tbl
+
+def _fit_residual_models(feature_df, holdout):
+    """
+    1) Tune alpha only inside development seasons.
+    2) Refit on every development season.
+    3) Holdout season is predicted exactly once.
+    """
+    dev = feature_df[feature_df["season"] != holdout].copy()
+    hold = feature_df[feature_df["season"] == holdout].copy()
+    dev_seasons = sorted(dev["season"].dropna().astype(int).unique().tolist())
+
+    sp_alpha, sp_cv = _choose_ridge_alpha(
+        dev, SPREAD_RESIDUAL_FEATURES, "spread_target_residual", dev_seasons
+    )
+    tot_alpha, tot_cv = _choose_ridge_alpha(
+        dev, TOTAL_RESIDUAL_FEATURES, "total_target_residual", dev_seasons
+    )
+
+    sp_model = _ridge_fit(dev, SPREAD_RESIDUAL_FEATURES, "spread_target_residual", sp_alpha)
+    tot_model = _ridge_fit(dev, TOTAL_RESIDUAL_FEATURES, "total_target_residual", tot_alpha)
+
+    hold = hold.copy()
+    hold["pred_spread_residual"] = _ridge_predict(sp_model, hold)
+    hold["pred_total_residual"] = _ridge_predict(tot_model, hold)
+
+    # Empirical forecast-error widths from development data.
+    sp_dev_pred = _ridge_predict(sp_model, dev)
+    tot_dev_pred = _ridge_predict(tot_model, dev)
+    sp_y = pd.to_numeric(dev["spread_target_residual"], errors="coerce").to_numpy()
+    tot_y = pd.to_numeric(dev["total_target_residual"], errors="coerce").to_numpy()
+
+    sp_mask = np.isfinite(sp_dev_pred) & np.isfinite(sp_y)
+    tot_mask = np.isfinite(tot_dev_pred) & np.isfinite(tot_y)
+
+    sp_err = sp_y[sp_mask] - sp_dev_pred[sp_mask]
+    tot_err = tot_y[tot_mask] - tot_dev_pred[tot_mask]
+
+    spread_sd = float(np.std(sp_err, ddof=1)) if len(sp_err) > 2 else BASE_MARGIN_SD
+    total_sd = float(np.std(tot_err, ddof=1)) if len(tot_err) > 2 else BASE_TOTAL_SD
+    spread_sd = max(spread_sd, 11.0)
+    total_sd = max(total_sd, 11.0)
+
+    diagnostics = {
+        "spread_alpha": sp_alpha,
+        "total_alpha": tot_alpha,
+        "spread_sd": spread_sd,
+        "total_sd": total_sd,
+        "spread_n": 0 if sp_model is None else sp_model["n"],
+        "total_n": 0 if tot_model is None else tot_model["n"],
+        "spread_cv": sp_cv,
+        "total_cv": tot_cv,
+    }
+    return hold, diagnostics
+
+def _grade_residual(prob, odds, market_type, residual_points):
+    """
+    Residual version: official bets require both probability/EV support and a
+    meaningful predicted market error in points. No moneyline bets are issued
+    in v0.5.0 until historical ML quality is separately audited.
+    """
+    if not _valid_american_odds(odds):
+        return "PASS", 0.0, 0.0, None
+
+    imp = implied_prob(odds)
+    edge = prob - imp
+    ev = expected_value(prob, odds)
+    r = abs(float(residual_points))
+
+    if market_type == "spread":
+        min_pts, bet_edge, bet_ev = 2.0, 0.030, 0.050
+        strong_pts, strong_edge, strong_ev = 3.5, 0.055, 0.090
+    else:
+        min_pts, bet_edge, bet_ev = 2.5, 0.035, 0.060
+        strong_pts, strong_edge, strong_ev = 4.0, 0.060, 0.100
+
+    if r >= strong_pts and edge >= strong_edge and ev >= strong_ev:
+        verdict = "STRONG BET"
+    elif r >= min_pts and edge >= bet_edge and ev >= bet_ev:
+        verdict = "BET"
+    elif edge > 0 and ev > 0:
+        verdict = "LEAN"
+    else:
+        verdict = "PASS"
+    return verdict, edge, ev, imp
+
+def _bt_residual_candidate_rows(row, spread_sd, total_sd):
+    """
+    Grade the untouched holdout from a market-first forecast:
+        fair margin = market margin + predicted market error
+        fair total  = market total  + predicted market error
+    """
+    rows = []
+    season = int(row["season"])
+    week = int(row["week"])
+    hp = float(row["home_points"])
+    ap = float(row["away_points"])
+    market_spread = row.get("market_home_spread")
+    market_total = row.get("market_total")
+
+    base = {
+        "season": season,
+        "week": week,
+        "game_id": row.get("game_id"),
+        "away_team": row.get("away_team"),
+        "home_team": row.get("home_team"),
+        "home_points": hp,
+        "away_points": ap,
+        "version": RESIDUAL_VERSION,
+        "confidence": row.get("confidence"),
+        "raw_model_home_spread": row.get("raw_model_home_spread"),
+        "adjusted_model_home_spread": np.nan,
+        "market_home_spread": market_spread,
+        "raw_model_total": row.get("raw_model_total"),
+        "adjusted_model_total": np.nan,
+        "market_total": market_total,
+        "side_market_weight": np.nan,
+        "side_shrink_points": np.nan,
+        "total_market_weight": np.nan,
+        "total_shrink_points": np.nan,
+        "margin_sd": spread_sd,
+        "total_sd": total_sd,
+        "predicted_spread_residual": row.get("pred_spread_residual"),
+        "predicted_total_residual": row.get("pred_total_residual"),
+    }
+
+    # v0.5.0 intentionally disables ML betting until the historical ML feed is audited.
+    if pd.notna(market_spread) and pd.notna(row.get("pred_spread_residual")):
+        line = float(market_spread)
+        market_margin = -line
+        pred_resid = float(row["pred_spread_residual"])
+        fair_margin = market_margin + pred_resid
+        fair_spread = -fair_margin
+        base["adjusted_model_home_spread"] = fair_spread
+
+        home_cover = 1.0 - NormalDist(mu=fair_margin, sigma=spread_sd).cdf(-line)
+        away_cover = 1.0 - home_cover
+
+        for side, prob, name, line_out in [
+            ("home", home_cover, f"{row['home_team']} {line:+.1f}", line),
+            ("away", away_cover, f"{row['away_team']} {-line:+.1f}", -line),
+        ]:
+            verdict, edge, ev, imp = _grade_residual(
+                prob, -110, "spread", pred_resid
+            )
+            result = _bt_settle("spread", side, hp, ap, line)
+            rows.append({
+                **base,
+                "market_type": "spread",
+                "side": side,
+                "market": name,
+                "line": line_out,
+                "odds": -110,
+                "prob": prob,
+                "implied_prob": imp,
+                "edge": edge,
+                "ev": ev,
+                "verdict": verdict,
+                "result": result,
+                "profit_units": _bt_profit(result, -110),
+            })
+
+    if pd.notna(market_total) and pd.notna(row.get("pred_total_residual")):
+        line = float(market_total)
+        pred_resid = float(row["pred_total_residual"])
+        fair_total = line + pred_resid
+        base["adjusted_model_total"] = fair_total
+
+        over_prob = 1.0 - NormalDist(mu=fair_total, sigma=total_sd).cdf(line)
+        under_prob = 1.0 - over_prob
+
+        for side, prob, name in [
+            ("over", over_prob, f"Over {line:g}"),
+            ("under", under_prob, f"Under {line:g}"),
+        ]:
+            verdict, edge, ev, imp = _grade_residual(
+                prob, -110, "total", pred_resid
+            )
+            result = _bt_settle("total", side, hp, ap, line)
+            rows.append({
+                **base,
+                "market_type": "total",
+                "side": side,
+                "market": name,
+                "line": line,
+                "odds": -110,
+                "prob": prob,
+                "implied_prob": imp,
+                "edge": edge,
+                "ev": ev,
+                "verdict": verdict,
+                "result": result,
+                "profit_units": _bt_profit(result, -110),
+            })
+    return rows
+
+def _residual_holdout_error_table(hold_df):
+    if hold_df.empty:
+        return pd.DataFrame()
+    rows = []
+
+    s = hold_df.dropna(subset=["market_margin", "spread_target_residual", "pred_spread_residual"])
+    if len(s):
+        market_mae = float(np.mean(np.abs(s["spread_target_residual"])))
+        residual_mae = float(np.mean(np.abs(s["spread_target_residual"] - s["pred_spread_residual"])))
+        rows.append({
+            "Market": "Spread",
+            "Games": len(s),
+            "Market-only MAE": market_mae,
+            "Residual-model MAE": residual_mae,
+            "Improvement": market_mae - residual_mae,
+        })
+
+    t = hold_df.dropna(subset=["market_total", "total_target_residual", "pred_total_residual"])
+    if len(t):
+        market_mae = float(np.mean(np.abs(t["total_target_residual"])))
+        residual_mae = float(np.mean(np.abs(t["total_target_residual"] - t["pred_total_residual"])))
+        rows.append({
+            "Market": "Total",
+            "Games": len(t),
+            "Market-only MAE": market_mae,
+            "Residual-model MAE": residual_mae,
+            "Improvement": market_mae - residual_mae,
+        })
+    return pd.DataFrame(rows)
+
+# ===== End v0.5.0 residual-market model =====
+
 # ===== End v0.4.0 backtest engine =====
 
 # ===== End embedded model engine =====
@@ -2212,7 +2570,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### v0.3.1 vs v0.3.2 betting-layer comparison")
+    st.markdown("### v0.3.1 vs v0.3.2 vs v0.5.0 residual holdout")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -2332,6 +2690,15 @@ if app_section == "Backtest":
                         "raw_model_total":float(p["model_total"]),
                         "adjusted_model_total":float(adj_total),
                         "market_total":market.get("total"),
+                        "market_away_ml":market.get("away_ml"),
+                        "market_home_ml":market.get("home_ml"),
+                        "confidence":float(p["confidence"]),
+                        "base_power_margin":float(p["components"].get("base_power_margin", 0.0)),
+                        "matchup_margin_adjustment":float(p["components"].get("matchup_margin_adjustment", 0.0)),
+                        "hfa_adjustment":float(p["components"].get("hfa_adjustment", 0.0)),
+                        "sp_total_base":float(p["components"].get("sp_total_base", 0.0)),
+                        "efficiency_total_adjustment":float(p["components"].get("efficiency_total_adjustment", 0.0)),
+                        "pace_total_adjustment":float(p["components"].get("pace_total_adjustment", 0.0)),
                     })
 
                 all_rows.extend(_bt_candidate_rows(g, p, market, season, "v0.3.1"))
@@ -2347,12 +2714,30 @@ if app_section == "Backtest":
             st.error("No historical games with usable CFBD lines were returned for the selected sample.")
             st.stop()
 
+        # v0.5.0 RESIDUAL: train only on seasons before the selected holdout,
+        # then predict the untouched holdout once.
+        feature_df = _residual_feature_frame(bt_games_df)
+        residual_holdout, residual_diag = _fit_residual_models(feature_df, bt_holdout)
+        residual_rows = []
+        for _, rr in residual_holdout.iterrows():
+            residual_rows.extend(
+                _bt_residual_candidate_rows(
+                    rr,
+                    residual_diag["spread_sd"],
+                    residual_diag["total_sd"],
+                )
+            )
+        if residual_rows:
+            bt_df = pd.concat([bt_df, pd.DataFrame(residual_rows)], ignore_index=True, sort=False)
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
         st.session_state["cfb_backtest_df"] = bt_df
         st.session_state["cfb_backtest_signal_df"] = signal_df
         st.session_state["cfb_backtest_games_df"] = bt_games_df
+        st.session_state["cfb_residual_holdout_df"] = residual_holdout
+        st.session_state["cfb_residual_diag"] = residual_diag
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
             "method": bt_method, "policy": bt_policy,
@@ -2370,9 +2755,15 @@ if app_section == "Backtest":
 
         summaries=[]
         for version in ["v0.3.1","v0.3.2"]:
-            summaries.append(_bt_summary(train[train["version"]==version], f"{version} • Train"))
+            summaries.append(_bt_summary(train[train["version"]==version], f"{version} • Development"))
             summaries.append(_bt_summary(test[test["version"]==version], f"{version} • Holdout {holdout}"))
             summaries.append(_bt_summary(signal_df[signal_df["version"]==version], f"{version} • All"))
+        summaries.append(
+            _bt_summary(
+                test[test["version"]==RESIDUAL_VERSION],
+                f"{RESIDUAL_VERSION} • Holdout {holdout}"
+            )
+        )
         summary_df = pd.DataFrame(summaries)
         for col in ["Win %","ROI"]:
             summary_df[col] = summary_df[col].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
@@ -2387,6 +2778,39 @@ if app_section == "Backtest":
                 err[c] = err[c].map(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
             st.markdown("### Projection error vs market")
             st.dataframe(err, use_container_width=True, hide_index=True)
+
+        residual_holdout = st.session_state.get("cfb_residual_holdout_df", pd.DataFrame())
+        residual_diag = st.session_state.get("cfb_residual_diag", {})
+        if isinstance(residual_holdout, pd.DataFrame) and not residual_holdout.empty:
+            st.markdown("### v0.5.0 residual holdout test")
+            st.caption(
+                "v0.5.0 starts from the market and predicts only the amount the market is wrong. "
+                "Its coefficients are fit on development seasons; the selected holdout is not used in training."
+            )
+            resid_err = _residual_holdout_error_table(residual_holdout)
+            if not resid_err.empty:
+                for c in ["Market-only MAE", "Residual-model MAE", "Improvement"]:
+                    resid_err[c] = resid_err[c].map(lambda x: f"{x:.3f}")
+                st.dataframe(resid_err, use_container_width=True, hide_index=True)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Spread ridge α", f"{residual_diag.get('spread_alpha', float('nan')):g}")
+            c2.metric("Total ridge α", f"{residual_diag.get('total_alpha', float('nan')):g}")
+            c3.metric("Spread forecast σ", f"{residual_diag.get('spread_sd', float('nan')):.2f}")
+            c4.metric("Total forecast σ", f"{residual_diag.get('total_sd', float('nan')):.2f}")
+
+            with st.expander("Residual-model validation details", expanded=False):
+                sp_cv = residual_diag.get("spread_cv", pd.DataFrame())
+                tot_cv = residual_diag.get("total_cv", pd.DataFrame())
+                if isinstance(sp_cv, pd.DataFrame) and not sp_cv.empty:
+                    st.write("Spread regularization tuning")
+                    st.dataframe(sp_cv, use_container_width=True, hide_index=True)
+                if isinstance(tot_cv, pd.DataFrame) and not tot_cv.empty:
+                    st.write("Total regularization tuning")
+                    st.dataframe(tot_cv, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Moneyline betting is intentionally disabled for v0.5.0 while the historical moneyline feed is audited."
+                )
 
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
         if len(official):
@@ -2422,7 +2846,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v040_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v050_residual_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -3422,4 +3846,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.3.1-MARKET-DROPDOWNS • Projection logic unchanged from the calibrated v0.2.7.1 baseline.")
+st.caption("CFB Edge • v0.5.0-RESIDUAL-LAB • Market-first residual model is holdout-tested before live promotion.")
