@@ -1,60 +1,78 @@
-CFB Edge v0.7.0-MATCHUP-LAB
+CFB Edge v0.8.0-COVER-CLASSIFIER
 
 Purpose
 -------
-Rebuild the CFB edge layer around matchup-specific information instead of
-re-weighting the old aggregate power projection.
+Change the modeling target from final-margin residual prediction to the betting
+question we actually care about:
+
+    P(home covers the sportsbook spread)
+    P(away covers the sportsbook spread)
+
+This version does NOT promote anything to the live betting board. It is a
+research/validation layer.
 
 Architecture
 ------------
 Sportsbook consensus spread
-    + predicted matchup-specific market residual
-    = v0.7 fair spread
+    + matchup / personnel / pace features
+    -> regularized logistic classifier
+    -> ATS cover probability
 
-Matchup features
-----------------
+Features
+--------
+- Market spread / favorite size
+- Week and HFA
+- SP+ differential
+- Talent differential
+- Returning-production differential
+- Returning passing production / usage
 - Pass offense vs opponent pass defense PPA
 - Rush offense vs opponent rush defense PPA
 - Success-rate matchup
 - Explosiveness matchup
-- Advanced passing/rushing play PPA
-- Finishing drives / points per opportunity
-- Defensive havoc differential
+- Advanced pass/rush play PPA
+- Finishing drives
+- Defensive havoc
 - Pace / plays per drive
-- SP+ rating differential
-- Talent differential
-- Returning-production differential
-- Returning passing production and usage
-- HFA, week, favorite size
 
 Validation
 ----------
-- Standardized ridge regression
-- Alpha selected only inside development seasons
-- Rolling unseen-season tests
-- Example:
-    train 2022 -> test 2023
-    train 2022-23 -> test 2024
-    train 2022-24 -> test 2025
-- Direct comparison against market-only spread MAE
-- Fixed research-bet hurdle; no historical threshold optimization
-- Research labels only; no automatic live-board promotion
+Rolling unseen-season validation:
+- train 2022 -> test 2023
+- train 2022-23 -> test 2024
+- train 2022-24 -> test 2025
 
-Leakage-safe mode
------------------
-When the Backtest selector is set to Leakage-safe preseason prior, current-season
-SP+/SRS/PPA/advanced results are removed. The matchup statistics therefore come
-from the prior season, with current preseason talent/returning-production inputs.
+Regularization is selected only inside the development sample.
+
+Primary metrics
+---------------
+- Log loss vs 50/50 benchmark
+- Brier score vs 50/50 benchmark
+- Calibration
+- ATS performance by fixed predicted-probability bucket
+
+Fixed probability buckets
+-------------------------
+- 50-52.4%
+- 52.4-54%
+- 54-56%
+- 56-58%
+- 58%+
+
+The thresholds are fixed in advance. They are not optimized against 2025.
 
 Exports
 -------
-- v0.7 Matchup Walk-Forward CSV
-- v0.7 Matchup Bets CSV
-- v0.7 Feature Importance CSV
-- Existing backtest and v0.6 research exports remain available.
+- cfb_v080_classifier_walkforward_YYYY_YYYY.csv
+- cfb_v080_classifier_buckets_YYYY_YYYY.csv
+- cfb_v080_classifier_picks_YYYY_YYYY.csv
+- cfb_v080_classifier_calibration_YYYY_YYYY.csv
+- cfb_v080_classifier_importance_holdout_YYYY.csv
 
 Promotion gate
 --------------
-Do not promote v0.7 to live betting unless it improves on market-only MAE across
-multiple unseen seasons and the fixed-hurdle research-bet subset demonstrates
-credible multi-season performance.
+Do not promote v0.8 to live betting unless:
+1. Probability scores improve on the 50/50 baseline in multiple unseen seasons.
+2. Probabilities are reasonably calibrated.
+3. Fixed high-probability buckets show credible multi-season ATS performance.
+4. No conclusion depends only on 2025.

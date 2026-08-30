@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.7.0-MATCHUP-LAB"
+MODEL_VERSION = "0.8.0-COVER-CLASSIFIER"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -2727,6 +2727,431 @@ def _fit_matchup_final_holdout(feature_df, holdout):
     bets = _matchup_candidate_rows(test, diag) if not test.empty else pd.DataFrame()
     return test, bets, diag
 
+
+# ===== v0.8.0 cover classification model =====
+
+CLASSIFIER_VERSION = "v0.8.0-cover-classifier"
+
+# Reuse the matchup-first feature set, but solve the actual wagering question:
+# P(home covers the sportsbook spread) rather than "predict the final margin better."
+CLASSIFIER_FEATURES = [
+    "market_margin",
+    "abs_market_margin",
+    "week_num",
+    "sp_hfa",
+
+    "sp_rating_diff",
+    "talent_adjustment_diff",
+    "returning_adjustment_diff",
+    "returning_pass_diff",
+    "returning_usage_diff",
+
+    "net_pass_matchup",
+    "net_rush_matchup",
+    "net_success_matchup",
+    "net_expl_matchup",
+    "net_adv_pass_matchup",
+    "net_adv_rush_matchup",
+    "net_finishing_matchup",
+    "havoc_diff",
+
+    "avg_plays_per_drive",
+    "plays_per_drive_diff",
+]
+
+def _sigmoid(z):
+    z = np.clip(z, -35.0, 35.0)
+    return 1.0 / (1.0 + np.exp(-z))
+
+def _logloss(y, p):
+    y = np.asarray(y, dtype=float)
+    p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+    m = np.isfinite(y) & np.isfinite(p)
+    if not m.any():
+        return np.nan
+    y = y[m]
+    p = p[m]
+    return float(-np.mean(y*np.log(p) + (1-y)*np.log(1-p)))
+
+def _brier(y, p):
+    y = np.asarray(y, dtype=float)
+    p = np.asarray(p, dtype=float)
+    m = np.isfinite(y) & np.isfinite(p)
+    if not m.any():
+        return np.nan
+    return float(np.mean((y[m] - p[m])**2))
+
+def _classifier_feature_frame(feature_df):
+    d = feature_df.copy()
+
+    # Settlement target: 1 if home covers, 0 if away covers. Pushes are excluded
+    # from fitting and probability-score evaluation.
+    home_margin = pd.to_numeric(d["home_points"], errors="coerce") - pd.to_numeric(d["away_points"], errors="coerce")
+    home_spread = pd.to_numeric(d["market_home_spread"], errors="coerce")
+    ats_margin = home_margin + home_spread
+
+    d["home_cover_target"] = np.where(
+        ats_margin > 0, 1.0,
+        np.where(ats_margin < 0, 0.0, np.nan)
+    )
+
+    # Convenience market labels.
+    d["favorite_side"] = np.where(home_spread < 0, "home",
+                           np.where(home_spread > 0, "away", "pickem"))
+    return d
+
+def _standardize_fit(X):
+    mu = np.nanmean(X, axis=0)
+    sd = np.nanstd(X, axis=0)
+    sd = np.where(np.isfinite(sd) & (sd > 1e-9), sd, 1.0)
+    return mu, sd
+
+def _logistic_fit(df, features, target_col, l2=1.0, max_iter=60, tol=1e-7):
+    cols = [c for c in features if c in df.columns]
+    if not cols:
+        return None
+
+    work = df[cols + [target_col]].copy()
+    for c in cols:
+        work[c] = pd.to_numeric(work[c], errors="coerce")
+    work[target_col] = pd.to_numeric(work[target_col], errors="coerce")
+    work = work.dropna()
+
+    if len(work) < max(40, len(cols) * 3):
+        return None
+
+    X = work[cols].to_numpy(dtype=float)
+    y = work[target_col].to_numpy(dtype=float)
+    if len(np.unique(y)) < 2:
+        return None
+
+    mu, sd = _standardize_fit(X)
+    Z = (X - mu) / sd
+    Z = np.column_stack([np.ones(len(Z)), Z])
+
+    beta = np.zeros(Z.shape[1], dtype=float)
+
+    # Newton-Raphson / IRLS with L2 penalty on slopes, not intercept.
+    penalty = np.eye(Z.shape[1]) * float(l2)
+    penalty[0, 0] = 0.0
+
+    for _ in range(max_iter):
+        eta = Z @ beta
+        p = _sigmoid(eta)
+        w = np.clip(p * (1 - p), 1e-6, None)
+
+        grad = Z.T @ (y - p) - penalty @ beta
+        hess = -(Z.T @ (Z * w[:, None])) - penalty
+
+        try:
+            step = np.linalg.solve(hess, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.pinv(hess) @ grad
+
+        beta_new = beta - step
+        if np.max(np.abs(beta_new - beta)) < tol:
+            beta = beta_new
+            break
+        beta = beta_new
+
+    return {
+        "features": cols,
+        "mu": mu,
+        "sd": sd,
+        "beta": beta,
+        "l2": float(l2),
+        "n": len(work),
+    }
+
+def _logistic_predict(model, df):
+    if model is None or df.empty:
+        return np.full(len(df), np.nan)
+
+    X = np.column_stack([
+        pd.to_numeric(df.get(c, np.nan), errors="coerce").to_numpy(dtype=float)
+        for c in model["features"]
+    ])
+    finite = np.all(np.isfinite(X), axis=1)
+    out = np.full(len(df), np.nan)
+    if not finite.any():
+        return out
+
+    Z = (X[finite] - model["mu"]) / model["sd"]
+    Z = np.column_stack([np.ones(len(Z)), Z])
+    out[finite] = _sigmoid(Z @ model["beta"])
+    return out
+
+def _choose_logistic_l2(train_df, seasons):
+    """
+    Hyperparameter selection stays inside the development sample.
+    The latest available development season becomes the validation fold.
+    """
+    grid = [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
+    seasons = sorted([int(s) for s in seasons])
+
+    if len(seasons) <= 1:
+        return 10.0, pd.DataFrame()
+
+    val_season = seasons[-1]
+    tr = train_df[train_df["season"] < val_season].copy()
+    va = train_df[train_df["season"] == val_season].copy()
+
+    rows = []
+    for l2 in grid:
+        m = _logistic_fit(tr, CLASSIFIER_FEATURES, "home_cover_target", l2=l2)
+        p = _logistic_predict(m, va)
+        y = pd.to_numeric(va["home_cover_target"], errors="coerce").to_numpy()
+        rows.append({
+            "l2": l2,
+            "log_loss": _logloss(y, p),
+            "brier": _brier(y, p),
+        })
+
+    cv = pd.DataFrame(rows)
+    valid = cv.dropna(subset=["log_loss"])
+    if valid.empty:
+        return 10.0, cv
+
+    best = valid.sort_values(["log_loss", "brier", "l2"], ascending=[True, True, True]).iloc[0]
+    return float(best["l2"]), cv
+
+def _classifier_importance(model):
+    if not model:
+        return pd.DataFrame()
+    rows = []
+    for feature, beta in zip(model["features"], model["beta"][1:]):
+        rows.append({
+            "Feature": feature,
+            "Standardized coefficient": float(beta),
+            "Absolute importance": abs(float(beta)),
+        })
+    return pd.DataFrame(rows).sort_values("Absolute importance", ascending=False).reset_index(drop=True)
+
+def _fit_classifier_for_cutoff(feature_df, test_season):
+    d = _classifier_feature_frame(feature_df)
+    train = d[d["season"] < test_season].copy()
+    test = d[d["season"] == test_season].copy()
+    seasons = sorted(train["season"].dropna().astype(int).unique().tolist())
+
+    if train.empty or test.empty:
+        return pd.DataFrame(), None, {}
+
+    if len(seasons) <= 1:
+        l2, cv = 10.0, pd.DataFrame()
+    else:
+        l2, cv = _choose_logistic_l2(train, seasons)
+
+    model = _logistic_fit(train, CLASSIFIER_FEATURES, "home_cover_target", l2=l2)
+    test = test.copy()
+    test["p_home_cover"] = _logistic_predict(model, test)
+    test["p_away_cover"] = 1.0 - test["p_home_cover"]
+
+    diag = {
+        "test_season": int(test_season),
+        "train_seasons": seasons,
+        "l2": float(l2),
+        "cv": cv,
+        "importance": _classifier_importance(model),
+        "n_train": 0 if model is None else model["n"],
+    }
+    return test, model, diag
+
+def _classifier_research_rows(test_df):
+    rows = []
+    if test_df.empty:
+        return pd.DataFrame()
+
+    breakeven = implied_prob(-110)
+
+    for _, r in test_df.iterrows():
+        ph = r.get("p_home_cover")
+        if ph is None or pd.isna(ph):
+            continue
+
+        ph = float(ph)
+        pa = 1.0 - ph
+        side = "home" if ph >= pa else "away"
+        prob = ph if side == "home" else pa
+        confidence_edge = prob - 0.5
+
+        line = float(r["market_home_spread"])
+        side_line = line if side == "home" else -line
+        market_name = (
+            f"{r['home_team']} {line:+.1f}" if side == "home"
+            else f"{r['away_team']} {-line:+.1f}"
+        )
+
+        edge = prob - breakeven
+        ev = expected_value(prob, -110)
+
+        # Fixed research thresholds. These are intentionally not optimized
+        # against 2025 or any other holdout.
+        if prob >= 0.58 and edge > 0 and ev > 0:
+            verdict = "RESEARCH BET 58%+"
+        elif prob >= 0.56 and edge > 0 and ev > 0:
+            verdict = "RESEARCH BET 56-58%"
+        elif prob >= 0.54 and edge > 0 and ev > 0:
+            verdict = "RESEARCH LEAN 54-56%"
+        elif prob >= breakeven and edge > 0 and ev > 0:
+            verdict = "RESEARCH LEAN 52.4-54%"
+        else:
+            verdict = "PASS"
+
+        result = _bt_settle(
+            "spread",
+            side,
+            float(r["home_points"]),
+            float(r["away_points"]),
+            line,
+        )
+
+        rows.append({
+            "version": CLASSIFIER_VERSION,
+            "season": int(r["season"]),
+            "week": int(r["week"]),
+            "game_id": r.get("game_id"),
+            "away_team": r.get("away_team"),
+            "home_team": r.get("home_team"),
+            "side": side,
+            "market": market_name,
+            "line": side_line,
+            "odds": -110,
+            "p_home_cover": ph,
+            "p_away_cover": pa,
+            "model_pick_prob": prob,
+            "confidence_edge_vs_50": confidence_edge,
+            "breakeven_prob": breakeven,
+            "edge": edge,
+            "ev": ev,
+            "verdict": verdict,
+            "result": result,
+            "profit_units": _bt_profit(result, -110),
+            "research_only": True,
+        })
+
+    return pd.DataFrame(rows)
+
+def _run_classifier_walkforward(feature_df):
+    d = _classifier_feature_frame(feature_df)
+    seasons = sorted(d["season"].dropna().astype(int).unique().tolist())
+    all_tests = []
+    all_rows = []
+    diagnostics = {}
+
+    for test_season in seasons[1:]:
+        test, model, diag = _fit_classifier_for_cutoff(feature_df, test_season)
+        if test.empty:
+            continue
+
+        diagnostics[test_season] = diag
+        all_tests.append(test)
+
+        rr = _classifier_research_rows(test)
+        if not rr.empty:
+            all_rows.append(rr)
+
+    tests_df = pd.concat(all_tests, ignore_index=True) if all_tests else pd.DataFrame()
+    rows_df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+    return tests_df, rows_df, diagnostics
+
+def _classifier_score_table(tests_df):
+    if tests_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for season in sorted(tests_df["season"].dropna().astype(int).unique()):
+        s = tests_df[tests_df["season"] == season].copy()
+        y = pd.to_numeric(s["home_cover_target"], errors="coerce").to_numpy()
+        p = pd.to_numeric(s["p_home_cover"], errors="coerce").to_numpy()
+
+        # Naive benchmark: every game 50/50 ATS.
+        base = np.full(len(s), 0.5)
+        rows.append({
+            "Test season": int(season),
+            "Games": int(np.isfinite(y).sum()),
+            "Classifier log loss": _logloss(y, p),
+            "50/50 log loss": _logloss(y, base),
+            "Log-loss improvement": _logloss(y, base) - _logloss(y, p),
+            "Classifier Brier": _brier(y, p),
+            "50/50 Brier": _brier(y, base),
+            "Brier improvement": _brier(y, base) - _brier(y, p),
+        })
+    return pd.DataFrame(rows)
+
+def _classifier_bucket_table(rows_df):
+    if rows_df.empty:
+        return pd.DataFrame()
+
+    d = rows_df.copy()
+    d["bucket"] = pd.cut(
+        d["model_pick_prob"],
+        bins=[0.5, implied_prob(-110), 0.54, 0.56, 0.58, 1.0],
+        labels=["50-52.4%", "52.4-54%", "54-56%", "56-58%", "58%+"],
+        include_lowest=True,
+        right=False,
+    )
+
+    out = []
+    for season in list(sorted(d["season"].dropna().astype(int).unique())) + ["Combined"]:
+        s = d if season == "Combined" else d[d["season"] == season]
+        for bucket, g in s.groupby("bucket", observed=False):
+            if g.empty:
+                continue
+            w = int((g["result"] == "WIN").sum())
+            l = int((g["result"] == "LOSS").sum())
+            p = int((g["result"] == "PUSH").sum())
+            decided = w + l
+            units = float(g["profit_units"].sum())
+            out.append({
+                "Season": season,
+                "Probability bucket": str(bucket),
+                "Bets": len(g),
+                "W-L-P": f"{w}-{l}-{p}",
+                "Win %": w/decided if decided else np.nan,
+                "Units": units,
+                "ROI": units/len(g) if len(g) else np.nan,
+                "Avg predicted prob": float(g["model_pick_prob"].mean()),
+            })
+
+    return pd.DataFrame(out)
+
+def _classifier_calibration_table(tests_df):
+    if tests_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for season in list(sorted(tests_df["season"].dropna().astype(int).unique())) + ["Combined"]:
+        s = tests_df if season == "Combined" else tests_df[tests_df["season"] == season]
+        s = s.dropna(subset=["p_home_cover", "home_cover_target"]).copy()
+        if s.empty:
+            continue
+
+        s["cal_bin"] = pd.cut(
+            s["p_home_cover"],
+            bins=[0.0,0.40,0.45,0.50,0.55,0.60,1.0],
+            labels=["<40%","40-45%","45-50%","50-55%","55-60%","60%+"],
+            include_lowest=True,
+        )
+        for b, g in s.groupby("cal_bin", observed=False):
+            if g.empty:
+                continue
+            rows.append({
+                "Season": season,
+                "Home-cover probability bin": str(b),
+                "Games": len(g),
+                "Avg predicted P(home cover)": float(g["p_home_cover"].mean()),
+                "Actual home-cover rate": float(g["home_cover_target"].mean()),
+                "Calibration gap": float(g["home_cover_target"].mean() - g["p_home_cover"].mean()),
+            })
+    return pd.DataFrame(rows)
+
+def _fit_classifier_final_holdout(feature_df, holdout):
+    test, model, diag = _fit_classifier_for_cutoff(feature_df, int(holdout))
+    rows = _classifier_research_rows(test) if not test.empty else pd.DataFrame()
+    return test, rows, diag
+
+# ===== End v0.8.0 cover classification model =====
+
 # ===== End v0.7.0 matchup residual model =====
 
 # ===== End v0.6.0 signal research =====
@@ -3258,7 +3683,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Model validation • v0.7 matchup lab")
+    st.markdown("### Model validation • v0.8 cover classifier")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -3485,6 +3910,11 @@ if app_section == "Backtest":
             feature_df, bt_holdout
         )
 
+        classifier_tests, classifier_rows, classifier_diag = _run_classifier_walkforward(feature_df)
+        classifier_holdout, classifier_holdout_rows, classifier_holdout_diag = _fit_classifier_final_holdout(
+            feature_df, bt_holdout
+        )
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -3504,6 +3934,14 @@ if app_section == "Backtest":
         st.session_state["cfb_matchup_holdout_df"] = matchup_holdout
         st.session_state["cfb_matchup_holdout_bets_df"] = matchup_holdout_bets
         st.session_state["cfb_matchup_holdout_diag"] = matchup_holdout_diag
+
+        st.session_state["cfb_classifier_tests_df"] = classifier_tests
+        st.session_state["cfb_classifier_rows_df"] = classifier_rows
+        st.session_state["cfb_classifier_diag"] = classifier_diag
+        st.session_state["cfb_classifier_holdout_df"] = classifier_holdout
+        st.session_state["cfb_classifier_holdout_rows_df"] = classifier_holdout_rows
+        st.session_state["cfb_classifier_holdout_diag"] = classifier_holdout_diag
+
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
             "method": bt_method, "policy": bt_policy,
@@ -3634,6 +4072,91 @@ if app_section == "Backtest":
             st.info(
                 "Promotion rule: do not move v0.5.1 to the live betting board unless spread signals "
                 "are credible across multiple unseen seasons, not just the 2025 holdout."
+            )
+
+        classifier_tests = st.session_state.get("cfb_classifier_tests_df", pd.DataFrame())
+        classifier_rows = st.session_state.get("cfb_classifier_rows_df", pd.DataFrame())
+        classifier_diag = st.session_state.get("cfb_classifier_diag", {})
+        classifier_holdout = st.session_state.get("cfb_classifier_holdout_df", pd.DataFrame())
+        classifier_holdout_rows = st.session_state.get("cfb_classifier_holdout_rows_df", pd.DataFrame())
+        classifier_holdout_diag = st.session_state.get("cfb_classifier_holdout_diag", {})
+
+        st.markdown("### v0.8.0 Cover Classifier")
+        st.caption(
+            "Directly estimates P(home covers) and P(away covers) from the sportsbook line plus "
+            "matchup features. It is evaluated by log loss, Brier score, calibration and fixed "
+            "probability buckets. All outputs remain research-only."
+        )
+
+        if isinstance(classifier_tests, pd.DataFrame) and not classifier_tests.empty:
+            score = _classifier_score_table(classifier_tests)
+            if not score.empty:
+                score_show = score.copy()
+                for c in ["Classifier log loss","50/50 log loss","Log-loss improvement",
+                          "Classifier Brier","50/50 Brier","Brier improvement"]:
+                    score_show[c] = score_show[c].map(lambda x: f"{x:.4f}" if pd.notna(x) else "—")
+                st.markdown("#### Rolling unseen-season probability benchmark")
+                st.dataframe(score_show, use_container_width=True, hide_index=True)
+
+            buckets = _classifier_bucket_table(classifier_rows)
+            if not buckets.empty:
+                bucket_show = buckets.copy()
+                bucket_show["Win %"] = bucket_show["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                bucket_show["Units"] = bucket_show["Units"].map(lambda x: f"{x:+.2f}")
+                bucket_show["ROI"] = bucket_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+                bucket_show["Avg predicted prob"] = bucket_show["Avg predicted prob"].map(lambda x: f"{100*x:.1f}%")
+                st.markdown("#### Probability-bucket ATS results")
+                st.dataframe(bucket_show, use_container_width=True, hide_index=True)
+
+            calibration = _classifier_calibration_table(classifier_tests)
+            if not calibration.empty:
+                cal_show = calibration.copy()
+                for c in ["Avg predicted P(home cover)","Actual home-cover rate","Calibration gap"]:
+                    cal_show[c] = cal_show[c].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                with st.expander("Calibration table", expanded=False):
+                    st.dataframe(cal_show, use_container_width=True, hide_index=True)
+
+            imp = classifier_holdout_diag.get("importance", pd.DataFrame()) if isinstance(classifier_holdout_diag, dict) else pd.DataFrame()
+            if isinstance(imp, pd.DataFrame) and not imp.empty:
+                with st.expander("v0.8 classifier feature importance", expanded=False):
+                    imp_show = imp.copy()
+                    imp_show["Standardized coefficient"] = imp_show["Standardized coefficient"].map(lambda x: f"{x:+.3f}")
+                    imp_show["Absolute importance"] = imp_show["Absolute importance"].map(lambda x: f"{x:.3f}")
+                    st.dataframe(imp_show, use_container_width=True, hide_index=True)
+
+            # Exports
+            ios_save_button(
+                "Save v0.8 Classifier Walk-Forward CSV",
+                classifier_tests.to_csv(index=False),
+                f"cfb_v080_classifier_walkforward_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            ios_save_button(
+                "Save v0.8 Probability Buckets CSV",
+                buckets.to_csv(index=False),
+                f"cfb_v080_classifier_buckets_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            ios_save_button(
+                "Save v0.8 Classifier Picks CSV",
+                classifier_rows.to_csv(index=False),
+                f"cfb_v080_classifier_picks_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            ios_save_button(
+                "Save v0.8 Calibration CSV",
+                calibration.to_csv(index=False),
+                f"cfb_v080_classifier_calibration_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            if isinstance(imp, pd.DataFrame) and not imp.empty:
+                ios_save_button(
+                    "Save v0.8 Feature Importance CSV",
+                    imp.to_csv(index=False),
+                    f"cfb_v080_classifier_importance_holdout_{cfg.get('holdout',2025)}.csv"
+                )
+
+            st.info(
+                "Promotion gate: classifier probabilities must improve on the 50/50 benchmark "
+                "in multiple unseen seasons, remain reasonably calibrated, and show credible "
+                "ATS performance in fixed probability buckets. No bucket may be chosen because "
+                "it happened to work best in the 2025 holdout."
             )
 
         matchup_tests = st.session_state.get("cfb_matchup_tests_df", pd.DataFrame())
@@ -3819,7 +4342,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v070_matchup_lab_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v080_cover_classifier_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -4819,4 +5342,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.7.0-MATCHUP-LAB • Market-first matchup residual model with rolling unseen-season validation.")
+st.caption("CFB Edge • v0.8.0-COVER-CLASSIFIER • Direct ATS probability classification with rolling unseen-season validation.")
