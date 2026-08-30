@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.6.2-EXPORT-FIX"
+MODEL_VERSION = "0.7.0-MATCHUP-LAB"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1789,6 +1789,59 @@ def _residual_feature_frame(game_df):
     d["srs_adjustment_diff"] = pd.to_numeric(d["home_srs_adjustment"], errors="coerce") - pd.to_numeric(d["away_srs_adjustment"], errors="coerce")
     d["talent_adjustment_diff"] = pd.to_numeric(d["home_talent_adjustment"], errors="coerce") - pd.to_numeric(d["away_talent_adjustment"], errors="coerce")
     d["returning_adjustment_diff"] = pd.to_numeric(d["home_returning_adjustment"], errors="coerce") - pd.to_numeric(d["away_returning_adjustment"], errors="coerce")
+
+    # ===== v0.7 matchup-specific features =====
+    def n(col):
+        if col not in d.columns:
+            d[col] = np.nan
+        return pd.to_numeric(d[col], errors="coerce")
+
+    # PPA: offense vs the opponent defense, then home matchup edge minus away matchup edge.
+    d["home_pass_matchup"] = n("home_ppa_off_pass") - n("away_ppa_def_pass")
+    d["away_pass_matchup"] = n("away_ppa_off_pass") - n("home_ppa_def_pass")
+    d["net_pass_matchup"] = d["home_pass_matchup"] - d["away_pass_matchup"]
+
+    d["home_rush_matchup"] = n("home_ppa_off_rush") - n("away_ppa_def_rush")
+    d["away_rush_matchup"] = n("away_ppa_off_rush") - n("home_ppa_def_rush")
+    d["net_rush_matchup"] = d["home_rush_matchup"] - d["away_rush_matchup"]
+
+    # Advanced success-rate matchup. Lower defensive success allowed is better.
+    d["home_success_matchup"] = n("home_adv_off_success") - n("away_adv_def_success")
+    d["away_success_matchup"] = n("away_adv_off_success") - n("home_adv_def_success")
+    d["net_success_matchup"] = d["home_success_matchup"] - d["away_success_matchup"]
+
+    # Explosiveness matchup.
+    d["home_expl_matchup"] = n("home_adv_off_expl") - n("away_adv_def_expl")
+    d["away_expl_matchup"] = n("away_adv_off_expl") - n("home_adv_def_expl")
+    d["net_expl_matchup"] = d["home_expl_matchup"] - d["away_expl_matchup"]
+
+    # Advanced play-level PPA splits.
+    d["home_adv_pass_matchup"] = n("home_adv_off_pass_ppa") - n("away_adv_def_pass_ppa")
+    d["away_adv_pass_matchup"] = n("away_adv_off_pass_ppa") - n("home_adv_def_pass_ppa")
+    d["net_adv_pass_matchup"] = d["home_adv_pass_matchup"] - d["away_adv_pass_matchup"]
+
+    d["home_adv_rush_matchup"] = n("home_adv_off_rush_ppa") - n("away_adv_def_rush_ppa")
+    d["away_adv_rush_matchup"] = n("away_adv_off_rush_ppa") - n("home_adv_def_rush_ppa")
+    d["net_adv_rush_matchup"] = d["home_adv_rush_matchup"] - d["away_adv_rush_matchup"]
+
+    # Finishing drives / points per opportunity.
+    d["home_finishing_matchup"] = n("home_adv_off_ppo") - n("away_adv_def_ppo")
+    d["away_finishing_matchup"] = n("away_adv_off_ppo") - n("home_adv_def_ppo")
+    d["net_finishing_matchup"] = d["home_finishing_matchup"] - d["away_finishing_matchup"]
+
+    # Defensive disruption advantage.
+    d["havoc_diff"] = n("home_adv_def_havoc") - n("away_adv_def_havoc")
+
+    # Pace/context.
+    away_ppd = n("away_adv_off_plays") / n("away_adv_off_drives").replace(0, np.nan)
+    home_ppd = n("home_adv_off_plays") / n("home_adv_off_drives").replace(0, np.nan)
+    d["avg_plays_per_drive"] = (away_ppd + home_ppd) / 2.0
+    d["plays_per_drive_diff"] = home_ppd - away_ppd
+
+    # Preseason personnel continuity context.
+    d["returning_pass_diff"] = n("home_returning_pass") - n("away_returning_pass")
+    d["returning_usage_diff"] = n("home_returning_usage") - n("away_returning_usage")
+
     return d
 
 SPREAD_RESIDUAL_FEATURES = [
@@ -2411,6 +2464,271 @@ def _walkforward_signal_research(feature_df):
             })
     return pd.DataFrame(rows)
 
+
+# ===== v0.7.0 matchup residual model =====
+
+MATCHUP_VERSION = "v0.7.0-matchup"
+
+MATCHUP_SPREAD_FEATURES = [
+    # Market/context anchor
+    "market_margin",
+    "abs_market_margin",
+    "week_num",
+    "sp_hfa",
+
+    # Rating/personnel context
+    "sp_rating_diff",
+    "talent_adjustment_diff",
+    "returning_adjustment_diff",
+    "returning_pass_diff",
+    "returning_usage_diff",
+
+    # Actual matchup interactions
+    "net_pass_matchup",
+    "net_rush_matchup",
+    "net_success_matchup",
+    "net_expl_matchup",
+    "net_adv_pass_matchup",
+    "net_adv_rush_matchup",
+    "net_finishing_matchup",
+    "havoc_diff",
+
+    # Pace/style
+    "avg_plays_per_drive",
+    "plays_per_drive_diff",
+]
+
+def _ridge_feature_importance(model):
+    if not model:
+        return pd.DataFrame()
+    rows = []
+    for feature, beta in zip(model["features"], model["beta"][1:]):
+        rows.append({
+            "Feature": feature,
+            "Standardized coefficient": float(beta),
+            "Absolute importance": abs(float(beta)),
+        })
+    return pd.DataFrame(rows).sort_values("Absolute importance", ascending=False).reset_index(drop=True)
+
+def _choose_matchup_alpha(train_df, seasons):
+    """
+    Choose regularization entirely inside the development sample.
+    The latest available development season is the validation fold.
+    """
+    return _choose_ridge_alpha(
+        train_df,
+        MATCHUP_SPREAD_FEATURES,
+        "spread_target_residual",
+        seasons,
+    )
+
+def _fit_matchup_model_for_cutoff(feature_df, test_season):
+    train = feature_df[feature_df["season"] < test_season].copy()
+    test = feature_df[feature_df["season"] == test_season].copy()
+    seasons = sorted(train["season"].dropna().astype(int).unique().tolist())
+
+    if train.empty or test.empty:
+        return pd.DataFrame(), None, {}
+
+    if len(seasons) <= 1:
+        alpha, cv = 10.0, pd.DataFrame()
+    else:
+        alpha, cv = _choose_matchup_alpha(train, seasons)
+
+    model = _ridge_fit(
+        train,
+        MATCHUP_SPREAD_FEATURES,
+        "spread_target_residual",
+        alpha=alpha,
+    )
+    test = test.copy()
+    test["matchup_pred_residual"] = _ridge_predict(model, test)
+
+    train_pred = _ridge_predict(model, train)
+    y = pd.to_numeric(train["spread_target_residual"], errors="coerce").to_numpy()
+    mask = np.isfinite(train_pred) & np.isfinite(y)
+    err = y[mask] - train_pred[mask]
+    sd = float(np.std(err, ddof=1)) if len(err) > 2 else BASE_MARGIN_SD
+    sd = max(11.0, min(20.0, sd))
+
+    diag = {
+        "test_season": int(test_season),
+        "train_seasons": seasons,
+        "alpha": float(alpha),
+        "forecast_sd": sd,
+        "cv": cv,
+        "importance": _ridge_feature_importance(model),
+        "n_train": 0 if model is None else model["n"],
+    }
+    return test, model, diag
+
+def _matchup_candidate_rows(test_df, diag):
+    rows = []
+    if test_df.empty:
+        return pd.DataFrame()
+
+    sd = float(diag.get("forecast_sd", BASE_MARGIN_SD))
+    for _, r in test_df.iterrows():
+        if pd.isna(r.get("market_home_spread")) or pd.isna(r.get("matchup_pred_residual")):
+            continue
+
+        line = float(r["market_home_spread"])
+        market_margin = -line
+        pred_resid = float(r["matchup_pred_residual"])
+        fair_margin = market_margin + pred_resid
+        fair_spread = -fair_margin
+
+        home_cover = 1.0 - NormalDist(mu=fair_margin, sigma=sd).cdf(-line)
+        away_cover = 1.0 - home_cover
+
+        # Fixed research hurdle. No historical threshold optimization.
+        side = "home" if pred_resid > 0 else "away"
+        prob = home_cover if side == "home" else away_cover
+        line_out = line if side == "home" else -line
+        market_name = (
+            f"{r['home_team']} {line:+.1f}" if side == "home"
+            else f"{r['away_team']} {-line:+.1f}"
+        )
+
+        imp = implied_prob(-110)
+        edge = prob - imp
+        ev = expected_value(prob, -110)
+
+        # v0.7 is still a lab: classifications are research labels, not live bets.
+        abs_resid = abs(pred_resid)
+        if abs_resid >= 3.0 and edge >= 0.035 and ev >= 0.05:
+            verdict = "RESEARCH BET"
+        elif abs_resid >= 2.0 and edge > 0 and ev > 0:
+            verdict = "RESEARCH LEAN"
+        else:
+            verdict = "PASS"
+
+        result = _bt_settle(
+            "spread",
+            side,
+            float(r["home_points"]),
+            float(r["away_points"]),
+            line,
+        )
+        rows.append({
+            "version": MATCHUP_VERSION,
+            "season": int(r["season"]),
+            "week": int(r["week"]),
+            "game_id": r.get("game_id"),
+            "away_team": r.get("away_team"),
+            "home_team": r.get("home_team"),
+            "market_type": "spread",
+            "side": side,
+            "market": market_name,
+            "line": line_out,
+            "odds": -110,
+            "market_home_spread": line,
+            "market_margin": market_margin,
+            "matchup_pred_residual": pred_resid,
+            "matchup_fair_home_spread": fair_spread,
+            "prob": prob,
+            "implied_prob": imp,
+            "edge": edge,
+            "ev": ev,
+            "verdict": verdict,
+            "result": result,
+            "profit_units": _bt_profit(result, -110),
+            "research_only": True,
+        })
+    return pd.DataFrame(rows)
+
+def _run_matchup_walkforward(feature_df):
+    seasons = sorted(feature_df["season"].dropna().astype(int).unique().tolist())
+    all_tests = []
+    all_bets = []
+    diagnostics = {}
+
+    for test_season in seasons[1:]:
+        test, model, diag = _fit_matchup_model_for_cutoff(feature_df, test_season)
+        if test.empty:
+            continue
+        diagnostics[test_season] = diag
+        all_tests.append(test)
+        bets = _matchup_candidate_rows(test, diag)
+        if not bets.empty:
+            all_bets.append(bets)
+
+    tests_df = pd.concat(all_tests, ignore_index=True) if all_tests else pd.DataFrame()
+    bets_df = pd.concat(all_bets, ignore_index=True) if all_bets else pd.DataFrame()
+    return tests_df, bets_df, diagnostics
+
+def _matchup_mae_table(tests_df):
+    if tests_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for season in sorted(tests_df["season"].dropna().astype(int).unique()):
+        s = tests_df[tests_df["season"] == season].dropna(
+            subset=["spread_target_residual", "matchup_pred_residual"]
+        )
+        if s.empty:
+            continue
+        market_mae = float(np.mean(np.abs(s["spread_target_residual"])))
+        matchup_mae = float(np.mean(np.abs(
+            s["spread_target_residual"] - s["matchup_pred_residual"]
+        )))
+        rows.append({
+            "Test season": int(season),
+            "Games": len(s),
+            "Market-only MAE": market_mae,
+            "v0.7 matchup MAE": matchup_mae,
+            "Improvement": market_mae - matchup_mae,
+        })
+    return pd.DataFrame(rows)
+
+def _matchup_bet_table(bets_df):
+    if bets_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    q = bets_df[bets_df["verdict"] == "RESEARCH BET"].copy()
+    for season in sorted(q["season"].dropna().astype(int).unique()):
+        s = q[q["season"] == season]
+        w = int((s["result"] == "WIN").sum())
+        l = int((s["result"] == "LOSS").sum())
+        p = int((s["result"] == "PUSH").sum())
+        decided = w + l
+        units = float(s["profit_units"].sum())
+        rows.append({
+            "Test season": int(season),
+            "Bets": len(s),
+            "W-L-P": f"{w}-{l}-{p}",
+            "Win %": w / decided if decided else np.nan,
+            "Units": units,
+            "ROI": units / len(s) if len(s) else np.nan,
+        })
+
+    if len(q):
+        w = int((q["result"] == "WIN").sum())
+        l = int((q["result"] == "LOSS").sum())
+        p = int((q["result"] == "PUSH").sum())
+        decided = w + l
+        units = float(q["profit_units"].sum())
+        rows.append({
+            "Test season": "Combined",
+            "Bets": len(q),
+            "W-L-P": f"{w}-{l}-{p}",
+            "Win %": w / decided if decided else np.nan,
+            "Units": units,
+            "ROI": units / len(q) if len(q) else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+def _fit_matchup_final_holdout(feature_df, holdout):
+    """
+    Main final-exam view: train on every season before the user-selected holdout,
+    then evaluate that holdout once.
+    """
+    test, model, diag = _fit_matchup_model_for_cutoff(feature_df, int(holdout))
+    bets = _matchup_candidate_rows(test, diag) if not test.empty else pd.DataFrame()
+    return test, bets, diag
+
+# ===== End v0.7.0 matchup residual model =====
+
 # ===== End v0.6.0 signal research =====
 
 # ===== End v0.5.1 rolling walk-forward validation =====
@@ -2940,7 +3258,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Model validation • residual + signal research")
+    st.markdown("### Model validation • v0.7 matchup lab")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -3077,6 +3395,52 @@ if app_section == "Backtest":
                         "home_talent_adjustment":float(p["home_rating"].get("talent_adjustment") or 0.0),
                         "away_returning_adjustment":float(p["away_rating"].get("returning_adjustment") or 0.0),
                         "home_returning_adjustment":float(p["home_rating"].get("returning_adjustment") or 0.0),
+
+                        # v0.7 granular matchup inputs. In leakage-safe mode these
+                        # are prior-season performance metrics plus current preseason
+                        # talent/returning-production context.
+                        "away_ppa_off_pass":p["away_rating"]["ppa"].get("off_pass"),
+                        "home_ppa_off_pass":p["home_rating"]["ppa"].get("off_pass"),
+                        "away_ppa_def_pass":p["away_rating"]["ppa"].get("def_pass"),
+                        "home_ppa_def_pass":p["home_rating"]["ppa"].get("def_pass"),
+                        "away_ppa_off_rush":p["away_rating"]["ppa"].get("off_rush"),
+                        "home_ppa_off_rush":p["home_rating"]["ppa"].get("off_rush"),
+                        "away_ppa_def_rush":p["away_rating"]["ppa"].get("def_rush"),
+                        "home_ppa_def_rush":p["home_rating"]["ppa"].get("def_rush"),
+
+                        "away_adv_off_success":p["away_rating"]["adv"].get("off_success"),
+                        "home_adv_off_success":p["home_rating"]["adv"].get("off_success"),
+                        "away_adv_def_success":p["away_rating"]["adv"].get("def_success"),
+                        "home_adv_def_success":p["home_rating"]["adv"].get("def_success"),
+                        "away_adv_off_expl":p["away_rating"]["adv"].get("off_expl"),
+                        "home_adv_off_expl":p["home_rating"]["adv"].get("off_expl"),
+                        "away_adv_def_expl":p["away_rating"]["adv"].get("def_expl"),
+                        "home_adv_def_expl":p["home_rating"]["adv"].get("def_expl"),
+
+                        "away_adv_off_pass_ppa":p["away_rating"]["adv"].get("off_pass_ppa"),
+                        "home_adv_off_pass_ppa":p["home_rating"]["adv"].get("off_pass_ppa"),
+                        "away_adv_def_pass_ppa":p["away_rating"]["adv"].get("def_pass_ppa"),
+                        "home_adv_def_pass_ppa":p["home_rating"]["adv"].get("def_pass_ppa"),
+                        "away_adv_off_rush_ppa":p["away_rating"]["adv"].get("off_rush_ppa"),
+                        "home_adv_off_rush_ppa":p["home_rating"]["adv"].get("off_rush_ppa"),
+                        "away_adv_def_rush_ppa":p["away_rating"]["adv"].get("def_rush_ppa"),
+                        "home_adv_def_rush_ppa":p["home_rating"]["adv"].get("def_rush_ppa"),
+
+                        "away_adv_off_ppo":p["away_rating"]["adv"].get("off_ppo"),
+                        "home_adv_off_ppo":p["home_rating"]["adv"].get("off_ppo"),
+                        "away_adv_def_ppo":p["away_rating"]["adv"].get("def_ppo"),
+                        "home_adv_def_ppo":p["home_rating"]["adv"].get("def_ppo"),
+                        "away_adv_def_havoc":p["away_rating"]["adv"].get("def_havoc"),
+                        "home_adv_def_havoc":p["home_rating"]["adv"].get("def_havoc"),
+                        "away_adv_off_plays":p["away_rating"]["adv"].get("off_plays"),
+                        "home_adv_off_plays":p["home_rating"]["adv"].get("off_plays"),
+                        "away_adv_off_drives":p["away_rating"]["adv"].get("off_drives"),
+                        "home_adv_off_drives":p["home_rating"]["adv"].get("off_drives"),
+
+                        "away_returning_pass":p["away_rating"].get("returning_pass"),
+                        "home_returning_pass":p["home_rating"].get("returning_pass"),
+                        "away_returning_usage":p["away_rating"].get("returning_usage"),
+                        "home_returning_usage":p["home_rating"].get("returning_usage"),
                     })
 
                 all_rows.extend(_bt_candidate_rows(g, p, market, season, "v0.3.1"))
@@ -3116,6 +3480,11 @@ if app_section == "Backtest":
         signal_research = _run_signal_research(feature_df, bt_holdout)
         signal_walkforward = _walkforward_signal_research(feature_df)
 
+        matchup_tests, matchup_bets, matchup_diag = _run_matchup_walkforward(feature_df)
+        matchup_holdout, matchup_holdout_bets, matchup_holdout_diag = _fit_matchup_final_holdout(
+            feature_df, bt_holdout
+        )
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -3129,6 +3498,12 @@ if app_section == "Backtest":
         st.session_state["cfb_walkforward_diag"] = walkforward_diag
         st.session_state["cfb_signal_research_df"] = signal_research
         st.session_state["cfb_signal_walkforward_df"] = signal_walkforward
+        st.session_state["cfb_matchup_tests_df"] = matchup_tests
+        st.session_state["cfb_matchup_bets_df"] = matchup_bets
+        st.session_state["cfb_matchup_diag"] = matchup_diag
+        st.session_state["cfb_matchup_holdout_df"] = matchup_holdout
+        st.session_state["cfb_matchup_holdout_bets_df"] = matchup_holdout_bets
+        st.session_state["cfb_matchup_holdout_diag"] = matchup_holdout_diag
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
             "method": bt_method, "policy": bt_policy,
@@ -3261,6 +3636,83 @@ if app_section == "Backtest":
                 "are credible across multiple unseen seasons, not just the 2025 holdout."
             )
 
+        matchup_tests = st.session_state.get("cfb_matchup_tests_df", pd.DataFrame())
+        matchup_bets = st.session_state.get("cfb_matchup_bets_df", pd.DataFrame())
+        matchup_diag = st.session_state.get("cfb_matchup_diag", {})
+        matchup_holdout = st.session_state.get("cfb_matchup_holdout_df", pd.DataFrame())
+        matchup_holdout_bets = st.session_state.get("cfb_matchup_holdout_bets_df", pd.DataFrame())
+        matchup_holdout_diag = st.session_state.get("cfb_matchup_holdout_diag", {})
+
+        st.markdown("### v0.7.0 Matchup Model")
+        st.caption(
+            "Market-first residual model using pass/rush PPA, success rate, explosiveness, "
+            "finishing drives, havoc, pace, talent and returning-production matchup features. "
+            "All v0.7 labels are research-only until unseen-season validation clears the benchmark."
+        )
+
+        if isinstance(matchup_tests, pd.DataFrame) and not matchup_tests.empty:
+            mae = _matchup_mae_table(matchup_tests)
+            if not mae.empty:
+                mae_show = mae.copy()
+                for c in ["Market-only MAE", "v0.7 matchup MAE", "Improvement"]:
+                    mae_show[c] = mae_show[c].map(lambda x: f"{x:.3f}")
+                st.markdown("#### Rolling unseen-season prediction benchmark")
+                st.dataframe(mae_show, use_container_width=True, hide_index=True)
+
+            btbl = _matchup_bet_table(matchup_bets)
+            if not btbl.empty:
+                bshow = btbl.copy()
+                bshow["Win %"] = bshow["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                bshow["Units"] = bshow["Units"].map(lambda x: f"{x:+.2f}")
+                bshow["ROI"] = bshow["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+                st.markdown("#### Fixed-hurdle research bets")
+                st.dataframe(bshow, use_container_width=True, hide_index=True)
+
+            if isinstance(matchup_holdout, pd.DataFrame) and not matchup_holdout.empty:
+                s = matchup_holdout.dropna(subset=["spread_target_residual","matchup_pred_residual"])
+                if not s.empty:
+                    market_mae = float(np.mean(np.abs(s["spread_target_residual"])))
+                    model_mae = float(np.mean(np.abs(s["spread_target_residual"] - s["matchup_pred_residual"])))
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric(f"{cfg.get('holdout')} market MAE", f"{market_mae:.3f}")
+                    c2.metric(f"{cfg.get('holdout')} v0.7 MAE", f"{model_mae:.3f}")
+                    c3.metric("Holdout improvement", f"{market_mae-model_mae:+.3f}")
+
+            # Most recent holdout feature importance.
+            imp = matchup_holdout_diag.get("importance", pd.DataFrame()) if isinstance(matchup_holdout_diag, dict) else pd.DataFrame()
+            if isinstance(imp, pd.DataFrame) and not imp.empty:
+                with st.expander("v0.7 feature importance", expanded=False):
+                    imp_show = imp.copy()
+                    imp_show["Standardized coefficient"] = imp_show["Standardized coefficient"].map(lambda x: f"{x:+.3f}")
+                    imp_show["Absolute importance"] = imp_show["Absolute importance"].map(lambda x: f"{x:.3f}")
+                    st.dataframe(imp_show, use_container_width=True, hide_index=True)
+
+            # Exports
+            ios_save_button(
+                "Save v0.7 Matchup Walk-Forward CSV",
+                matchup_tests.to_csv(index=False),
+                f"cfb_v070_matchup_walkforward_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            ios_save_button(
+                "Save v0.7 Matchup Bets CSV",
+                matchup_bets.to_csv(index=False),
+                f"cfb_v070_matchup_bets_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+            if isinstance(matchup_holdout_diag, dict):
+                imp = matchup_holdout_diag.get("importance", pd.DataFrame())
+                if isinstance(imp, pd.DataFrame) and not imp.empty:
+                    ios_save_button(
+                        "Save v0.7 Feature Importance CSV",
+                        imp.to_csv(index=False),
+                        f"cfb_v070_matchup_importance_holdout_{cfg.get('holdout',2025)}.csv"
+                    )
+
+            st.info(
+                "Promotion gate: v0.7 should not reach the live betting board unless its spread MAE "
+                "beats market-only across multiple unseen seasons and its fixed-hurdle research bets "
+                "show credible multi-season performance."
+            )
+
         research_df = st.session_state.get("cfb_signal_research_df", pd.DataFrame())
         research_wf = st.session_state.get("cfb_signal_walkforward_df", pd.DataFrame())
 
@@ -3367,7 +3819,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v062_export_fix_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v070_matchup_lab_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -4367,4 +4819,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.6.2-EXPORT-FIX • Signal Research CSV downloads fixed for iOS/Streamlit.")
+st.caption("CFB Edge • v0.7.0-MATCHUP-LAB • Market-first matchup residual model with rolling unseen-season validation.")
