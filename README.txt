@@ -1,9 +1,10 @@
-CFB Edge v0.5.0-RESIDUAL-LAB
+CFB Edge v0.5.1-WALKFORWARD-SPREAD
 
-This version adds an experimental market-first residual model to Backtest mode.
-It trains only on development seasons and predicts the selected holdout once.
-The residual model predicts market error rather than the full game result.
-Spread and total residuals are fit separately with standardized ridge regression.
-Regularization is selected inside the development sample only.
-Moneyline bets are disabled for v0.5.0 pending a historical ML data-quality audit.
-Do not promote v0.5.0 to the live betting board unless the untouched holdout improves on market-only MAE and produces credible betting results.
+Changes from v0.5.0:
+- Adds rolling walk-forward validation across unseen seasons.
+- Example: train 2022 -> test 2023; train 2022-23 -> test 2024; train 2022-24 -> test 2025.
+- Official v0.5.1 bets are spread-only.
+- Residual total signals are retained as research-only LEANs and cannot become official BETs.
+- Moneylines remain disabled for the residual model pending data-quality audit.
+- Adds per-season W-L-P, win rate, ROI, units, and market-vs-residual MAE tables.
+- No live-board promotion is made automatically; promotion should depend on multi-season unseen results.

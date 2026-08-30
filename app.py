@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.5.0-RESIDUAL-LAB"
+MODEL_VERSION = "0.5.1-WALKFORWARD-SPREAD"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -2052,6 +2052,187 @@ def _residual_holdout_error_table(hold_df):
         })
     return pd.DataFrame(rows)
 
+
+# ===== v0.5.1 rolling walk-forward validation =====
+
+WALKFORWARD_VERSION = "v0.5.1-walkforward"
+
+def _fit_residual_models_for_cutoff(feature_df, test_season):
+    """
+    Train on all seasons strictly before test_season.
+    Tune ridge alpha using the latest available development season only.
+    Predict test_season once.
+    """
+    train_all = feature_df[feature_df["season"] < test_season].copy()
+    test = feature_df[feature_df["season"] == test_season].copy()
+    train_seasons = sorted(train_all["season"].dropna().astype(int).unique().tolist())
+
+    if len(train_seasons) < 1 or test.empty:
+        return pd.DataFrame(), {}
+
+    # If only one prior season exists, use conservative fixed regularization.
+    if len(train_seasons) == 1:
+        sp_alpha = 10.0
+        tot_alpha = 10.0
+        sp_cv = pd.DataFrame()
+        tot_cv = pd.DataFrame()
+    else:
+        sp_alpha, sp_cv = _choose_ridge_alpha(
+            train_all, SPREAD_RESIDUAL_FEATURES, "spread_target_residual", train_seasons
+        )
+        tot_alpha, tot_cv = _choose_ridge_alpha(
+            train_all, TOTAL_RESIDUAL_FEATURES, "total_target_residual", train_seasons
+        )
+
+    sp_model = _ridge_fit(train_all, SPREAD_RESIDUAL_FEATURES, "spread_target_residual", sp_alpha)
+    tot_model = _ridge_fit(train_all, TOTAL_RESIDUAL_FEATURES, "total_target_residual", tot_alpha)
+
+    out = test.copy()
+    out["pred_spread_residual"] = _ridge_predict(sp_model, out)
+    out["pred_total_residual"] = _ridge_predict(tot_model, out)
+
+    sp_train_pred = _ridge_predict(sp_model, train_all)
+    tot_train_pred = _ridge_predict(tot_model, train_all)
+
+    sp_y = pd.to_numeric(train_all["spread_target_residual"], errors="coerce").to_numpy()
+    tot_y = pd.to_numeric(train_all["total_target_residual"], errors="coerce").to_numpy()
+
+    sp_mask = np.isfinite(sp_train_pred) & np.isfinite(sp_y)
+    tot_mask = np.isfinite(tot_train_pred) & np.isfinite(tot_y)
+
+    sp_err = sp_y[sp_mask] - sp_train_pred[sp_mask]
+    tot_err = tot_y[tot_mask] - tot_train_pred[tot_mask]
+
+    spread_sd = float(np.std(sp_err, ddof=1)) if len(sp_err) > 2 else BASE_MARGIN_SD
+    total_sd = float(np.std(tot_err, ddof=1)) if len(tot_err) > 2 else BASE_TOTAL_SD
+    spread_sd = max(spread_sd, 11.0)
+    total_sd = max(total_sd, 11.0)
+
+    diag = {
+        "test_season": int(test_season),
+        "train_seasons": train_seasons,
+        "spread_alpha": sp_alpha,
+        "total_alpha": tot_alpha,
+        "spread_sd": spread_sd,
+        "total_sd": total_sd,
+        "spread_cv": sp_cv,
+        "total_cv": tot_cv,
+    }
+    return out, diag
+
+def _run_walkforward_residual(feature_df):
+    """
+    Rolling out-of-sample validation:
+      train 2022 -> test 2023
+      train 2022-23 -> test 2024
+      train 2022-24 -> test 2025
+    Generalizes automatically to the seasons present in the selected backtest.
+    """
+    seasons = sorted(feature_df["season"].dropna().astype(int).unique().tolist())
+    if len(seasons) < 2:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    all_bets = []
+    all_holdout_rows = []
+    diagnostics = {}
+
+    for test_season in seasons[1:]:
+        test_df, diag = _fit_residual_models_for_cutoff(feature_df, test_season)
+        if test_df.empty:
+            continue
+
+        diagnostics[test_season] = diag
+        all_holdout_rows.append(test_df)
+
+        for _, rr in test_df.iterrows():
+            rows = _bt_residual_candidate_rows(rr, diag["spread_sd"], diag["total_sd"])
+            for x in rows:
+                x["version"] = WALKFORWARD_VERSION
+                x["walkforward_test_season"] = int(test_season)
+
+                # v0.5.1 is spread-first:
+                # totals remain research-only and cannot become official BETs.
+                if x.get("market_type") == "total" and x.get("verdict") in {"BET", "STRONG BET"}:
+                    x["verdict"] = "LEAN"
+                    x["research_only"] = True
+                else:
+                    x["research_only"] = False
+
+                all_bets.append(x)
+
+    bets_df = pd.DataFrame(all_bets)
+    holdout_df = pd.concat(all_holdout_rows, ignore_index=True) if all_holdout_rows else pd.DataFrame()
+    return bets_df, holdout_df, diagnostics
+
+def _walkforward_season_summary(signal_df):
+    if signal_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    official = signal_df[
+        (signal_df["version"] == WALKFORWARD_VERSION)
+        & (signal_df["market_type"] == "spread")
+        & (signal_df["verdict"].isin(["BET", "STRONG BET"]))
+    ].copy()
+
+    for season in sorted(official["season"].dropna().astype(int).unique().tolist()):
+        s = official[official["season"] == season]
+        wins = int((s["result"] == "W").sum())
+        losses = int((s["result"] == "L").sum())
+        pushes = int((s["result"] == "P").sum())
+        decided = wins + losses
+        units = float(s["profit_units"].sum()) if len(s) else 0.0
+        roi = units / len(s) if len(s) else np.nan
+        rows.append({
+            "Test season": season,
+            "Spread bets": len(s),
+            "W": wins,
+            "L": losses,
+            "P": pushes,
+            "Win %": wins / decided if decided else np.nan,
+            "Units": units,
+            "ROI": roi,
+        })
+    return pd.DataFrame(rows)
+
+def _walkforward_error_summary(holdout_df):
+    if holdout_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for season in sorted(holdout_df["season"].dropna().astype(int).unique().tolist()):
+        s = holdout_df[holdout_df["season"] == season].copy()
+
+        sp = s.dropna(subset=["spread_target_residual", "pred_spread_residual"])
+        if len(sp):
+            mkt = float(np.mean(np.abs(sp["spread_target_residual"])))
+            res = float(np.mean(np.abs(sp["spread_target_residual"] - sp["pred_spread_residual"])))
+            rows.append({
+                "Test season": season,
+                "Market": "Spread",
+                "Games": len(sp),
+                "Market-only MAE": mkt,
+                "Residual MAE": res,
+                "Improvement": mkt - res,
+            })
+
+        tot = s.dropna(subset=["total_target_residual", "pred_total_residual"])
+        if len(tot):
+            mkt = float(np.mean(np.abs(tot["total_target_residual"])))
+            res = float(np.mean(np.abs(tot["total_target_residual"] - tot["pred_total_residual"])))
+            rows.append({
+                "Test season": season,
+                "Market": "Total",
+                "Games": len(tot),
+                "Market-only MAE": mkt,
+                "Residual MAE": res,
+                "Improvement": mkt - res,
+            })
+
+    return pd.DataFrame(rows)
+
+# ===== End v0.5.1 rolling walk-forward validation =====
+
 # ===== End v0.5.0 residual-market model =====
 
 # ===== End v0.4.0 backtest engine =====
@@ -2570,7 +2751,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### v0.3.1 vs v0.3.2 vs v0.5.0 residual holdout")
+    st.markdown("### Residual model validation • holdout + rolling walk-forward")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -2730,6 +2911,11 @@ if app_section == "Backtest":
         if residual_rows:
             bt_df = pd.concat([bt_df, pd.DataFrame(residual_rows)], ignore_index=True, sort=False)
 
+        # v0.5.1: rolling walk-forward out-of-sample validation.
+        walkforward_bets, walkforward_holdouts, walkforward_diag = _run_walkforward_residual(feature_df)
+        if not walkforward_bets.empty:
+            bt_df = pd.concat([bt_df, walkforward_bets], ignore_index=True, sort=False)
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -2738,6 +2924,9 @@ if app_section == "Backtest":
         st.session_state["cfb_backtest_games_df"] = bt_games_df
         st.session_state["cfb_residual_holdout_df"] = residual_holdout
         st.session_state["cfb_residual_diag"] = residual_diag
+        st.session_state["cfb_walkforward_bets_df"] = walkforward_bets
+        st.session_state["cfb_walkforward_holdouts_df"] = walkforward_holdouts
+        st.session_state["cfb_walkforward_diag"] = walkforward_diag
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
             "method": bt_method, "policy": bt_policy,
@@ -2762,6 +2951,15 @@ if app_section == "Backtest":
             _bt_summary(
                 test[test["version"]==RESIDUAL_VERSION],
                 f"{RESIDUAL_VERSION} • Holdout {holdout}"
+            )
+        )
+        summaries.append(
+            _bt_summary(
+                signal_df[
+                    (signal_df["version"]==WALKFORWARD_VERSION)
+                    & (signal_df["market_type"]=="spread")
+                ],
+                f"{WALKFORWARD_VERSION} • Spread only"
             )
         )
         summary_df = pd.DataFrame(summaries)
@@ -2812,6 +3010,55 @@ if app_section == "Backtest":
                     "Moneyline betting is intentionally disabled for v0.5.0 while the historical moneyline feed is audited."
                 )
 
+        wf_bets = st.session_state.get("cfb_walkforward_bets_df", pd.DataFrame())
+        wf_holdouts = st.session_state.get("cfb_walkforward_holdouts_df", pd.DataFrame())
+
+        if isinstance(wf_bets, pd.DataFrame) and not wf_bets.empty:
+            st.markdown("### v0.5.1 rolling walk-forward test")
+            st.caption(
+                "Each season is predicted only from seasons that occurred before it. "
+                "Official v0.5.1 bets are spreads only; totals are retained as research-only LEANs."
+            )
+
+            wf_signal = _bt_best_per_game(wf_bets) if cfg.get("policy") == "Best market per game" else wf_bets.copy()
+            wf_season = _walkforward_season_summary(wf_signal)
+            if not wf_season.empty:
+                wf_show = wf_season.copy()
+                wf_show["Win %"] = wf_show["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                wf_show["Units"] = wf_show["Units"].map(lambda x: f"{x:+.2f}")
+                wf_show["ROI"] = wf_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+                st.markdown("#### Unseen-season spread betting")
+                st.dataframe(wf_show, use_container_width=True, hide_index=True)
+
+            wf_err = _walkforward_error_summary(wf_holdouts)
+            if not wf_err.empty:
+                wf_err_show = wf_err.copy()
+                for c in ["Market-only MAE", "Residual MAE", "Improvement"]:
+                    wf_err_show[c] = wf_err_show[c].map(lambda x: f"{x:.3f}")
+                st.markdown("#### Unseen-season prediction error")
+                st.dataframe(wf_err_show, use_container_width=True, hide_index=True)
+
+            official_wf_spreads = wf_signal[
+                (wf_signal["version"] == WALKFORWARD_VERSION)
+                & (wf_signal["market_type"] == "spread")
+                & (wf_signal["verdict"].isin(["BET", "STRONG BET"]))
+            ]
+            if not official_wf_spreads.empty:
+                wins = int((official_wf_spreads["result"]=="W").sum())
+                losses = int((official_wf_spreads["result"]=="L").sum())
+                units = float(official_wf_spreads["profit_units"].sum())
+                decided = wins + losses
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("WF spread bets", len(official_wf_spreads))
+                c2.metric("WF spread record", f"{wins}-{losses}")
+                c3.metric("WF spread win %", f"{100*wins/decided:.1f}%" if decided else "—")
+                c4.metric("WF spread units", f"{units:+.2f}")
+
+            st.info(
+                "Promotion rule: do not move v0.5.1 to the live betting board unless spread signals "
+                "are credible across multiple unseen seasons, not just the 2025 holdout."
+            )
+
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
         if len(official):
             by_type=[]
@@ -2846,7 +3093,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v050_residual_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v051_walkforward_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -3846,4 +4093,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.5.0-RESIDUAL-LAB • Market-first residual model is holdout-tested before live promotion.")
+st.caption("CFB Edge • v0.5.1-WALKFORWARD-SPREAD • Rolling unseen-season validation; totals research-only.")
