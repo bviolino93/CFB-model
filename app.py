@@ -5,6 +5,7 @@ import numpy as np
 import base64
 import html
 import json
+import re
 import streamlit.components.v1 as components
 from datetime import date
 
@@ -17,7 +18,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.9.0-CANDIDATE-VALIDATION"
+MODEL_VERSION = "1.0.0-POINT-IN-TIME-LAB"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4197,6 +4198,541 @@ def ios_save_button(label, csv_text, filename):
     )
 
 
+
+# ===== v1.0 point-in-time historical data layer =====
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_week_team_box_stats(year, week):
+    """
+    One CFBD request per week. These are completed-game team box scores.
+    v1.0 only uses rows from weeks strictly before the game being modeled.
+    """
+    return cfbd_get(
+        "/games/teams",
+        API_KEY,
+        {
+            "year": int(year),
+            "week": int(week),
+            "seasonType": "regular",
+            "classification": "fbs",
+        },
+    )
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_core_ratings(year):
+    """
+    CFBD CORE includes throughWeek metadata. We only select a row whose
+    throughWeek is strictly earlier than the target game week.
+    Note: CFBD describes historical CORE as retrospective methodology, so this
+    is useful as a weekly-snapshot feature but not claimed as a literal vintage.
+    """
+    try:
+        return cfbd_get("/ratings/core", API_KEY, {"year": int(year)})
+    except Exception:
+        return []
+
+def _pt_num(v):
+    if v is None:
+        return np.nan
+    if isinstance(v, (int, float, np.number)):
+        try:
+            return float(v)
+        except Exception:
+            return np.nan
+    s = str(v).strip().replace(",", "")
+    if not s:
+        return np.nan
+    # percentages such as "42.9"
+    try:
+        return float(s.replace("%", ""))
+    except Exception:
+        pass
+    # ratios such as "6-13"
+    if "-" in s:
+        try:
+            a, b = s.split("-", 1)
+            a, b = float(a), float(b)
+            return a / b if b else np.nan
+        except Exception:
+            return np.nan
+    return np.nan
+
+def _pt_pct(v):
+    if v is None:
+        return np.nan
+    s = str(v).strip()
+    if "-" in s:
+        try:
+            a, b = s.split("-", 1)
+            a, b = float(a), float(b)
+            return a / b if b else np.nan
+        except Exception:
+            return np.nan
+    x = _pt_num(v)
+    if pd.isna(x):
+        return np.nan
+    if x > 1.0:
+        return x / 100.0
+    return x
+
+def _norm_stat_name(x):
+    return re.sub(r"[^a-z0-9]+", "", str(x or "").lower())
+
+def _box_stat_dict(team_obj):
+    out = {}
+    for s in team_obj.get("stats") or []:
+        key = _norm_stat_name(s.get("category"))
+        if key:
+            out[key] = s.get("stat")
+    return out
+
+def _first_stat(stats, names, pct=False):
+    for name in names:
+        k = _norm_stat_name(name)
+        if k in stats:
+            return _pt_pct(stats[k]) if pct else _pt_num(stats[k])
+    return np.nan
+
+def _parse_team_box_row(game_id, season, week, team_obj):
+    s = _box_stat_dict(team_obj)
+
+    total_yards = _first_stat(s, ["totalYards", "total yards"])
+    rush_yards = _first_stat(s, ["rushingYards", "rushing yards"])
+    pass_yards = _first_stat(s, ["netPassingYards", "passingYards", "net passing yards"])
+    first_downs = _first_stat(s, ["firstDowns", "first downs"])
+    turnovers = _first_stat(s, ["turnovers"])
+    plays = _first_stat(s, ["totalPlays", "plays", "total plays"])
+    ypp = _first_stat(s, ["yardsPerPlay", "yards per play"])
+    third = _first_stat(s, ["thirdDownEff", "thirdDownEfficiency", "third down efficiency"], pct=True)
+    fourth = _first_stat(s, ["fourthDownEff", "fourthDownEfficiency", "fourth down efficiency"], pct=True)
+    penalties = _first_stat(s, ["penalties"])
+    sacks = _first_stat(s, ["sacks"])
+    tackles_for_loss = _first_stat(s, ["tacklesForLoss", "tackles for loss"])
+
+    if pd.isna(ypp) and pd.notna(total_yards) and pd.notna(plays) and plays > 0:
+        ypp = total_yards / plays
+
+    return {
+        "game_id": game_id,
+        "season": int(season),
+        "week": int(week),
+        "team": team_obj.get("team"),
+        "home_away": team_obj.get("homeAway"),
+        "points": _pt_num(team_obj.get("points")),
+        "total_yards": total_yards,
+        "rush_yards": rush_yards,
+        "pass_yards": pass_yards,
+        "plays": plays,
+        "yards_per_play": ypp,
+        "first_downs": first_downs,
+        "turnovers": turnovers,
+        "third_down_pct": third,
+        "fourth_down_pct": fourth,
+        "penalties": penalties,
+        "sacks": sacks,
+        "tackles_for_loss": tackles_for_loss,
+    }
+
+def _collect_season_team_boxes(year, weeks):
+    rows = []
+    failures = []
+    for wk in sorted(set(int(w) for w in weeks if pd.notna(w))):
+        try:
+            payload = get_week_team_box_stats(year, wk)
+        except Exception as e:
+            failures.append({"season": year, "week": wk, "error": str(e)})
+            continue
+        for g in payload or []:
+            gid = g.get("id")
+            for t in g.get("teams") or []:
+                rows.append(_parse_team_box_row(gid, year, wk, t))
+    return pd.DataFrame(rows), pd.DataFrame(failures)
+
+def _rolling_team_features(box_df):
+    """
+    Build snapshots after each completed game. A target game in Week N will
+    read only snapshots from weeks < N.
+    """
+    if box_df.empty:
+        return pd.DataFrame()
+
+    d = box_df.copy()
+    numeric = [
+        "points","total_yards","rush_yards","pass_yards","plays","yards_per_play",
+        "first_downs","turnovers","third_down_pct","fourth_down_pct","penalties",
+        "sacks","tackles_for_loss"
+    ]
+    for c in numeric:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.sort_values(["season","team","week","game_id"])
+
+    out = []
+    for (season, team), g in d.groupby(["season","team"], dropna=False):
+        g = g.sort_values(["week","game_id"]).reset_index(drop=True)
+        for i in range(len(g)):
+            hist = g.iloc[:i]
+            row = {
+                "season": season,
+                "team": team,
+                "through_week": int(g.iloc[i]["week"]) - 1,
+                "next_game_week": int(g.iloc[i]["week"]),
+                "pregame_games": len(hist),
+            }
+            for c in numeric:
+                vals = pd.to_numeric(hist[c], errors="coerce")
+                row[f"pregame_{c}_avg"] = float(vals.mean()) if vals.notna().any() else np.nan
+                if len(hist) >= 3:
+                    recent = vals.tail(3)
+                    row[f"pregame_{c}_last3"] = float(recent.mean()) if recent.notna().any() else np.nan
+                else:
+                    row[f"pregame_{c}_last3"] = np.nan
+            out.append(row)
+
+        # Also add a post-last-game snapshot usable for later weeks.
+        if len(g):
+            hist = g
+            row = {
+                "season": season,
+                "team": team,
+                "through_week": int(g.iloc[-1]["week"]),
+                "next_game_week": int(g.iloc[-1]["week"]) + 1,
+                "pregame_games": len(hist),
+            }
+            for c in numeric:
+                vals = pd.to_numeric(hist[c], errors="coerce")
+                row[f"pregame_{c}_avg"] = float(vals.mean()) if vals.notna().any() else np.nan
+                recent = vals.tail(3)
+                row[f"pregame_{c}_last3"] = float(recent.mean()) if len(hist) >= 3 and recent.notna().any() else np.nan
+            out.append(row)
+
+    return pd.DataFrame(out)
+
+def _lookup_pregame_snapshot(roll_df, season, team, week):
+    if roll_df.empty or not team:
+        return {}
+    d = roll_df[
+        (roll_df["season"] == int(season)) &
+        (roll_df["team"] == team) &
+        (roll_df["through_week"] < int(week))
+    ]
+    if d.empty:
+        return {}
+    return d.sort_values("through_week").iloc[-1].to_dict()
+
+def _core_snapshot_map(core_rows):
+    by_team = {}
+    for r in core_rows or []:
+        team = r.get("team")
+        wk = r.get("throughWeek")
+        if not team or wk is None:
+            continue
+        try:
+            wk = int(wk)
+        except Exception:
+            continue
+        by_team.setdefault(team, []).append(r)
+    for team in by_team:
+        by_team[team].sort(key=lambda r: int(r.get("throughWeek") or -1))
+    return by_team
+
+def _lookup_core(core_map, team, game_week):
+    rows = core_map.get(team, [])
+    eligible = []
+    for r in rows:
+        try:
+            if int(r.get("throughWeek")) < int(game_week):
+                eligible.append(r)
+        except Exception:
+            continue
+    if not eligible:
+        return {}
+    return eligible[-1]
+
+def _read_uploaded_csv(uploaded):
+    if uploaded is None:
+        return pd.DataFrame()
+    try:
+        uploaded.seek(0)
+    except Exception:
+        pass
+    return pd.read_csv(uploaded)
+
+def _prepare_market_history(df):
+    """
+    Supported columns:
+      game_id, snapshot_time, provider, home_spread, total, home_ml, away_ml
+    Extra columns are preserved.
+    """
+    if df.empty:
+        return df
+    d = df.copy()
+    if "game_id" not in d.columns or "snapshot_time" not in d.columns:
+        return pd.DataFrame()
+    d["game_id"] = pd.to_numeric(d["game_id"], errors="coerce")
+    d["snapshot_time"] = pd.to_datetime(d["snapshot_time"], utc=True, errors="coerce")
+    for c in ["home_spread","total","home_ml","away_ml"]:
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    return d.dropna(subset=["game_id","snapshot_time"])
+
+def _market_snapshot_features(market_df, game_id, kickoff):
+    if market_df.empty:
+        return {
+            "market_history_source": "none",
+            "market_snapshot_count": 0,
+        }
+    gid = pd.to_numeric(pd.Series([game_id]), errors="coerce").iloc[0]
+    if pd.isna(gid):
+        return {"market_history_source": "none", "market_snapshot_count": 0}
+    g = market_df[market_df["game_id"] == gid].copy()
+    if g.empty:
+        return {"market_history_source": "none", "market_snapshot_count": 0}
+
+    ko = pd.to_datetime(kickoff, utc=True, errors="coerce")
+    if pd.notna(ko):
+        g = g[g["snapshot_time"] < ko]
+    if g.empty:
+        return {"market_history_source": "none", "market_snapshot_count": 0}
+
+    # Median across providers at each timestamp, then first/latest timestamps.
+    cols = [c for c in ["home_spread","total","home_ml","away_ml"] if c in g.columns]
+    snap = g.groupby("snapshot_time", as_index=False)[cols].median(numeric_only=True).sort_values("snapshot_time")
+    first = snap.iloc[0]
+    last = snap.iloc[-1]
+    out = {
+        "market_history_source": "uploaded_snapshots",
+        "market_snapshot_count": len(snap),
+        "market_open_time": first["snapshot_time"],
+        "market_latest_time": last["snapshot_time"],
+    }
+    for c in cols:
+        out[f"open_{c}"] = first.get(c, np.nan)
+        out[f"latest_{c}"] = last.get(c, np.nan)
+        a, b = first.get(c, np.nan), last.get(c, np.nan)
+        out[f"move_{c}"] = (b-a) if pd.notna(a) and pd.notna(b) else np.nan
+    return out
+
+def _prepare_availability(df):
+    """
+    Supported columns:
+      game_id, snapshot_time, team, player, position, status, snap_share, impact_rating
+
+    impact_rating is optional and user/provider-defined. v1.0 does not invent
+    injury values; it only aggregates supplied point-in-time records.
+    """
+    if df.empty:
+        return df
+    d = df.copy()
+    required = {"game_id","snapshot_time","team","position","status"}
+    if not required.issubset(set(d.columns)):
+        return pd.DataFrame()
+    d["game_id"] = pd.to_numeric(d["game_id"], errors="coerce")
+    d["snapshot_time"] = pd.to_datetime(d["snapshot_time"], utc=True, errors="coerce")
+    if "snap_share" in d.columns:
+        d["snap_share"] = pd.to_numeric(d["snap_share"], errors="coerce")
+    if "impact_rating" in d.columns:
+        d["impact_rating"] = pd.to_numeric(d["impact_rating"], errors="coerce")
+    return d.dropna(subset=["game_id","snapshot_time","team","position","status"])
+
+def _availability_features(avail_df, game_id, kickoff, team, prefix):
+    out = {
+        f"{prefix}_availability_source": "none",
+        f"{prefix}_availability_rows": 0,
+        f"{prefix}_qb_out": 0,
+        f"{prefix}_qb_questionable": 0,
+        f"{prefix}_impact_out_sum": np.nan,
+    }
+    if avail_df.empty:
+        return out
+    gid = pd.to_numeric(pd.Series([game_id]), errors="coerce").iloc[0]
+    ko = pd.to_datetime(kickoff, utc=True, errors="coerce")
+    g = avail_df[(avail_df["game_id"] == gid) & (avail_df["team"] == team)].copy()
+    if pd.notna(ko):
+        g = g[g["snapshot_time"] < ko]
+    if g.empty:
+        return out
+
+    # Keep latest point-in-time record per player/position.
+    keycols = ["player"] if "player" in g.columns else ["position"]
+    g = g.sort_values("snapshot_time").groupby(keycols, as_index=False).tail(1)
+    status = g["status"].astype(str).str.lower()
+    pos = g["position"].astype(str).str.upper()
+
+    out[f"{prefix}_availability_source"] = "uploaded_point_in_time"
+    out[f"{prefix}_availability_rows"] = len(g)
+    out[f"{prefix}_qb_out"] = int(((pos == "QB") & status.str.contains("out|doubtful", regex=True)).any())
+    out[f"{prefix}_qb_questionable"] = int(((pos == "QB") & status.str.contains("questionable|game.?time", regex=True)).any())
+
+    if "impact_rating" in g.columns:
+        bad = status.str.contains("out|doubtful", regex=True)
+        vals = pd.to_numeric(g.loc[bad, "impact_rating"], errors="coerce")
+        out[f"{prefix}_impact_out_sum"] = float(vals.sum()) if vals.notna().any() else np.nan
+    return out
+
+def _cfbd_consensus_for_game(line_payload, gid):
+    rows = []
+    for lr in line_payload or []:
+        try:
+            same = int(lr.get("id")) == int(gid)
+        except Exception:
+            same = lr.get("id") == gid
+        if same:
+            rows.append(lr)
+    if not rows:
+        return {}
+    try:
+        x = normalize_game_lines(rows, game_id=gid)
+    except Exception:
+        return {}
+    if not x:
+        return {}
+    return {
+        "cfbd_home_spread": x.get("home_spread"),
+        "cfbd_total": x.get("total"),
+        "cfbd_home_ml": x.get("home_ml"),
+        "cfbd_away_ml": x.get("away_ml"),
+        "cfbd_market_source": "generic_single_snapshot",
+    }
+
+def _build_point_in_time_dataset(seasons, scope, market_df, avail_df, progress=None):
+    rows = []
+    failures = []
+
+    seasons = sorted(int(s) for s in seasons)
+    for si, season in enumerate(seasons):
+        if progress is not None:
+            progress.progress(si/max(1,len(seasons)), text=f"{season}: loading schedule and market…")
+
+        try:
+            games = get_backtest_games(season)
+            lines = get_backtest_lines(season)
+        except Exception as e:
+            failures.append({"season":season,"stage":"schedule/lines","error":str(e)})
+            continue
+
+        season_games = [
+            g for g in games or []
+            if g.get("week") is not None and
+            _bt_game_allowed(g, scope)
+        ]
+        weeks = sorted({int(g.get("week")) for g in season_games if g.get("week") is not None})
+
+        if progress is not None:
+            progress.progress((si+0.20)/max(1,len(seasons)), text=f"{season}: loading weekly box scores…")
+        box_df, box_fail = _collect_season_team_boxes(season, weeks)
+        if not box_fail.empty:
+            failures.extend(box_fail.assign(stage="team_box").to_dict("records"))
+        roll = _rolling_team_features(box_df)
+
+        if progress is not None:
+            progress.progress((si+0.65)/max(1,len(seasons)), text=f"{season}: loading prior-week CORE snapshots…")
+        core_map = _core_snapshot_map(get_core_ratings(season))
+
+        for g in season_games:
+            gid = g.get("id")
+            wk = int(g.get("week"))
+            home = g.get("homeTeam")
+            away = g.get("awayTeam")
+            kickoff = g.get("startDate")
+
+            base = {
+                "game_id": gid,
+                "season": season,
+                "week": wk,
+                "start_time": kickoff,
+                "home_team": home,
+                "away_team": away,
+                "home_points": g.get("homePoints"),
+                "away_points": g.get("awayPoints"),
+                "neutral_site": g.get("neutralSite"),
+                "conference_game": g.get("conferenceGame"),
+            }
+
+            for prefix, team in [("home",home),("away",away)]:
+                snap = _lookup_pregame_snapshot(roll, season, team, wk)
+                base[f"{prefix}_pregame_games"] = snap.get("pregame_games", 0)
+                for k, v in snap.items():
+                    if str(k).startswith("pregame_") and k != "pregame_games":
+                        base[f"{prefix}_{k}"] = v
+
+                core = _lookup_core(core_map, team, wk)
+                base[f"{prefix}_core_through_week"] = core.get("throughWeek")
+                base[f"{prefix}_core_overall"] = core.get("overall")
+                base[f"{prefix}_core_offense"] = core.get("offense")
+                base[f"{prefix}_core_defense"] = core.get("defense")
+                base[f"{prefix}_core_model_version"] = core.get("modelVersion")
+
+            # Diffs from the perspective of the home team.
+            diff_pairs = [
+                "pregame_points_avg","pregame_total_yards_avg","pregame_rush_yards_avg",
+                "pregame_pass_yards_avg","pregame_yards_per_play_avg","pregame_first_downs_avg",
+                "pregame_turnovers_avg","pregame_third_down_pct_avg",
+                "pregame_points_last3","pregame_yards_per_play_last3",
+                "core_overall","core_offense","core_defense",
+            ]
+            for k in diff_pairs:
+                hv = pd.to_numeric(pd.Series([base.get(f"home_{k}")]), errors="coerce").iloc[0]
+                av = pd.to_numeric(pd.Series([base.get(f"away_{k}")]), errors="coerce").iloc[0]
+                base[f"diff_{k}"] = hv-av if pd.notna(hv) and pd.notna(av) else np.nan
+
+            base.update(_cfbd_consensus_for_game(lines, gid))
+            base.update(_market_snapshot_features(market_df, gid, kickoff))
+            base.update(_availability_features(avail_df, gid, kickoff, home, "home"))
+            base.update(_availability_features(avail_df, gid, kickoff, away, "away"))
+
+            # Prefer uploaded latest pregame market, otherwise generic CFBD snapshot.
+            base["model_market_home_spread"] = (
+                base.get("latest_home_spread")
+                if pd.notna(base.get("latest_home_spread", np.nan))
+                else base.get("cfbd_home_spread")
+            )
+            base["model_market_total"] = (
+                base.get("latest_total")
+                if pd.notna(base.get("latest_total", np.nan))
+                else base.get("cfbd_total")
+            )
+
+            base["has_true_line_movement"] = int(base.get("market_snapshot_count", 0) >= 2)
+            base["has_availability"] = int(
+                base.get("home_availability_rows", 0) > 0 or
+                base.get("away_availability_rows", 0) > 0
+            )
+            base["has_2plus_pregame_games"] = int(
+                (base.get("home_pregame_games",0) or 0) >= 2 and
+                (base.get("away_pregame_games",0) or 0) >= 2
+            )
+            base["pit_core_available"] = int(
+                pd.notna(base.get("home_core_overall")) and pd.notna(base.get("away_core_overall"))
+            )
+
+            rows.append(base)
+
+    if progress is not None:
+        progress.progress(1.0, text="Point-in-time dataset complete.")
+
+    return pd.DataFrame(rows), pd.DataFrame(failures)
+
+def _pit_quality_summary(df):
+    if df.empty:
+        return pd.DataFrame()
+    rows = []
+    for season, g in df.groupby("season"):
+        rows.append({
+            "Season": int(season),
+            "Games": len(g),
+            "2+ prior games both teams": int(g["has_2plus_pregame_games"].sum()),
+            "2+ prior games coverage": float(g["has_2plus_pregame_games"].mean()),
+            "Prior-week CORE both": int(g["pit_core_available"].sum()),
+            "CORE coverage": float(g["pit_core_available"].mean()),
+            "True line movement games": int(g["has_true_line_movement"].sum()),
+            "Line movement coverage": float(g["has_true_line_movement"].mean()),
+            "Availability games": int(g["has_availability"].sum()),
+            "Availability coverage": float(g["has_availability"].mean()),
+        })
+    return pd.DataFrame(rows)
+
+# ===== End v1.0 point-in-time historical data layer =====
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_backtest_games(year):
     return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
@@ -4211,14 +4747,203 @@ def get_backtest_model_data(year):
 
 app_section = st.radio(
     "Workspace",
-    ["Live Model", "Backtest"],
+    ["Live Model", "Backtest", "Point-in-Time Lab"],
     horizontal=True,
     index=0,
 )
 
+
+if app_section == "Point-in-Time Lab":
+    st.markdown('<div class="section-kicker">v1.0 Data Architecture</div>', unsafe_allow_html=True)
+    st.markdown("### Point-in-Time Historical Dataset")
+    st.info(
+        "v1.0 changes the data architecture before changing the betting model. "
+        "Team-form features are built only from games completed before each matchup. "
+        "Uploaded market snapshots and availability records are filtered to timestamps before kickoff."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        pit_seasons = st.multiselect(
+            "Seasons",
+            [2018,2019,2020,2021,2022,2023,2024,2025],
+            default=[2022,2023,2024,2025],
+            key="pit_seasons",
+            help="Start with 2022-2025 to validate the pipeline; expand backward after it completes cleanly."
+        )
+    with c2:
+        pit_scope = st.selectbox(
+            "Game universe",
+            ["Major FBS","All FBS","All college games"],
+            index=0,
+            key="pit_scope"
+        )
+
+    st.markdown("#### Optional true point-in-time inputs")
+    st.caption(
+        "CFBD's generic historical lines do not reliably identify opener/close timestamps. "
+        "For actual line movement, upload timestamped snapshots. Injury/QB status also requires "
+        "a point-in-time availability source; v1.0 will not backfill or invent those values."
+    )
+
+    market_upload = st.file_uploader(
+        "Market snapshot CSV (optional)",
+        type=["csv"],
+        key="pit_market_upload",
+        help="Columns: game_id, snapshot_time, provider, home_spread, total, home_ml, away_ml"
+    )
+    avail_upload = st.file_uploader(
+        "Player availability CSV (optional)",
+        type=["csv"],
+        key="pit_avail_upload",
+        help="Columns: game_id, snapshot_time, team, player, position, status, snap_share, impact_rating"
+    )
+
+    market_template = pd.DataFrame(columns=[
+        "game_id","snapshot_time","provider","home_spread","total","home_ml","away_ml"
+    ])
+    availability_template = pd.DataFrame(columns=[
+        "game_id","snapshot_time","team","player","position","status","snap_share","impact_rating"
+    ])
+    t1, t2 = st.columns(2)
+    with t1:
+        ios_save_button(
+            "Save Market Snapshot Template",
+            market_template.to_csv(index=False),
+            "cfb_v100_market_snapshot_template.csv"
+        )
+    with t2:
+        ios_save_button(
+            "Save Availability Template",
+            availability_template.to_csv(index=False),
+            "cfb_v100_availability_template.csv"
+        )
+
+    run_pit = st.button("Build Point-in-Time Dataset", type="primary", use_container_width=True)
+
+    if run_pit:
+        if not pit_seasons:
+            st.error("Select at least one season.")
+            st.stop()
+
+        raw_market = _read_uploaded_csv(market_upload)
+        raw_avail = _read_uploaded_csv(avail_upload)
+        market_df = _prepare_market_history(raw_market)
+        avail_df = _prepare_availability(raw_avail)
+
+        if market_upload is not None and market_df.empty:
+            st.error(
+                "Market snapshot file was uploaded but required columns were not found. "
+                "Use game_id and snapshot_time plus market columns."
+            )
+            st.stop()
+
+        if avail_upload is not None and avail_df.empty:
+            st.error(
+                "Availability file was uploaded but required columns were not found. "
+                "Use game_id, snapshot_time, team, position and status."
+            )
+            st.stop()
+
+        progress = st.progress(0, text="Starting point-in-time build…")
+        try:
+            pit_df, pit_failures = _build_point_in_time_dataset(
+                pit_seasons, pit_scope, market_df, avail_df, progress=progress
+            )
+        except Exception as e:
+            progress.empty()
+            st.error(f"Point-in-time build failed: {e}")
+            st.exception(e)
+            st.stop()
+        progress.empty()
+
+        st.session_state["cfb_v100_pit_df"] = pit_df
+        st.session_state["cfb_v100_pit_failures"] = pit_failures
+        st.session_state["cfb_v100_pit_config"] = {
+            "seasons": pit_seasons,
+            "scope": pit_scope,
+            "market_upload": market_upload is not None,
+            "availability_upload": avail_upload is not None,
+        }
+        st.success(f"Built {len(pit_df):,} point-in-time game rows.")
+
+    pit_df = st.session_state.get("cfb_v100_pit_df", pd.DataFrame())
+    pit_failures = st.session_state.get("cfb_v100_pit_failures", pd.DataFrame())
+    pit_cfg = st.session_state.get("cfb_v100_pit_config", {})
+
+    if isinstance(pit_df, pd.DataFrame) and not pit_df.empty:
+        quality = _pit_quality_summary(pit_df)
+
+        st.markdown("### Data Quality Gate")
+        show = quality.copy()
+        for c in [c for c in show.columns if "coverage" in c.lower()]:
+            show[c] = show[c].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+        st.dataframe(show, use_container_width=True, hide_index=True)
+
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Games", f"{len(pit_df):,}")
+        c2.metric("2+ prior-game coverage", f"{100*pit_df['has_2plus_pregame_games'].mean():.1f}%")
+        c3.metric("True line movement", f"{100*pit_df['has_true_line_movement'].mean():.1f}%")
+        c4.metric("Availability coverage", f"{100*pit_df['has_availability'].mean():.1f}%")
+
+        st.markdown("### Leakage Audit")
+        future_core = pd.to_numeric(pit_df.get("home_core_through_week"), errors="coerce") >= pd.to_numeric(pit_df["week"], errors="coerce")
+        future_core |= pd.to_numeric(pit_df.get("away_core_through_week"), errors="coerce") >= pd.to_numeric(pit_df["week"], errors="coerce")
+        leakage_count = int(future_core.fillna(False).sum())
+        if leakage_count == 0:
+            st.success("No CORE row with throughWeek >= target game week was used.")
+        else:
+            st.error(f"Leakage check failed on {leakage_count} rows. Do not model from this export.")
+
+        st.caption(
+            "Rolling team box-score features are generated from weeks strictly before the target game. "
+            "CORE is also restricted to prior-week snapshots, but CFBD documents historical CORE as "
+            "retrospective methodology rather than literal archived vintage."
+        )
+
+        with st.expander("Preview point-in-time rows", expanded=True):
+            preview_cols = [
+                "season","week","away_team","home_team",
+                "home_pregame_games","away_pregame_games",
+                "diff_pregame_yards_per_play_avg",
+                "diff_pregame_turnovers_avg",
+                "diff_core_overall",
+                "cfbd_home_spread","open_home_spread","latest_home_spread","move_home_spread",
+                "home_qb_out","away_qb_out",
+                "has_true_line_movement","has_availability"
+            ]
+            preview_cols = [c for c in preview_cols if c in pit_df.columns]
+            st.dataframe(pit_df[preview_cols].head(250), use_container_width=True, hide_index=True)
+
+        ios_save_button(
+            "Save v1.0 Point-in-Time Dataset CSV",
+            pit_df.to_csv(index=False),
+            f"cfb_v100_point_in_time_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
+        )
+        ios_save_button(
+            "Save v1.0 Data Quality CSV",
+            quality.to_csv(index=False),
+            f"cfb_v100_data_quality_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
+        )
+        if isinstance(pit_failures, pd.DataFrame) and not pit_failures.empty:
+            with st.expander("API/data failures", expanded=False):
+                st.dataframe(pit_failures, use_container_width=True, hide_index=True)
+            ios_save_button(
+                "Save v1.0 Failures CSV",
+                pit_failures.to_csv(index=False),
+                f"cfb_v100_failures_{min(pit_cfg.get('seasons',[2022]))}_{max(pit_cfg.get('seasons',[2025]))}.csv"
+            )
+
+        st.warning(
+            "v1.0 is a data-validation build, not a betting promotion. Do not train the next model "
+            "until the quality table shows acceptable pregame coverage and the leakage audit is clean."
+        )
+
+    st.stop()
+
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Model validation • v0.9 locked candidate")
+    st.markdown("### Model validation • v0.9.1 locked candidate")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -4249,6 +4974,19 @@ if app_section == "Backtest":
             ["Best market per game", "All qualifying markets"],
             index=0,
             help="Best market per game prevents multiple official bets from the same matchup in the backtest.",
+        )
+
+        bt_run_mode = st.selectbox(
+            "Validation workload",
+            [
+                "v0.9 candidate only (recommended)",
+                "Full legacy research stack",
+            ],
+            index=0,
+            help=(
+                "Candidate-only runs the locked 56–57% validation without recalculating every old "
+                "v0.5–v0.8 research layer. This is much faster and is the correct mode for v0.9."
+            ),
         )
 
     holdout_default = max(bt_seasons) if bt_seasons else 2025
@@ -4416,45 +5154,95 @@ if app_section == "Backtest":
             st.error("No historical games with usable CFBD lines were returned for the selected sample.")
             st.stop()
 
-        # v0.5.0 RESIDUAL: train only on seasons before the selected holdout,
-        # then predict the untouched holdout once.
         feature_df = _residual_feature_frame(bt_games_df)
-        residual_holdout, residual_diag = _fit_residual_models(feature_df, bt_holdout)
-        residual_rows = []
-        for _, rr in residual_holdout.iterrows():
-            residual_rows.extend(
-                _bt_residual_candidate_rows(
-                    rr,
-                    residual_diag["spread_sd"],
-                    residual_diag["total_sd"],
+
+        # v0.9.1: candidate validation should not be blocked by the entire legacy
+        # research stack. The recommended fast path runs only what the locked
+        # 56–57% rule needs.
+        if bt_run_mode == "v0.9 candidate only (recommended)":
+            progress = st.progress(0, text="Fitting rolling cover classifier…")
+
+            residual_holdout = pd.DataFrame()
+            residual_diag = {}
+            walkforward_bets = pd.DataFrame()
+            walkforward_holdouts = pd.DataFrame()
+            walkforward_diag = {}
+            signal_research = pd.DataFrame()
+            signal_walkforward = pd.DataFrame()
+            matchup_tests = pd.DataFrame()
+            matchup_bets = pd.DataFrame()
+            matchup_diag = {}
+            matchup_holdout = pd.DataFrame()
+            matchup_holdout_bets = pd.DataFrame()
+            matchup_holdout_diag = {}
+            audit_rows = pd.DataFrame()
+            audit_tables = {}
+
+            try:
+                classifier_tests, classifier_rows, classifier_diag = _run_classifier_walkforward(feature_df)
+                progress.progress(0.55, text="Running locked 56–57% candidate stress tests…")
+                classifier_holdout, classifier_holdout_rows, classifier_holdout_diag = _fit_classifier_final_holdout(
+                    feature_df, bt_holdout
                 )
+                candidate_validation = _candidate_validation_bundle(
+                    classifier_rows, classifier_tests, feature_df
+                )
+                progress.progress(1.0, text="Candidate validation complete.")
+            except Exception as e:
+                progress.empty()
+                st.error(f"v0.9 candidate validation failed: {e}")
+                st.exception(e)
+                st.stop()
+
+            progress.empty()
+
+        else:
+            progress = st.progress(0, text="Running full legacy research stack…")
+
+            # v0.5.0 RESIDUAL
+            residual_holdout, residual_diag = _fit_residual_models(feature_df, bt_holdout)
+            residual_rows = []
+            for _, rr in residual_holdout.iterrows():
+                residual_rows.extend(
+                    _bt_residual_candidate_rows(
+                        rr,
+                        residual_diag["spread_sd"],
+                        residual_diag["total_sd"],
+                    )
+                )
+            if residual_rows:
+                bt_df = pd.concat([bt_df, pd.DataFrame(residual_rows)], ignore_index=True, sort=False)
+
+            progress.progress(0.15, text="Running residual walk-forward…")
+            walkforward_bets, walkforward_holdouts, walkforward_diag = _run_walkforward_residual(feature_df)
+            if not walkforward_bets.empty:
+                bt_df = pd.concat([bt_df, walkforward_bets], ignore_index=True, sort=False)
+
+            progress.progress(0.30, text="Running v0.6 signal research…")
+            signal_research = _run_signal_research(feature_df, bt_holdout)
+            signal_walkforward = _walkforward_signal_research(feature_df)
+
+            progress.progress(0.45, text="Running v0.7 matchup research…")
+            matchup_tests, matchup_bets, matchup_diag = _run_matchup_walkforward(feature_df)
+            matchup_holdout, matchup_holdout_bets, matchup_holdout_diag = _fit_matchup_final_holdout(
+                feature_df, bt_holdout
             )
-        if residual_rows:
-            bt_df = pd.concat([bt_df, pd.DataFrame(residual_rows)], ignore_index=True, sort=False)
 
-        # v0.5.1: rolling walk-forward out-of-sample validation.
-        walkforward_bets, walkforward_holdouts, walkforward_diag = _run_walkforward_residual(feature_df)
-        if not walkforward_bets.empty:
-            bt_df = pd.concat([bt_df, walkforward_bets], ignore_index=True, sort=False)
+            progress.progress(0.65, text="Running v0.8 classifier…")
+            classifier_tests, classifier_rows, classifier_diag = _run_classifier_walkforward(feature_df)
+            classifier_holdout, classifier_holdout_rows, classifier_holdout_diag = _fit_classifier_final_holdout(
+                feature_df, bt_holdout
+            )
 
-        signal_research = _run_signal_research(feature_df, bt_holdout)
-        signal_walkforward = _walkforward_signal_research(feature_df)
+            progress.progress(0.80, text="Running v0.8.1 audit…")
+            audit_rows, audit_tables = _build_signal_audit_tables(classifier_rows, classifier_tests)
 
-        matchup_tests, matchup_bets, matchup_diag = _run_matchup_walkforward(feature_df)
-        matchup_holdout, matchup_holdout_bets, matchup_holdout_diag = _fit_matchup_final_holdout(
-            feature_df, bt_holdout
-        )
-
-        classifier_tests, classifier_rows, classifier_diag = _run_classifier_walkforward(feature_df)
-        classifier_holdout, classifier_holdout_rows, classifier_holdout_diag = _fit_classifier_final_holdout(
-            feature_df, bt_holdout
-        )
-
-        audit_rows, audit_tables = _build_signal_audit_tables(classifier_rows, classifier_tests)
-
-        candidate_validation = _candidate_validation_bundle(
-            classifier_rows, classifier_tests, feature_df
-        )
+            progress.progress(0.90, text="Running locked v0.9 candidate stress test…")
+            candidate_validation = _candidate_validation_bundle(
+                classifier_rows, classifier_tests, feature_df
+            )
+            progress.progress(1.0, text="Full validation complete.")
+            progress.empty()
 
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
@@ -4489,8 +5277,13 @@ if app_section == "Backtest":
 
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
-            "method": bt_method, "policy": bt_policy,
+            "method": bt_method, "policy": bt_policy, "run_mode": bt_run_mode,
         }
+
+        st.success(
+            "Backtest complete. Results are shown below. "
+            + ("Candidate-only mode skipped legacy research layers." if bt_run_mode.startswith("v0.9") else "")
+        )
 
     if "cfb_backtest_signal_df" in st.session_state:
         bt_df = st.session_state["cfb_backtest_df"]
@@ -4498,6 +5291,12 @@ if app_section == "Backtest":
         bt_games_df = st.session_state["cfb_backtest_games_df"]
         cfg = st.session_state.get("cfb_backtest_config", {})
         holdout = cfg.get("holdout", bt_holdout)
+
+        if cfg.get("run_mode") == "v0.9 candidate only (recommended)":
+            st.info(
+                "Fast candidate mode was used. v0.5–v0.8 legacy research sections below may be empty; "
+                "the v0.9 locked-candidate section is the intended output."
+            )
 
         train = signal_df[signal_df["season"] != holdout]
         test = signal_df[signal_df["season"] == holdout]
@@ -5121,7 +5920,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v090_candidate_validation_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v091_candidate_fastfix_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -6121,4 +6920,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.9.0-CANDIDATE-VALIDATION • Locked 56–57% ATS candidate stress-tested over longer history with 2020 handled separately.")
+st.caption("CFB Edge • v1.0.0-POINT-IN-TIME-LAB • Pregame-only rolling data architecture with timestamped market and availability ingestion.")

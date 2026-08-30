@@ -1,66 +1,101 @@
-CFB Edge v0.9.0-CANDIDATE-VALIDATION
+CFB Edge v1.0.0-POINT-IN-TIME-LAB
 
-Purpose
--------
-Freeze the first promising classifier rule and stress-test it over a longer
-historical window before any live-board promotion.
+What changed
+------------
+v1.0 stops searching for a better threshold and rebuilds the historical data layer.
 
-LOCKED RULE
------------
-56.0% <= model pick probability < 57.0%
-
-The threshold is not re-optimized in this version.
-
-Default history
----------------
-2018-2025 selected by default.
-
-Because rolling validation needs at least one prior season:
-- 2018 is the initial training season
-- 2019 is the first unseen test season
-
-2020 handling
+New Workspace
 -------------
-Two views are produced:
+Point-in-Time Lab
 
-1. Standard rolling walk-forward
-   - 2020 is reported separately
-   - primary combined results exclude 2020
+The existing Live Model and Backtest workspaces remain available.
 
-2. COVID-excluded-training stress test
-   - 2020 is never used for fitting
-   - 2020 is not used as a test season
-   - 2021+ models are trained only on earlier non-2020 seasons
+Pregame-only team form
+----------------------
+v1.0 pulls CFBD game-level team box scores by week and creates rolling team
+features using ONLY games from earlier weeks.
 
-This avoids allowing the structurally unusual 2020 season to determine whether
-the candidate survives.
+Examples:
+- points
+- total/rush/pass yards
+- plays
+- yards per play
+- first downs
+- turnovers
+- third/fourth down efficiency
+- penalties
+- sacks
+- tackles for loss
+- full-season-to-date averages
+- last-3 averages when available
 
-Validation outputs
-------------------
-- Per-season W-L-P, win rate, units and ROI
-- Wilson 95% interval for ATS win rate
-- Edge over -110 breakeven
-- Pre/post-COVID era stability
-- Home vs away diagnostic
-- Favorite vs underdog diagnostic
-- Leave-one-season-out robustness
-- Conservative research promotion gate
+No target-game box score is included in its own pregame snapshot.
 
-Exports
--------
-1. cfb_v090_candidate_bets_2018_2025.csv
-2. cfb_v090_candidate_seasons_2018_2025.csv
-3. cfb_v090_candidate_stress_2018_2025.csv
-
-Recommended run
+Prior-week CORE
 ---------------
-Seasons: 2018-2025
-Holdout: 2025
-Game universe: Major FBS
-Historical rating method: Leakage-safe preseason prior
-Signal policy: Best market per game
+v1.0 also attempts to ingest CFBD CORE rows and only permits a row where:
+    throughWeek < target game week
 
-Important
+Important: CFBD documents historical CORE as retrospective methodology.
+Therefore v1.0 labels it as a prior-week snapshot feature but does NOT claim
+that it is a literal archived rating that was published at that historical time.
+
+Market movement
+---------------
+CFBD generic historical lines remain a fallback single snapshot.
+
+For real opener/current/close-style movement, upload a timestamped CSV:
+    game_id
+    snapshot_time
+    provider
+    home_spread
+    total
+    home_ml
+    away_ml
+
+v1.0 filters snapshots to snapshot_time < kickoff and derives:
+- opening consensus
+- latest pregame consensus
+- spread/total/ML movement
+- snapshot count
+
+It never labels a generic CFBD line as an opener or close.
+
+QB / injury availability
+------------------------
+CFBD does not supply the historical point-in-time injury archive needed for
+a clean backtest. v1.0 therefore accepts an optional availability CSV:
+    game_id
+    snapshot_time
+    team
+    player
+    position
+    status
+    snap_share
+    impact_rating
+
+Only records timestamped before kickoff are used. v1.0 does not invent missing
+injury values or player impact scores.
+
+Recommended first run
+---------------------
+Workspace: Point-in-Time Lab
+Seasons: 2022-2025
+Game universe: Major FBS
+No uploads required for the first pipeline test.
+
+After the first clean run, expand the history backward.
+
+Files to send back
+------------------
+1. cfb_v100_data_quality_2022_2025.csv
+2. cfb_v100_point_in_time_2022_2025.csv
+
+If failures are shown:
+3. cfb_v100_failures_2022_2025.csv
+
+Next step
 ---------
-v0.9 does not create a new model architecture and does not search for a better
-threshold. It is a validation build for the already identified 56-57% candidate.
+Do not fit v1.1 until we inspect coverage and leakage. If the point-in-time
+dataset is clean, v1.1 can train a spread-cover model using only the new
+pregame features and compare it to the sportsbook baseline.
