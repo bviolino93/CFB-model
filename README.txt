@@ -1,33 +1,45 @@
-CFB Edge v1.2.1-PRO-UI
+CFB Edge v1.3.0-SLEEK-UX
 
-This release is primarily a UI/UX upgrade over v1.2.0-PLAYABLE.
+Purpose
+-------
+A front-end overhaul focused on the end user, especially on mobile.
 
-Model logic
------------
-No intentional betting-model threshold changes from v1.2.0.
+The betting model and v1.2 playable thresholds are intentionally unchanged.
 
-Presentation changes
+New default workflow
 --------------------
-- Professional dark sportsbook-style interface
-- A / B / C / D grading language
-- Cleaner recommendation hierarchy
-- More polished spacing, borders, cards, buttons and metrics
-- Market Board terminology instead of legacy Market Grades
-- Grade legend:
-    A = Best Bet
-    B = Bet
-    C = Lean
-    D = Pass
-- Cleaner app branding and version footer
+1. Choose your matchup
+2. Review the model projection
+3. Load/edit market odds
+4. Analyze markets
 
-Internal compatibility
-----------------------
-The underlying model still uses:
-STRONG BET / BET / LEAN / PASS internally so existing exports and logic remain compatible.
-The UI translates these to A / B / C / D.
+UX changes
+----------
+- Cleaner hero and live-status strip
+- Betting Board / Research Lab navigation
+- Custom probability grader moved into Advanced Tools
+- Date and game-level controls grouped together
+- Single Game / Full Slate language
+- Advanced HFA setting hidden by default
+- Spread / Moneyline / Total inputs separated into tabs
+- One primary "Analyze Markets" action
+- A/B/C/D legend directly beside the betting workflow
+- Projection export moved into an optional audit section
+- Cleaner mobile spacing and control styling
+- Existing professional recommendation cards retained
+- Slate workflow retained with "Analyze Slate"
 
-Suggested unit scale remains:
-A = 1.00u
-B = 0.50-0.75u
-C = 0.25u optional
-D = 0u
+Grades
+------
+A — Best Bet
+B — Bet
+C — Lean
+D — Pass
+
+Suggested units remain:
+A 1.00u
+B 0.50–0.75u
+C 0.25u optional
+D 0u
+
+This release is a front-end/UX update, not a model retune.

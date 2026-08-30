@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.2.1-PRO-UI"
+MODEL_VERSION = "1.3.0-SLEEK-UX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4052,183 +4052,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ---------- Professional app theme ----------
+# ---------- Sleek mobile-first app theme ----------
 
-
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background:
-            radial-gradient(circle at 20% 0%, rgba(34,94,168,.16), transparent 32%),
-            linear-gradient(180deg, #081522 0%, #07111d 100%);
-    }
-
-    .block-container {
-        max-width: 980px;
-        padding-top: 1.25rem;
-        padding-bottom: 4rem;
-    }
-
-    h1, h2, h3 {
-        letter-spacing: -0.02em;
-    }
-
-    .pro-card {
-        border: 1px solid rgba(255,255,255,.09);
-        border-radius: 18px;
-        padding: 18px 20px;
-        margin: 10px 0 18px 0;
-        box-shadow: 0 10px 28px rgba(0,0,0,.20);
-        backdrop-filter: blur(8px);
-    }
-
-    .pro-card-top {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-    }
-
-    .pro-grade {
-        width: 48px;
-        height: 48px;
-        border-radius: 14px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.35rem;
-        font-weight: 800;
-        background: rgba(255,255,255,.09);
-        border: 1px solid rgba(255,255,255,.10);
-    }
-
-    .pro-card-main {
-        flex: 1;
-    }
-
-    .pro-card-label {
-        font-size: .78rem;
-        font-weight: 800;
-        letter-spacing: .14em;
-        opacity: .78;
-        margin-bottom: 3px;
-    }
-
-    .pro-card-title {
-        font-size: 1.34rem;
-        font-weight: 760;
-        line-height: 1.2;
-    }
-
-    .pro-card-details {
-        margin-top: 12px;
-        font-size: .97rem;
-        opacity: .83;
-    }
-
-    .grade-a {
-        background: linear-gradient(135deg, rgba(26,115,78,.26), rgba(14,75,57,.18));
-        border-color: rgba(94,214,154,.26);
-    }
-
-    .grade-b {
-        background: linear-gradient(135deg, rgba(34,94,168,.28), rgba(20,64,123,.18));
-        border-color: rgba(101,161,255,.28);
-    }
-
-    .grade-c {
-        background: linear-gradient(135deg, rgba(133,105,18,.24), rgba(78,65,22,.18));
-        border-color: rgba(235,196,74,.24);
-    }
-
-    .grade-d {
-        background: linear-gradient(135deg, rgba(105,113,125,.18), rgba(62,70,82,.15));
-        border-color: rgba(190,198,211,.16);
-    }
-
-    .market-row {
-        display: flex;
-        gap: 14px;
-        align-items: flex-start;
-        padding: 14px 2px;
-        border-bottom: 1px solid rgba(255,255,255,.075);
-    }
-
-    .market-row:last-child {
-        border-bottom: none;
-    }
-
-    .market-row-grade {
-        min-width: 36px;
-        height: 36px;
-        border-radius: 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: 800;
-        border: 1px solid rgba(255,255,255,.10);
-    }
-
-    .market-row-body {
-        flex: 1;
-    }
-
-    .market-row-head {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-        align-items: baseline;
-    }
-
-    .market-row-verdict {
-        font-size: .78rem;
-        font-weight: 800;
-        letter-spacing: .12em;
-        opacity: .72;
-    }
-
-    .market-row-pick {
-        font-size: 1.05rem;
-        font-weight: 700;
-    }
-
-    .market-row-metrics {
-        margin-top: 4px;
-        font-size: .92rem;
-        opacity: .76;
-    }
-
-    .section-kicker {
-        font-size: .80rem;
-        letter-spacing: .14em;
-        font-weight: 800;
-        color: #79c9f2;
-        margin-top: 26px;
-        margin-bottom: 6px;
-    }
-
-    div[data-testid="stButton"] > button,
-    div[data-testid="stDownloadButton"] > button {
-        border-radius: 14px !important;
-        font-weight: 700 !important;
-        min-height: 3.15rem;
-    }
-
-    div[data-testid="stMetric"] {
-        background: rgba(255,255,255,.035);
-        border: 1px solid rgba(255,255,255,.06);
-        border-radius: 14px;
-        padding: 12px 14px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.info(
-    "v1.2 PLAYABLE: every market still gets an estimate, but confidence is now a modifier rather than a hard veto. "
-    "A = Best Bet, B = Bet, C = Lean, D = Pass. Totals and long-price moneylines remain more selective."
-)
 st.markdown("""
 <style>
     /* App shell */
@@ -4614,16 +4439,134 @@ st.markdown("""
         font-weight: 650;
     }
 
+
+    /* End-user workflow cards */
+    .workflow-step {
+        margin: 1.15rem 0 .55rem 0;
+        display:flex;
+        align-items:center;
+        gap:.65rem;
+    }
+    .workflow-num {
+        width:28px;
+        height:28px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        border-radius:9px;
+        background:rgba(37,99,235,.18);
+        border:1px solid rgba(96,165,250,.26);
+        color:#BFDBFE;
+        font-size:.76rem;
+        font-weight:900;
+    }
+    .workflow-title {
+        color:#F8FAFC;
+        font-size:1.02rem;
+        font-weight:850;
+        letter-spacing:-.02em;
+    }
+    .workflow-sub {
+        color:#7F94AE;
+        font-size:.75rem;
+        margin-top:1px;
+    }
+    .status-strip {
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:12px;
+        padding:10px 13px;
+        margin:-8px 0 18px 0;
+        border-radius:13px;
+        background:rgba(13,26,45,.62);
+        border:1px solid rgba(148,163,184,.10);
+        color:#93A8C2;
+        font-size:.77rem;
+        font-weight:650;
+    }
+    .status-live {
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        color:#86EFAC;
+        font-weight:850;
+    }
+    .status-dot {
+        width:7px;height:7px;border-radius:999px;background:#22C55E;
+        box-shadow:0 0 0 4px rgba(34,197,94,.10);
+    }
+    .help-card {
+        padding:12px 14px;
+        border-radius:13px;
+        background:rgba(15,31,54,.58);
+        border:1px solid rgba(148,163,184,.10);
+        color:#92A8C3;
+        font-size:.78rem;
+        line-height:1.45;
+        margin:.4rem 0 .8rem 0;
+    }
+    .grade-legend {
+        display:grid;
+        grid-template-columns:repeat(4,1fr);
+        gap:7px;
+        margin:7px 0 12px;
+    }
+    .grade-chip {
+        padding:8px 9px;
+        border-radius:10px;
+        border:1px solid rgba(148,163,184,.10);
+        background:rgba(13,26,45,.66);
+        text-align:center;
+        font-size:.70rem;
+        color:#9FB2C9;
+        font-weight:750;
+    }
+    .grade-chip b { display:block; color:#F8FAFC; font-size:.82rem; margin-bottom:1px; }
+    .grade-chip.a {border-color:rgba(34,197,94,.22);}
+    .grade-chip.b {border-color:rgba(56,189,248,.22);}
+    .grade-chip.c {border-color:rgba(250,204,21,.18);}
+    .grade-chip.d {border-color:rgba(148,163,184,.12);}
+
+    /* Make native controls feel like one product */
+    [data-testid="stSelectbox"] label,
+    [data-testid="stDateInput"] label,
+    [data-testid="stNumberInput"] label,
+    [data-testid="stRadio"] > label,
+    [data-testid="stCheckbox"] label {
+        font-size:.78rem !important;
+        font-weight:750 !important;
+        color:#94A9C3 !important;
+    }
+    [data-testid="stExpander"] {
+        border:1px solid rgba(148,163,184,.11);
+        border-radius:14px;
+        background:rgba(10,22,40,.34);
+    }
+    hr {
+        border-color:rgba(148,163,184,.08) !important;
+    }
+
+    @media (max-width: 700px) {
+        .status-strip { align-items:flex-start; flex-direction:column; gap:5px; }
+        .grade-legend { grid-template-columns:repeat(2,1fr); }
+        .workflow-step { margin-top:1rem; }
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown(
     f"""
     <div class="cfb-hero">
-      <div class="cfb-kicker">College Football Analytics</div>
+      <div class="cfb-kicker">CFB BETTING MODEL</div>
       <div class="cfb-title">CFB Edge</div>
-      <div class="cfb-subtitle">Market-aware projections powered by SP+, matchup efficiency, roster quality, travel and selective weather.</div>
+      <div class="cfb-subtitle">Pick a matchup, load the market, and get a ranked betting board in seconds.</div>
       <div class="version-pill">{MODEL_VERSION}</div>
+    </div>
+    <div class="status-strip">
+      <div class="status-live"><span class="status-dot"></span> Live model ready</div>
+      <div>A = Best Bet &nbsp;•&nbsp; B = Bet &nbsp;•&nbsp; C = Lean &nbsp;•&nbsp; D = Pass</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -4732,19 +4675,15 @@ def get_backtest_model_data(year):
 
 app_section = st.radio(
     "Workspace",
-    ["Live Model", "Backtest"],
+    ["Betting Board", "Research Lab"],
     horizontal=True,
     index=0,
+    label_visibility="collapsed",
 )
 
 
-if app_section == "Live Model":
-    st.markdown("### v1.2 Playable Decision Check")
-    st.caption(
-        "Use this on any live spread, moneyline or total candidate. "
-        "Confidence now scales the hurdle instead of automatically killing the play."
-    )
-    with st.expander("Grade a live candidate", expanded=False):
+if app_section == "Betting Board":
+    with st.expander("Advanced tools • Grade a custom market", expanded=False):
         cg1, cg2 = st.columns(2)
         with cg1:
             cg_prob = st.number_input("Model win/cover probability", min_value=0.0, max_value=1.0, value=0.55, step=0.005, format="%.3f", key="v100_prob")
@@ -4766,9 +4705,9 @@ if app_section == "Live Model":
         st.metric("Production grade", display_grade(verdict))
         if pd.notna(edge):
             st.write(f"Edge: **{edge*100:+.1f} pts** • EV: **{ev*100:+.1f}%** • Recommended stake: **{units:.2f}u**")
-        st.caption("A = Best Bet • B = Bet • C = Lean • D = Pass. C plays are optional small-action estimates, not equal to A/B.")
+        st.caption("Use this only when you want to test a custom probability/price outside the normal game workflow.")
 
-if app_section == "Backtest":
+if app_section == "Research Lab":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
     st.markdown("### Model validation • v0.9.1 locked candidate")
     st.info(
@@ -5757,7 +5696,17 @@ if app_section == "Backtest":
         )
     st.stop()
 
-selected_date = st.date_input("Game date", value=date.today())
+st.markdown(
+    '<div class="workflow-step"><div class="workflow-num">1</div><div>'
+    '<div class="workflow-title">Choose your matchup</div>'
+    '<div class="workflow-sub">Set the date, game level, and analysis mode.</div>'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
+
+top1, top2 = st.columns([1, 1])
+with top1:
+    selected_date = st.date_input("Game date", value=date.today())
 year = selected_date.year
 
 try:
@@ -5795,15 +5744,16 @@ def is_major_team(g, side):
         or _team(g, side) in MAJOR_INDEPENDENTS
     )
 
-slate_filter = st.selectbox(
-    "Game level",
-    ["Major FBS", "All FBS", "All college games"],
-    index=0,
-    help=(
-        "Major FBS = Power-conference teams plus Notre Dame. "
-        "All FBS removes FCS-vs-FCS games. All college games shows everything returned by CFBD."
-    ),
-)
+with top2:
+    slate_filter = st.selectbox(
+        "Game level",
+        ["Major FBS", "All FBS", "All college games"],
+        index=0,
+        help=(
+            "Major FBS = Power-conference teams plus Notre Dame. "
+            "All FBS removes FCS-vs-FCS games. All college games shows everything returned by CFBD."
+        ),
+    )
 
 if slate_filter == "Major FBS":
     # Keep games involving at least one major-program team, but require the opponent
@@ -5824,7 +5774,7 @@ if not daily:
     st.warning("No games found for that date with the selected game-level filter.")
     st.stop()
 
-st.caption(f"Showing {len(daily)} of {len(daily_all)} games on {selected_date:%b %d}.")
+st.caption(f"{len(daily)} matchup(s) available • {selected_date:%A, %b %d}")
 
 
 def kickoff_et(g):
@@ -5875,13 +5825,13 @@ def consensus_line(rows):
     }
 
 run_mode = st.radio(
-    "Run mode",
-    ["Single Game", "Slate"],
+    "Analysis mode",
+    ["Single Game", "Full Slate"],
     horizontal=True,
     index=0,
 )
 
-if run_mode == "Slate":
+if run_mode == "Full Slate":
     slate_choice = st.selectbox(
         "Slate",
         ["Early", "Midday", "Night", "All Day"],
@@ -5914,7 +5864,7 @@ if run_mode == "Slate":
         help="Uses CFBD market lines and builds a consensus median across available providers."
     )
 
-    if st.button("Run Slate", type="primary", use_container_width=True):
+    if st.button("Analyze Slate", type="primary", use_container_width=True):
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
@@ -6307,7 +6257,7 @@ for g in daily:
     if g.get("neutralSite"): label += " (Neutral)"
     labels[label]=g
 
-game=labels[st.selectbox("Game", list(labels.keys()))]
+game=labels[st.selectbox("Matchup", list(labels.keys()))]
 
 try:
     model_data = get_model_data(year)
@@ -6315,10 +6265,23 @@ except Exception as e:
     st.error(f"CFBD model-data request failed: {e}")
     st.stop()
 
-hfa=st.number_input("Home-field advantage", min_value=0.0, max_value=6.0, value=2.5, step=.25, disabled=bool(game.get("neutralSite")))
+hfa = 2.5
+with st.expander("Advanced model settings", expanded=False):
+    hfa=st.number_input(
+        "Home-field advantage",
+        min_value=0.0, max_value=6.0, value=2.5, step=.25,
+        disabled=bool(game.get("neutralSite")),
+        help="Leave this at the default unless you have a specific reason to override it."
+    )
 p=project_game(game,model_data,hfa=hfa)
 
-st.markdown('<div class="section-kicker">Model Projection</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="workflow-step"><div class="workflow-num">2</div><div>'
+    '<div class="workflow-title">Model projection</div>'
+    '<div class="workflow-sub">The model’s expected score, spread, total, and win probabilities.</div>'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
 
 st.markdown(
     f"""
@@ -6547,17 +6510,21 @@ def build_export_row(p, game, selected_date, market=None):
     return add_result_fields(row, p)
 
 st.divider()
-st.markdown('<div class="section-kicker">Market Comparison</div>', unsafe_allow_html=True)
-
-st.caption(
-    "Pull a generic market line automatically from CFBD, then edit anything that differs from your book."
+st.markdown(
+    '<div class="workflow-step"><div class="workflow-num">3</div><div>'
+    '<div class="workflow-title">Load market odds</div>'
+    '<div class="workflow-sub">Pull available lines, then edit them to match your sportsbook.</div>'
+    '</div></div>',
+    unsafe_allow_html=True,
 )
+
+st.caption("Use the automatic line pull as a starting point. Your sportsbook price should be the final input.")
 
 line_rows = []
 providers = []
 game_id = game.get("id")
 
-if st.button("Pull Market Lines", use_container_width=True):
+if st.button("Load Market Odds", use_container_width=True):
     try:
         raw_lines = get_market_lines(game_id, year)
         line_rows = normalize_game_lines(raw_lines, game_id=game_id)
@@ -6593,7 +6560,7 @@ if line_rows:
     with st.expander("Available providers"):
         st.dataframe(pd.DataFrame(line_rows), use_container_width=True, hide_index=True)
 else:
-    st.info("Tap **Pull Market Lines** to populate the fields automatically.")
+    st.info("Load market odds to prefill the betting inputs, or enter your book manually.")
 
 st.caption("All pulled values remain editable. Spread/total prices default to -110 because CFBD's generic line feed may not include side-specific juice.")
 
@@ -6613,41 +6580,63 @@ default_total = float(
     else round(p["model_total"]*2)/2
 )
 
-m1,m2=st.columns(2)
-away_ml=m1.number_input(
-    f"{p['away']} ML",
-    value=int(selected_line.get("away_ml") if selected_line.get("away_ml") is not None else 100),
-    step=5
-)
-home_ml=m2.number_input(
-    f"{p['home']} ML",
-    value=int(selected_line.get("home_ml") if selected_line.get("home_ml") is not None else -110),
-    step=5
-)
+tab_spread, tab_ml, tab_total = st.tabs(["Spread", "Moneyline", "Total"])
 
-s1,s2=st.columns(2)
-home_spread=s1.number_input(f"{p['home']} spread", value=default_home_spread, step=.5)
-home_spread_odds=s2.number_input("Home spread odds", value=-110, step=5)
+with tab_spread:
+    s1,s2=st.columns(2)
+    home_spread=s1.number_input(f"{p['home']} spread", value=default_home_spread, step=.5)
+    home_spread_odds=s2.number_input("Home spread odds", value=-110, step=5)
+    s3,s4=st.columns(2)
+    away_spread=s3.number_input(f"{p['away']} spread", value=default_away_spread, step=.5)
+    away_spread_odds=s4.number_input("Away spread odds", value=-110, step=5)
 
-s3,s4=st.columns(2)
-away_spread=s3.number_input(f"{p['away']} spread", value=default_away_spread, step=.5)
-away_spread_odds=s4.number_input("Away spread odds", value=-110, step=5)
+with tab_ml:
+    m1,m2=st.columns(2)
+    away_ml=m1.number_input(
+        f"{p['away']} ML",
+        value=int(selected_line.get("away_ml") if selected_line.get("away_ml") is not None else 100),
+        step=5
+    )
+    home_ml=m2.number_input(
+        f"{p['home']} ML",
+        value=int(selected_line.get("home_ml") if selected_line.get("home_ml") is not None else -110),
+        step=5
+    )
 
-t1,t2,t3=st.columns(3)
-market_total=t1.number_input("Total", value=default_total, step=.5)
-over_odds=t2.number_input("Over odds", value=-110, step=5)
-under_odds=t3.number_input("Under odds", value=-110, step=5)
+with tab_total:
+    t1,t2,t3=st.columns(3)
+    market_total=t1.number_input("Total", value=default_total, step=.5)
+    over_odds=t2.number_input("Over odds", value=-110, step=5)
+    under_odds=t3.number_input("Under odds", value=-110, step=5)
 
 
 projection_only_df = pd.DataFrame([build_export_row(p, game, selected_date)])
-ios_save_button(
-    "Save Projection CSV",
-    projection_only_df.to_csv(index=False),
-    f"cfb_projection_v031_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-)
-st.caption("Use this to save the projection file for audit/upload.")
+with st.expander("Export / audit tools", expanded=False):
+    ios_save_button(
+        "Save Projection CSV",
+        projection_only_df.to_csv(index=False),
+        f"cfb_projection_v130_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+    )
+    st.caption("Projection-only export for auditing or uploading back into ChatGPT.")
 
-if st.button("Model Recommendation",type="primary",use_container_width=True):
+st.markdown(
+    '<div class="workflow-step"><div class="workflow-num">4</div><div>'
+    '<div class="workflow-title">Get your betting board</div>'
+    '<div class="workflow-sub">Markets are ranked A through D using probability, price, edge, EV, and model confidence.</div>'
+    '</div></div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="grade-legend">'
+    '<div class="grade-chip a"><b>A</b>Best Bet</div>'
+    '<div class="grade-chip b"><b>B</b>Bet</div>'
+    '<div class="grade-chip c"><b>C</b>Lean</div>'
+    '<div class="grade-chip d"><b>D</b>Pass</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+if st.button("Analyze Markets",type="primary",use_container_width=True):
     markets=[]
 
     # v0.3.2 guarded single-game calibration.
@@ -6688,17 +6677,24 @@ if st.button("Model Recommendation",type="primary",use_container_width=True):
     rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
     best=markets[0]
-    if best[0] in {"BET","STRONG BET"}:
-        st.success(f"🟢 **{best[0]}: {best[1]} {int(best[2]):+d}**\n\nModel {best[3]*100:.1f}% • Edge {best[4]*100:+.1f}% • EV {best[5]*100:+.1f}%")
-    elif best[0]=="LEAN":
-        st.warning(f"🟡 **LEAN: {best[1]} {int(best[2]):+d}**")
-    else:
-        st.info("⚪ **PASS — no market clears the threshold.**")
 
-    st.markdown('<div class="section-kicker">Market Grades</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">TOP RECOMMENDATION</div>', unsafe_allow_html=True)
+    best_stake = playable_stake(best[0], best[4], p["confidence"])
+    render_recommendation_card(
+        best[0], best[1], best[2],
+        prob=best[3], edge=best[4], ev=best[5],
+        fair=best[6], stake=best_stake
+    )
+
+    st.markdown('<div class="section-kicker">MARKET BOARD</div>', unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:.86rem;opacity:.68;margin:-2px 0 8px 0'>"
+        "A = Best Bet &nbsp;•&nbsp; B = Bet &nbsp;•&nbsp; C = Lean &nbsp;•&nbsp; D = Pass"
+        "</div>",
+        unsafe_allow_html=True,
+    )
     for v,name,odds,prob,e,ev,fair in markets:
-        icon="🟢" if v in {"BET","STRONG BET"} else ("🟡" if v=="LEAN" else "⚪")
-        st.markdown(f"**{icon} {v} — {name} {int(odds):+d}**  \nModel {prob*100:.1f}% • Edge {e*100:+.1f}% • EV {ev*100:+.1f}% • Fair {int(fair):+d}")
+        render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
 
     market_export = {
         "line_provider": selected_line.get("provider") if selected_line else None,
@@ -6747,4 +6743,4 @@ if st.button("Model Recommendation",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.2.1-PRO-UI • Professional A/B/C/D market board with confidence-weighted all-market grading.")
+st.caption("CFB Edge • v1.3.0-SLEEK-UX • Mobile-first four-step betting workflow with professional all-market cards.")
