@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.6.0-SIGNAL-RESEARCH"
+MODEL_VERSION = "0.6.1-SIGNAL-EXPORTS"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -3273,6 +3273,13 @@ if app_section == "Backtest":
             st.markdown("#### Development-ranked signals → untouched holdout")
             st.dataframe(show, use_container_width=True, hide_index=True)
 
+            research_csv = research_df.to_csv(index=False).encode("utf-8")
+            ios_save_button(
+                "Save Signal Research CSV",
+                research_csv,
+                f"cfb_v061_signal_research_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+
         if isinstance(research_wf, pd.DataFrame) and not research_wf.empty:
             wf_show = research_wf.copy()
             wf_show["Frozen cutoff"] = wf_show["Frozen cutoff"].map(lambda x: f"{x:.3f}")
@@ -3281,6 +3288,13 @@ if app_section == "Backtest":
             wf_show["ROI"] = wf_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
             st.markdown("#### Signal survival by unseen season")
             st.dataframe(wf_show, use_container_width=True, hide_index=True)
+
+            wf_csv = research_wf.to_csv(index=False).encode("utf-8")
+            ios_save_button(
+                "Save Signal Walk-Forward CSV",
+                wf_csv,
+                f"cfb_v061_signal_walkforward_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
 
             agg = research_wf.groupby("Signal", as_index=False).agg(
                 Seasons=("Test season","nunique"),
@@ -3299,6 +3313,13 @@ if app_section == "Backtest":
             agg_show["ROI"] = agg_show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
             st.markdown("#### Multi-season survival summary")
             st.dataframe(agg_show, use_container_width=True, hide_index=True)
+
+            agg_csv = agg.to_csv(index=False).encode("utf-8")
+            ios_save_button(
+                "Save Signal Summary CSV",
+                agg_csv,
+                f"cfb_v061_signal_summary_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
 
         st.warning(
             "v0.6.0 does not create new official bets. A signal should only be considered for the "
@@ -3339,7 +3360,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v060_signal_research_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v061_signal_exports_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -4339,4 +4360,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.6.0-SIGNAL-RESEARCH • Find football signals that survive unseen seasons before live promotion.")
+st.caption("CFB Edge • v0.6.1-SIGNAL-EXPORTS • Signal Research tables are now downloadable for audit.")
