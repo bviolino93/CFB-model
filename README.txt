@@ -1,78 +1,52 @@
-CFB Edge v0.8.0-COVER-CLASSIFIER
+CFB Edge v0.8.1-SIGNAL-AUDIT
 
 Purpose
 -------
-Change the modeling target from final-margin residual prediction to the betting
-question we actually care about:
+Audit the pre-specified 56-58% probability bucket from v0.8.0.
 
-    P(home covers the sportsbook spread)
-    P(away covers the sportsbook spread)
+This version does NOT:
+- change the classifier
+- optimize a new probability threshold
+- create new official bets
+- promote anything to the live board
 
-This version does NOT promote anything to the live betting board. It is a
-research/validation layer.
+Audit dimensions
+----------------
+- Home vs Away
+- Favorite vs Underdog
+- Spread size: 0-3, 3.5-7, 7.5-14, 14+
+- Week bands: W1-3, W4-6, W7-9, W10+
+- Probability sub-band: 56-57% vs 57-58%
+- Pass matchup edge/disadvantage
+- Rush matchup edge/disadvantage
+- Explosiveness matchup edge/disadvantage
+- Havoc edge/disadvantage
+- Finishing-drives edge/disadvantage
 
-Architecture
-------------
-Sportsbook consensus spread
-    + matchup / personnel / pace features
-    -> regularized logistic classifier
-    -> ATS cover probability
+Two-way splits
+--------------
+- Home/Away x Favorite/Underdog
+- Favorite/Underdog x Spread size
+- Home/Away x Spread size
+- Probability sub-band x Favorite/Underdog
 
-Features
---------
-- Market spread / favorite size
-- Week and HFA
-- SP+ differential
-- Talent differential
-- Returning-production differential
-- Returning passing production / usage
-- Pass offense vs opponent pass defense PPA
-- Rush offense vs opponent rush defense PPA
-- Success-rate matchup
-- Explosiveness matchup
-- Advanced pass/rush play PPA
-- Finishing drives
-- Defensive havoc
-- Pace / plays per drive
-
-Validation
-----------
-Rolling unseen-season validation:
-- train 2022 -> test 2023
-- train 2022-23 -> test 2024
-- train 2022-24 -> test 2025
-
-Regularization is selected only inside the development sample.
-
-Primary metrics
----------------
-- Log loss vs 50/50 benchmark
-- Brier score vs 50/50 benchmark
-- Calibration
-- ATS performance by fixed predicted-probability bucket
-
-Fixed probability buckets
--------------------------
-- 50-52.4%
-- 52.4-54%
-- 54-56%
-- 56-58%
-- 58%+
-
-The thresholds are fixed in advance. They are not optimized against 2025.
+Validation principle
+--------------------
+Do not select the subgroup with the highest combined historical ROI.
+A candidate must have:
+1. meaningful sample size
+2. multiple qualifying unseen seasons
+3. positive performance in more than one unseen season
+4. no dependence on the 2025 holdout alone
 
 Exports
 -------
-- cfb_v080_classifier_walkforward_YYYY_YYYY.csv
-- cfb_v080_classifier_buckets_YYYY_YYYY.csv
-- cfb_v080_classifier_picks_YYYY_YYYY.csv
-- cfb_v080_classifier_calibration_YYYY_YYYY.csv
-- cfb_v080_classifier_importance_holdout_YYYY.csv
+- cfb_v081_signal_audit_bets_2022_2025.csv
+- cfb_v081_signal_audit_breakdown_2022_2025.csv
+- cfb_v081_signal_audit_survival_2022_2025.csv
 
-Promotion gate
---------------
-Do not promote v0.8 to live betting unless:
-1. Probability scores improve on the 50/50 baseline in multiple unseen seasons.
-2. Probabilities are reasonably calibrated.
-3. Fixed high-probability buckets show credible multi-season ATS performance.
-4. No conclusion depends only on 2025.
+Recommended run
+---------------
+Seasons: 2022-2025
+Holdout: 2025
+Historical rating method: Leakage-safe preseason prior

@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.8.0-COVER-CLASSIFIER"
+MODEL_VERSION = "0.8.1-SIGNAL-AUDIT"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -3150,6 +3150,268 @@ def _fit_classifier_final_holdout(feature_df, holdout):
     rows = _classifier_research_rows(test) if not test.empty else pd.DataFrame()
     return test, rows, diag
 
+
+# ===== v0.8.1 56-58% signal audit =====
+
+AUDIT_VERSION = "v0.8.1-signal-audit"
+
+def _audit_spread_bucket(line_abs):
+    if pd.isna(line_abs):
+        return "Unknown"
+    x = float(line_abs)
+    if x <= 3.0:
+        return "0-3"
+    if x <= 7.0:
+        return "3.5-7"
+    if x <= 14.0:
+        return "7.5-14"
+    return "14+"
+
+def _audit_week_bucket(week):
+    try:
+        w = int(week)
+    except Exception:
+        return "Unknown"
+    if w <= 3:
+        return "W1-3"
+    if w <= 6:
+        return "W4-6"
+    if w <= 9:
+        return "W7-9"
+    return "W10+"
+
+def _audit_prob_bucket(prob):
+    if pd.isna(prob):
+        return "Unknown"
+    p = float(prob)
+    if 0.56 <= p < 0.57:
+        return "56-57%"
+    if 0.57 <= p < 0.58:
+        return "57-58%"
+    return "Outside"
+
+def _audit_binary_profile(val, label_pos, label_neg):
+    if pd.isna(val):
+        return "Unknown"
+    return label_pos if float(val) >= 0 else label_neg
+
+def _classifier_audit_frame(classifier_rows, classifier_tests):
+    """
+    Join v0.8 pick rows to the full classifier feature rows so the 56-58%
+    bucket can be audited by market context and matchup characteristics.
+    """
+    if classifier_rows.empty or classifier_tests.empty:
+        return pd.DataFrame()
+
+    picks = classifier_rows.copy()
+    picks = picks[
+        (pd.to_numeric(picks["model_pick_prob"], errors="coerce") >= 0.56) &
+        (pd.to_numeric(picks["model_pick_prob"], errors="coerce") < 0.58)
+    ].copy()
+
+    if picks.empty:
+        return picks
+
+    feature_cols = [
+        "season","week","game_id","market_home_spread",
+        "net_pass_matchup","net_rush_matchup","net_success_matchup",
+        "net_expl_matchup","net_adv_pass_matchup","net_adv_rush_matchup",
+        "net_finishing_matchup","havoc_diff","avg_plays_per_drive",
+        "plays_per_drive_diff","sp_rating_diff","talent_adjustment_diff",
+        "returning_adjustment_diff","returning_pass_diff","returning_usage_diff",
+    ]
+    available = [c for c in feature_cols if c in classifier_tests.columns]
+    feat = classifier_tests[available].copy()
+
+    keys = [c for c in ["season","week","game_id"] if c in feat.columns and c in picks.columns]
+    if not keys:
+        return pd.DataFrame()
+
+    d = picks.merge(feat, on=keys, how="left", suffixes=("","_feature"))
+
+    # Core market context.
+    d["home_away"] = np.where(d["side"] == "home", "Home", "Away")
+
+    home_spread = pd.to_numeric(d["market_home_spread"], errors="coerce")
+    picked_is_favorite = np.where(
+        d["side"] == "home",
+        home_spread < 0,
+        home_spread > 0
+    )
+    d["fav_dog"] = np.where(picked_is_favorite, "Favorite", "Underdog")
+    d["abs_spread"] = home_spread.abs()
+    d["spread_bucket"] = d["abs_spread"].map(_audit_spread_bucket)
+    d["week_bucket"] = d["week"].map(_audit_week_bucket)
+    d["prob_bucket"] = d["model_pick_prob"].map(_audit_prob_bucket)
+
+    # Team-direction matchup signals from the perspective of the selected side.
+    sign = np.where(d["side"] == "home", 1.0, -1.0)
+
+    raw_signal_cols = [
+        "net_pass_matchup","net_rush_matchup","net_success_matchup",
+        "net_expl_matchup","net_adv_pass_matchup","net_adv_rush_matchup",
+        "net_finishing_matchup","havoc_diff","plays_per_drive_diff",
+        "sp_rating_diff","talent_adjustment_diff","returning_adjustment_diff",
+        "returning_pass_diff","returning_usage_diff",
+    ]
+    for c in raw_signal_cols:
+        if c in d.columns:
+            d[f"pick_{c}"] = pd.to_numeric(d[c], errors="coerce") * sign
+
+    # Interpretable positive/negative profiles.
+    if "pick_net_pass_matchup" in d.columns:
+        d["pass_profile"] = d["pick_net_pass_matchup"].map(
+            lambda x: _audit_binary_profile(x, "Pass edge", "Pass disadvantage")
+        )
+    if "pick_net_rush_matchup" in d.columns:
+        d["rush_profile"] = d["pick_net_rush_matchup"].map(
+            lambda x: _audit_binary_profile(x, "Rush edge", "Rush disadvantage")
+        )
+    if "pick_net_expl_matchup" in d.columns:
+        d["expl_profile"] = d["pick_net_expl_matchup"].map(
+            lambda x: _audit_binary_profile(x, "Explosiveness edge", "Explosiveness disadvantage")
+        )
+    if "pick_havoc_diff" in d.columns:
+        d["havoc_profile"] = d["pick_havoc_diff"].map(
+            lambda x: _audit_binary_profile(x, "Havoc edge", "Havoc disadvantage")
+        )
+    if "pick_net_finishing_matchup" in d.columns:
+        d["finishing_profile"] = d["pick_net_finishing_matchup"].map(
+            lambda x: _audit_binary_profile(x, "Finishing edge", "Finishing disadvantage")
+        )
+
+    return d
+
+def _audit_group_stats(df, group_cols, min_bets=1):
+    if df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    grouped = df.groupby(group_cols, dropna=False, observed=False)
+    for keys, g in grouped:
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        n = len(g)
+        if n < min_bets:
+            continue
+
+        w = int((g["result"] == "WIN").sum())
+        l = int((g["result"] == "LOSS").sum())
+        p = int((g["result"] == "PUSH").sum())
+        decided = w + l
+        units = float(pd.to_numeric(g["profit_units"], errors="coerce").fillna(0).sum())
+
+        row = {c: k for c, k in zip(group_cols, keys)}
+        row.update({
+            "Bets": n,
+            "W-L-P": f"{w}-{l}-{p}",
+            "Win %": w/decided if decided else np.nan,
+            "Units": units,
+            "ROI": units/n if n else np.nan,
+            "Avg model prob": float(pd.to_numeric(g["model_pick_prob"], errors="coerce").mean()),
+        })
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+def _audit_multiseason_survival(df, subgroup_col, min_bets_per_season=8):
+    """
+    Rank subgroups on multi-season survivability, not one-year peak ROI.
+    A subgroup gets credit for each unseen season with enough sample and positive ROI.
+    """
+    if df.empty or subgroup_col not in df.columns:
+        return pd.DataFrame()
+
+    seasons = sorted(df["season"].dropna().astype(int).unique().tolist())
+    rows = []
+
+    for subgroup, g in df.groupby(subgroup_col, dropna=False, observed=False):
+        season_records = []
+        positive = 0
+        qualifying = 0
+        total_units = 0.0
+        total_bets = len(g)
+
+        for season in seasons:
+            s = g[g["season"] == season]
+            if len(s) < min_bets_per_season:
+                season_records.append(f"{season}: n={len(s)}")
+                continue
+
+            qualifying += 1
+            units = float(pd.to_numeric(s["profit_units"], errors="coerce").fillna(0).sum())
+            roi = units/len(s) if len(s) else np.nan
+            if roi > 0:
+                positive += 1
+            total_units += units
+            season_records.append(f"{season}: {len(s)} bets, {roi*100:+.1f}%")
+
+        if qualifying == 0:
+            continue
+
+        combined_units = float(pd.to_numeric(g["profit_units"], errors="coerce").fillna(0).sum())
+        combined_roi = combined_units / total_bets if total_bets else np.nan
+
+        rows.append({
+            "Subgroup": subgroup,
+            "Total bets": total_bets,
+            "Qualifying seasons": qualifying,
+            "Positive seasons": positive,
+            "Positive-season rate": positive/qualifying if qualifying else np.nan,
+            "Combined units": combined_units,
+            "Combined ROI": combined_roi,
+            "Season detail": " | ".join(season_records),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows)
+    return out.sort_values(
+        ["Positive-season rate","Qualifying seasons","Combined ROI","Total bets"],
+        ascending=[False,False,False,False]
+    ).reset_index(drop=True)
+
+def _build_signal_audit_tables(classifier_rows, classifier_tests):
+    d = _classifier_audit_frame(classifier_rows, classifier_tests)
+    if d.empty:
+        return d, {}
+
+    tables = {}
+    tables["home_away"] = _audit_group_stats(d, ["home_away"])
+    tables["fav_dog"] = _audit_group_stats(d, ["fav_dog"])
+    tables["spread_bucket"] = _audit_group_stats(d, ["spread_bucket"])
+    tables["week_bucket"] = _audit_group_stats(d, ["week_bucket"])
+    tables["prob_bucket"] = _audit_group_stats(d, ["prob_bucket"])
+
+    for c in ["pass_profile","rush_profile","expl_profile","havoc_profile","finishing_profile"]:
+        if c in d.columns:
+            tables[c] = _audit_group_stats(d, [c])
+
+    # Two-way splits that can reveal stable niches without exploding degrees of freedom.
+    tables["homeaway_favdog"] = _audit_group_stats(d, ["home_away","fav_dog"], min_bets=5)
+    tables["favdog_spread"] = _audit_group_stats(d, ["fav_dog","spread_bucket"], min_bets=5)
+    tables["homeaway_spread"] = _audit_group_stats(d, ["home_away","spread_bucket"], min_bets=5)
+    tables["prob_favdog"] = _audit_group_stats(d, ["prob_bucket","fav_dog"], min_bets=5)
+
+    # Multi-season survival summaries for the main categorical dimensions.
+    survival = []
+    for col in [
+        "home_away","fav_dog","spread_bucket","week_bucket","prob_bucket",
+        "pass_profile","rush_profile","expl_profile","havoc_profile","finishing_profile"
+    ]:
+        if col not in d.columns:
+            continue
+        s = _audit_multiseason_survival(d, col, min_bets_per_season=8)
+        if not s.empty:
+            s.insert(0, "Dimension", col)
+            survival.append(s)
+
+    tables["survival"] = pd.concat(survival, ignore_index=True) if survival else pd.DataFrame()
+    return d, tables
+
+# ===== End v0.8.1 signal audit =====
+
 # ===== End v0.8.0 cover classification model =====
 
 # ===== End v0.7.0 matchup residual model =====
@@ -3683,7 +3945,7 @@ app_section = st.radio(
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
-    st.markdown("### Model validation • v0.8 cover classifier")
+    st.markdown("### Model validation • v0.8.1 signal audit")
     st.info(
         "Recommended mode is **Leakage-safe preseason prior**. It uses prior-season performance plus "
         "current-season talent/returning-production inputs, and does not use current-season SP+/SRS/PPA/advanced "
@@ -3915,6 +4177,8 @@ if app_section == "Backtest":
             feature_df, bt_holdout
         )
 
+        audit_rows, audit_tables = _build_signal_audit_tables(classifier_rows, classifier_tests)
+
         signal_df = _bt_best_per_game(bt_df) if bt_policy == "Best market per game" else bt_df.copy()
         official = signal_df[signal_df["verdict"].isin(["BET","STRONG BET"])].copy()
 
@@ -3941,6 +4205,9 @@ if app_section == "Backtest":
         st.session_state["cfb_classifier_holdout_df"] = classifier_holdout
         st.session_state["cfb_classifier_holdout_rows_df"] = classifier_holdout_rows
         st.session_state["cfb_classifier_holdout_diag"] = classifier_holdout_diag
+
+        st.session_state["cfb_signal_audit_rows_df"] = audit_rows
+        st.session_state["cfb_signal_audit_tables"] = audit_tables
 
         st.session_state["cfb_backtest_config"] = {
             "seasons": bt_seasons, "holdout": bt_holdout, "scope": bt_scope,
@@ -4072,6 +4339,121 @@ if app_section == "Backtest":
             st.info(
                 "Promotion rule: do not move v0.5.1 to the live betting board unless spread signals "
                 "are credible across multiple unseen seasons, not just the 2025 holdout."
+            )
+
+        audit_rows = st.session_state.get("cfb_signal_audit_rows_df", pd.DataFrame())
+        audit_tables = st.session_state.get("cfb_signal_audit_tables", {})
+
+        st.markdown("### v0.8.1 Signal Audit • 56–58% Bucket")
+        st.caption(
+            "Audits only the pre-specified 56–58% classifier bucket. This does not create new bets "
+            "or optimize a new threshold. The goal is to see whether the apparent edge survives "
+            "across home/away, favorite/underdog, spread size, week, probability sub-band and "
+            "matchup profiles."
+        )
+
+        if isinstance(audit_rows, pd.DataFrame) and not audit_rows.empty:
+            c1, c2, c3, c4 = st.columns(4)
+            w = int((audit_rows["result"] == "WIN").sum())
+            l = int((audit_rows["result"] == "LOSS").sum())
+            p = int((audit_rows["result"] == "PUSH").sum())
+            units = float(pd.to_numeric(audit_rows["profit_units"], errors="coerce").fillna(0).sum())
+            decided = w + l
+            c1.metric("56–58% bets", f"{len(audit_rows)}")
+            c2.metric("Record", f"{w}-{l}-{p}")
+            c3.metric("Win %", f"{100*w/decided:.1f}%" if decided else "—")
+            c4.metric("ROI", f"{100*units/len(audit_rows):+.1f}%")
+
+            # Main one-way summaries.
+            labels = [
+                ("home_away","Home vs away"),
+                ("fav_dog","Favorite vs underdog"),
+                ("spread_bucket","Spread size"),
+                ("week_bucket","Week bands"),
+                ("prob_bucket","56–57 vs 57–58"),
+                ("pass_profile","Pass matchup"),
+                ("rush_profile","Rush matchup"),
+                ("expl_profile","Explosiveness matchup"),
+                ("havoc_profile","Havoc"),
+                ("finishing_profile","Finishing drives"),
+            ]
+
+            for key, title in labels:
+                df = audit_tables.get(key, pd.DataFrame()) if isinstance(audit_tables, dict) else pd.DataFrame()
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    with st.expander(title, expanded=(key in ["fav_dog","spread_bucket","prob_bucket"])):
+                        show = df.copy()
+                        show["Win %"] = show["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                        show["Units"] = show["Units"].map(lambda x: f"{x:+.2f}")
+                        show["ROI"] = show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+                        show["Avg model prob"] = show["Avg model prob"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                        st.dataframe(show, use_container_width=True, hide_index=True)
+
+            # Two-way context tables.
+            for key, title in [
+                ("homeaway_favdog","Home/Away × Favorite/Underdog"),
+                ("favdog_spread","Favorite/Underdog × Spread size"),
+                ("homeaway_spread","Home/Away × Spread size"),
+                ("prob_favdog","Probability sub-band × Favorite/Underdog"),
+            ]:
+                df = audit_tables.get(key, pd.DataFrame()) if isinstance(audit_tables, dict) else pd.DataFrame()
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    with st.expander(title, expanded=False):
+                        show = df.copy()
+                        show["Win %"] = show["Win %"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                        show["Units"] = show["Units"].map(lambda x: f"{x:+.2f}")
+                        show["ROI"] = show["ROI"].map(lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—")
+                        show["Avg model prob"] = show["Avg model prob"].map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "—")
+                        st.dataframe(show, use_container_width=True, hide_index=True)
+
+            survival = audit_tables.get("survival", pd.DataFrame()) if isinstance(audit_tables, dict) else pd.DataFrame()
+            if isinstance(survival, pd.DataFrame) and not survival.empty:
+                st.markdown("#### Multi-season survival summary")
+                surv_show = survival.copy()
+                surv_show["Positive-season rate"] = surv_show["Positive-season rate"].map(
+                    lambda x: f"{100*x:.0f}%" if pd.notna(x) else "—"
+                )
+                surv_show["Combined units"] = surv_show["Combined units"].map(lambda x: f"{x:+.2f}")
+                surv_show["Combined ROI"] = surv_show["Combined ROI"].map(
+                    lambda x: f"{100*x:+.1f}%" if pd.notna(x) else "—"
+                )
+                st.dataframe(surv_show, use_container_width=True, hide_index=True)
+
+            # Exports.
+            ios_save_button(
+                "Save v0.8.1 Audit Bets CSV",
+                audit_rows.to_csv(index=False),
+                f"cfb_v081_signal_audit_bets_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+            )
+
+            # Combine all subgroup tables into one export with a Section field.
+            audit_export_parts = []
+            if isinstance(audit_tables, dict):
+                for key, df in audit_tables.items():
+                    if key == "survival" or not isinstance(df, pd.DataFrame) or df.empty:
+                        continue
+                    z = df.copy()
+                    z.insert(0, "Section", key)
+                    audit_export_parts.append(z)
+            audit_export = pd.concat(audit_export_parts, ignore_index=True, sort=False) if audit_export_parts else pd.DataFrame()
+
+            if not audit_export.empty:
+                ios_save_button(
+                    "Save v0.8.1 Audit Breakdown CSV",
+                    audit_export.to_csv(index=False),
+                    f"cfb_v081_signal_audit_breakdown_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                )
+
+            if isinstance(survival, pd.DataFrame) and not survival.empty:
+                ios_save_button(
+                    "Save v0.8.1 Survival CSV",
+                    survival.to_csv(index=False),
+                    f"cfb_v081_signal_audit_survival_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv"
+                )
+
+            st.info(
+                "Audit rule: do not promote a subgroup because of the best combined ROI alone. "
+                "A candidate should have meaningful sample size and survive across multiple unseen seasons."
             )
 
         classifier_tests = st.session_state.get("cfb_classifier_tests_df", pd.DataFrame())
@@ -4342,7 +4724,7 @@ if app_section == "Backtest":
 
         csv = signal_df.to_csv(index=False)
         ios_save_button("Save Backtest CSV", csv,
-                        f"cfb_v080_cover_classifier_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
+                        f"cfb_v081_signal_audit_backtest_{min(cfg.get('seasons',[2022]))}_{max(cfg.get('seasons',[2025]))}.csv")
 
         st.caption(
             "Historical CFBD line records are treated as generic provider snapshots/consensus medians; this app does not "
@@ -5342,4 +5724,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v0.8.0-COVER-CLASSIFIER • Direct ATS probability classification with rolling unseen-season validation.")
+st.caption("CFB Edge • v0.8.1-SIGNAL-AUDIT • 56–58% classifier bucket audited across market context and matchup subgroups.")
