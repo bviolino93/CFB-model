@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.1.0-ALL-MARKET"
+MODEL_VERSION = "1.2.0-PLAYABLE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1347,14 +1347,19 @@ def robust_live_stake(verdict, edge, confidence, bankroll_units=100.0):
 
 def grade(prob, odds, confidence=75, market_type="spread", projection_gap=None, week=1):
     """
-    v1.1 unified all-market grader.
+    v1.2 playable all-market grader.
 
-    Philosophy:
-    - Produce a model opinion for spreads, moneylines and totals.
-    - Preserve the lessons from historical testing by making totals and
-      long-price moneylines harder to promote than spreads.
-    - Large model/market disagreements are NOT treated as stronger evidence.
-    - LEAN is still a real directional estimate; BET requires a much higher bar.
+    Internal verdicts remain STRONG BET / BET / LEAN / PASS so the existing
+    slate, export and backtest UI remains compatible.
+
+    User-facing interpretation:
+      STRONG BET = A / Best Bet
+      BET        = B / Bet
+      LEAN       = C / Lean
+      PASS       = D / Pass
+
+    Confidence is now a modifier, not a hard veto. This is especially important
+    in Weeks 1-3, where the engine naturally carries lower confidence.
     """
     if not _valid_american_odds(odds):
         return "PASS", 0.0, 0.0, None
@@ -1364,117 +1369,151 @@ def grade(prob, odds, confidence=75, market_type="spread", projection_gap=None, 
     if imp is None:
         return "PASS", 0.0, 0.0, None
 
-    edge = float(prob) - float(imp)
-    ev = expected_value(prob, odds)
+    try:
+        p = float(prob)
+        conf = float(confidence)
+    except Exception:
+        return "PASS", 0.0, 0.0, imp
+
+    edge = p - float(imp)
+    ev = expected_value(p, odds)
     if ev is None:
         return "PASS", edge, 0.0, imp
 
-    conf = float(confidence)
     w = _week_num(week)
+    o = int(odds)
 
-    # Fixed, market-specific production hurdles.
-    # Spreads have the best historical support of the three.
+    # Market-specific baseline thresholds. These are deliberately playable,
+    # while still requiring positive price-adjusted value.
     if market_type in {"spread", "side"}:
-        bet_conf = 78
-        bet_edge = 0.045
-        bet_ev = 0.075
-        strong_conf = 84
-        strong_edge = 0.065
-        strong_ev = 0.110
-        review_gap = 8.0
+        bet_edge, bet_ev = 0.035, 0.055
+        strong_edge, strong_ev = 0.060, 0.095
+        lean_edge, lean_ev = 0.012, 0.015
+        review_gap = 10.0
 
-    # Totals remain usable, but require substantially more evidence because
-    # historical total performance was materially weaker.
     elif market_type == "total":
-        bet_conf = 82
-        bet_edge = 0.065
-        bet_ev = 0.100
-        strong_conf = 87
-        strong_edge = 0.085
-        strong_ev = 0.140
-        review_gap = 9.0
+        # Totals were weaker historically, so they still need more evidence.
+        bet_edge, bet_ev = 0.045, 0.070
+        strong_edge, strong_ev = 0.070, 0.110
+        lean_edge, lean_ev = 0.015, 0.020
+        review_gap = 11.0
 
-    # Moneylines use stricter price-aware hurdles.
     elif market_type in {"moneyline", "ml", "money line"}:
-        bet_conf = 80
-        bet_edge = 0.050
-        bet_ev = 0.085
-        strong_conf = 85
-        strong_edge = 0.070
-        strong_ev = 0.125
+        bet_edge, bet_ev = 0.035, 0.060
+        strong_edge, strong_ev = 0.060, 0.105
+        lean_edge, lean_ev = 0.010, 0.020
         review_gap = None
 
-        # Extra skepticism for very large underdogs / heavy favorite prices.
-        o = int(odds)
+        # Price-aware protection against the historical long-dog artifact.
         if o >= 200:
-            bet_edge += 0.015
-            bet_ev += 0.025
-            strong_edge += 0.020
-            strong_ev += 0.030
-        elif o <= -180:
             bet_edge += 0.010
             bet_ev += 0.020
             strong_edge += 0.015
             strong_ev += 0.025
-
+        elif o <= -180:
+            bet_edge += 0.0075
+            bet_ev += 0.015
+            strong_edge += 0.010
+            strong_ev += 0.020
     else:
-        bet_conf = 80
-        bet_edge = 0.055
-        bet_ev = 0.090
-        strong_conf = 85
-        strong_edge = 0.075
-        strong_ev = 0.130
+        bet_edge, bet_ev = 0.040, 0.065
+        strong_edge, strong_ev = 0.065, 0.105
+        lean_edge, lean_ev = 0.015, 0.020
         review_gap = None
 
-    # Early-season penalty across all markets.
+    # Early season remains less certain, but no longer creates an impossible
+    # confidence gate. We ask for a little more edge instead.
     if w <= 3:
-        bet_edge += 0.015
-        bet_ev += 0.020
-        strong_edge += 0.015
-        strong_ev += 0.020
-
-        # Totals get one more notch of caution in Weeks 1-3.
+        bet_edge += 0.0075
+        bet_ev += 0.010
+        strong_edge += 0.010
+        strong_ev += 0.015
         if market_type == "total":
             bet_edge += 0.005
-            bet_ev += 0.010
-            strong_edge += 0.005
-            strong_ev += 0.010
+            bet_ev += 0.005
 
-    # Extreme model-vs-market disagreement was not a positive historical
-    # signal. Cap it at LEAN rather than turning it into an automatic bet.
-    review_only = False
+    # Confidence modifies the required evidence rather than vetoing the play.
+    # Around 72 (common early-season confidence), a genuinely large edge can
+    # still qualify. Low confidence requires progressively more value.
+    if conf < 75:
+        penalty = min(0.020, max(0.0, (75.0 - conf) * 0.0015))
+        bet_edge += penalty
+        strong_edge += penalty
+        bet_ev += penalty * 1.25
+        strong_ev += penalty * 1.25
+    elif conf >= 82:
+        bonus = min(0.0075, (conf - 82.0) * 0.00075)
+        bet_edge = max(0.025, bet_edge - bonus)
+        strong_edge = max(0.045, strong_edge - bonus)
+        bet_ev = max(0.040, bet_ev - bonus)
+        strong_ev = max(0.075, strong_ev - bonus)
+
+    # Huge projection gaps are not rewarded. They can still be a normal BET
+    # if the adjusted probability/EV clears the bar, but cannot be A/Best Bet.
+    cap_strong = False
     if projection_gap is not None and review_gap is not None:
         try:
             if abs(float(projection_gap)) >= review_gap:
-                review_only = True
+                cap_strong = True
         except Exception:
             pass
 
-    # Historical ML data was particularly suspect at very long dog prices.
-    # Still give the directional estimate, but do not auto-promote >= +300.
-    if market_type in {"moneyline", "ml", "money line"} and int(odds) >= 300:
-        review_only = True
+    # Very long dogs can be estimated and even shown as a lean, but our old
+    # historical ML feed was too unreliable to auto-promote +300 or longer.
+    long_dog_cap = market_type in {"moneyline", "ml", "money line"} and o >= 300
 
     if (
-        not review_only
-        and conf >= strong_conf
+        not cap_strong
+        and not long_dog_cap
         and edge >= strong_edge
         and ev >= strong_ev
+        and conf >= 68
     ):
         verdict = "STRONG BET"
     elif (
-        not review_only
-        and conf >= bet_conf
+        not long_dog_cap
         and edge >= bet_edge
         and ev >= bet_ev
+        and conf >= 65
     ):
         verdict = "BET"
-    elif edge > 0 and ev > 0:
+    elif edge >= lean_edge and ev >= lean_ev:
         verdict = "LEAN"
     else:
         verdict = "PASS"
 
     return verdict, edge, ev, imp
+
+
+def display_grade(verdict):
+    return {
+        "STRONG BET": "A — BEST BET",
+        "BET": "B — BET",
+        "LEAN": "C — LEAN",
+        "PASS": "D — PASS",
+        "NO LINE": "NO LINE",
+    }.get(str(verdict), str(verdict))
+
+
+def playable_stake(verdict, edge, confidence):
+    """
+    Conservative entertainment-oriented unit guidance.
+    No Kelly sizing and no forced bets.
+    """
+    try:
+        e = float(edge)
+        c = float(confidence)
+    except Exception:
+        return 0.0
+
+    if verdict == "STRONG BET":
+        return 1.00
+    if verdict == "BET":
+        # Better B plays can reach 0.75u; ordinary B plays stay 0.50u.
+        return 0.75 if (e >= 0.055 and c >= 72) else 0.50
+    if verdict == "LEAN":
+        return 0.25
+    return 0.0
 
 
 def fetch_lines(api_key, year=None, week=None, game_id=None, provider=None):
@@ -3894,9 +3933,8 @@ st.set_page_config(
 # ---------- Professional app theme ----------
 
 st.info(
-    "v1.1 ALL-MARKET: the model now gives estimates for spreads, moneylines and totals. "
-    "Spreads retain the lowest promotion hurdle; totals and moneylines require stronger evidence "
-    "because their historical validation was weaker."
+    "v1.2 PLAYABLE: every market still gets an estimate, but confidence is now a modifier rather than a hard veto. "
+    "A = Best Bet, B = Bet, C = Lean, D = Pass. Totals and long-price moneylines remain more selective."
 )
 st.markdown("""
 <style>
@@ -4408,10 +4446,10 @@ app_section = st.radio(
 
 
 if app_section == "Live Model":
-    st.markdown("### v1.1 All-Market Decision Check")
+    st.markdown("### v1.2 Playable Decision Check")
     st.caption(
-        "Use this on any live spread candidate after the slate model produces its probability. "
-        "It applies the production gate independently from the older research labels."
+        "Use this on any live spread, moneyline or total candidate. "
+        "Confidence now scales the hurdle instead of automatically killing the play."
     )
     with st.expander("Grade a live candidate", expanded=False):
         cg1, cg2 = st.columns(2)
@@ -4431,11 +4469,11 @@ if app_section == "Live Model":
             cg_prob, cg_odds, cg_conf, market_type=cg_type,
             projection_gap=gap, week=cg_week
         )
-        units = robust_live_stake(verdict, edge, cg_conf)
-        st.metric("Production verdict", verdict)
+        units = playable_stake(verdict, edge, cg_conf)
+        st.metric("Production grade", display_grade(verdict))
         if pd.notna(edge):
             st.write(f"Edge: **{edge*100:+.1f} pts** • EV: **{ev*100:+.1f}%** • Recommended stake: **{units:.2f}u**")
-        st.caption("LEAN = directional estimate below the official BET threshold.")
+        st.caption("A = Best Bet • B = Bet • C = Lean • D = Pass. C plays are optional small-action estimates, not equal to A/B.")
 
 if app_section == "Backtest":
     st.markdown('<div class="section-kicker">Historical Backtest Lab</div>', unsafe_allow_html=True)
@@ -6416,4 +6454,4 @@ if st.button("Should I Bet?",type="primary",use_container_width=True):
     )
 
 st.divider()
-st.caption("CFB Edge • v1.1.0-ALL-MARKET • Spread, moneyline and total estimates with market-specific guardrails and conservative staking.")
+st.caption("CFB Edge • v1.2.0-PLAYABLE • A/B/C/D all-market grading with confidence-weighted thresholds and conservative unit sizing.")

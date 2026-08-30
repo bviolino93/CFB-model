@@ -1,106 +1,76 @@
-CFB Edge v1.1.0-ALL-MARKET
+CFB Edge v1.2.0-PLAYABLE
 
-Purpose
--------
-Give the user a useful model estimate for every major betting market:
-- spreads
-- moneylines
-- totals
+Goal
+----
+Keep the lessons from the historical research without making the live model
+so conservative that almost nothing can be played.
 
-while still incorporating what the historical validation taught us.
+User-facing grades
+------------------
+A — BEST BET
+B — BET
+C — LEAN
+D — PASS
 
-What stays
-----------
-- Existing CFB projection engine
-- Market shrinkage / calibration
-- Wider early-season uncertainty
-- Model confidence
-- Full Slate ranking
-- All Markets dropdown
-- CSV export
-- Conservative staking
-- Large-disagreement guardrails
+All three markets can qualify:
+- spread
+- moneyline
+- total
 
-What changes
-------------
-Totals and moneylines are no longer research-only.
+Core change from v1.1
+---------------------
+Confidence is no longer a hard veto.
 
-Every available market receives:
-- model probability
-- implied probability
-- edge
-- EV
-- verdict: STRONG BET / BET / LEAN / PASS
+In v1.1, early-season confidence near 72 meant even a large modeled edge could
+be automatically prevented from reaching BET status. In v1.2, confidence
+modifies the amount of edge/EV required.
 
-A LEAN is explicitly a lower-confidence model estimate.
+Lower confidence => requires more value.
+Higher confidence => can qualify with slightly less value.
+The model can therefore make actual bets in Week 1 without ignoring uncertainty.
 
-Market-specific promotion bars
+Baseline playable hurdles before modifiers
+------------------------------------------
+SPREAD B:
+edge >= 3.5 pts
+EV >= +5.5%
+
+TOTAL B:
+edge >= 4.5 pts
+EV >= +7.0%
+
+MONEYLINE B:
+edge >= 3.5 pts
+EV >= +6.0%
+
+Weeks 1-3 add modest edge/EV requirements rather than a confidence veto.
+Totals remain somewhat stricter.
++200 or longer ML underdogs receive additional price penalties.
++300 or longer dogs are capped at C/LEAN because the old historical ML feed
+showed suspicious long-underdog behavior.
+
+Large projection disagreement
 ------------------------------
-SPREAD
-BET:
-- confidence >= 78
-- edge >= 4.5 percentage points
-- EV >= +7.5%
+Very large raw model/market gaps no longer force PASS/LEAN. Instead they prevent
+A/Best Bet status. A game can still become a B bet if the adjusted probability
+and EV remain strong enough.
 
-STRONG BET:
-- confidence >= 84
-- edge >= 6.5 pts
-- EV >= +11.0%
+Suggested unit scale
+--------------------
+A — BEST BET: 1.00u
+B — BET: 0.50u, or 0.75u for a stronger B
+C — LEAN: 0.25u optional
+D — PASS: 0u
 
-MONEYLINE
-BET:
-- confidence >= 80
-- edge >= 5.0 pts
-- EV >= +8.5%
+This is intentionally not Kelly sizing and does not guarantee profitability.
 
-STRONG BET:
-- confidence >= 85
-- edge >= 7.0 pts
-- EV >= +12.5%
-
-Adjustments:
-- +200 or higher underdogs require more edge/EV
-- heavy favorites <= -180 require more edge/EV
-- +300 or higher dogs are capped at LEAN because historical ML pricing quality
-  was not trustworthy enough to auto-promote them
-
-TOTAL
-BET:
-- confidence >= 82
-- edge >= 6.5 pts
-- EV >= +10.0%
-
-STRONG BET:
-- confidence >= 87
-- edge >= 8.5 pts
-- EV >= +14.0%
-
-Early season
-------------
-Weeks 1-3 add:
-- +1.5 pts required edge
-- +2.0% required EV
-
-Totals receive an additional:
-- +0.5 pts edge
-- +1.0% EV
-
-Disagreement guardrails
+Why this is the balance
 -----------------------
-Spread raw model vs market gap >= 8 points:
-- maximum verdict = LEAN
+Earlier versions were too aggressive.
+v1.1 overcorrected and often produced no bets.
+v1.2 keeps market calibration, early-season uncertainty, price-aware ML
+protection, total-market caution, and extreme-gap protection while allowing
+genuinely strong live edges to become playable.
 
-Total raw model vs market gap >= 9 points:
-- maximum verdict = LEAN
-
-This reflects the historical finding that larger model-market disagreement was
-not evidence of a stronger edge.
-
-Important
----------
-This version does not claim that totals or moneylines have been historically
-proven profitable. It provides the user's requested estimates while making
-their promotion thresholds materially stricter than spreads.
-
-Use the live slate to rank all available markets. Treat BET/STRONG BET as the
-highest-conviction model recommendations and LEAN as an estimate worth tracking.
+Do not tune these thresholds game-by-game after seeing results. Freeze v1.2
+and evaluate the forward 2026 sample by grade and market.
