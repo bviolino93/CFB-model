@@ -17,7 +17,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.4.0-PREMIUM-UI"
+MODEL_VERSION = "1.4.1-PREMIUM-SLATE-UI"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4441,6 +4441,149 @@ div[data-testid="stMetric"]{
   .market-pick{font-size:.94rem}
   .market-sub{font-size:.71rem}
 }
+
+/* Premium slate cards */
+.slate-card{
+  border-radius:18px;
+  padding:14px;
+  margin:9px 0;
+  background:linear-gradient(180deg,rgba(14,29,49,.95),rgba(9,21,37,.95));
+  border:1px solid rgba(148,163,184,.11);
+  box-shadow:0 10px 28px rgba(0,0,0,.16);
+}
+.slate-card.a{border-color:rgba(34,197,94,.30)}
+.slate-card.b{border-color:rgba(56,189,248,.28)}
+.slate-card.c{border-color:rgba(250,204,21,.20)}
+.slate-card.d{border-color:rgba(148,163,184,.10);opacity:.82}
+.slate-card-top{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:flex-start;
+}
+.slate-time{
+  font-size:.66rem;
+  color:#7890aa;
+  font-weight:850;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.slate-matchup{
+  margin-top:3px;
+  font-size:1.04rem;
+  font-weight:900;
+  color:#f8fafc;
+  letter-spacing:-.02em;
+}
+.slate-matchup span{color:#607792;font-weight:700}
+.slate-grade{
+  width:40px;height:40px;
+  border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:950;font-size:1.05rem;
+  background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.09);
+}
+.slate-grade.a{border-color:rgba(34,197,94,.30)}
+.slate-grade.b{border-color:rgba(56,189,248,.28)}
+.slate-grade.c{border-color:rgba(250,204,21,.23)}
+.slate-grade.d{border-color:rgba(148,163,184,.13)}
+.slate-reco{
+  margin-top:11px;
+  padding:11px 12px;
+  border-radius:13px;
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.055);
+}
+.slate-reco-label{
+  font-size:.62rem;
+  color:#71869f;
+  font-weight:900;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.slate-reco-value{
+  margin-top:2px;
+  font-size:1rem;
+  font-weight:900;
+  color:#f8fafc;
+}
+.slate-reco-meta{
+  margin-top:3px;
+  font-size:.72rem;
+  color:#8398b1;
+}
+.slate-grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:7px;
+  margin-top:9px;
+}
+.slate-box{
+  padding:8px 9px;
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+  border:1px solid rgba(255,255,255,.045);
+}
+.slate-box-label{
+  font-size:.57rem;
+  color:#687e98;
+  font-weight:850;
+  text-transform:uppercase;
+  letter-spacing:.07em;
+}
+.slate-box-value{
+  margin-top:2px;
+  font-size:.78rem;
+  color:#dbe5f1;
+  font-weight:820;
+}
+.slate-footer{
+  margin-top:9px;
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  font-size:.68rem;
+  color:#70869e;
+}
+.slate-footer span{color:#445a72}
+.slate-market-row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:10px 2px;
+  border-bottom:1px solid rgba(148,163,184,.07);
+}
+.slate-market-row:last-child{border-bottom:none}
+.slate-market-grade{
+  width:30px;height:30px;
+  border-radius:9px;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:900;
+  font-size:.82rem;
+  background:rgba(255,255,255,.045);
+  border:1px solid rgba(255,255,255,.07);
+}
+.slate-market-body{flex:1;min-width:0}
+.slate-market-pick{
+  font-size:.87rem;
+  font-weight:820;
+  color:#e9f0f8;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.slate-market-sub{
+  margin-top:2px;
+  font-size:.68rem;
+  color:#72879f;
+}
+@media(max-width:700px){
+  .slate-grid{grid-template-columns:repeat(2,1fr)}
+  .slate-card{padding:12px}
+  .slate-matchup{font-size:.96rem}
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -5964,14 +6107,14 @@ if run_mode == "Full Slate":
                 return "—"
             return f"{float(value)*100:.1f}%"
 
-        def _verdict_class(verdict):
+        def _slate_grade(verdict):
             return {
-                "STRONG BET": "strong",
-                "BET": "bet",
-                "LEAN": "lean",
-                "PASS": "pass",
-                "NO LINE": "noline",
-            }.get(str(verdict), "pass")
+                "STRONG BET": ("A", "a", "BEST BET"),
+                "BET": ("B", "b", "BET"),
+                "LEAN": ("C", "c", "LEAN"),
+                "PASS": ("D", "d", "PASS"),
+                "NO LINE": ("D", "d", "NO LINE"),
+            }.get(str(verdict), ("D", "d", "PASS"))
 
         # Rank games by verdict first, then edge, then EV.
         verdict_rank = {
@@ -5999,21 +6142,22 @@ if run_mode == "Full Slate":
             verdict = str(r["best_verdict"])
             edge = _fmt_pct(r["best_edge"])
             ev = _fmt_pct(r["best_ev"])
-            rank_text = f"#{rank} " if rank is not None else ""
+            rank_text = f"#{rank} · " if rank is not None else ""
+            grade_letter, grade_class, grade_label = _slate_grade(verdict)
 
             st.markdown(
                 f"""
-                <div class="slate-card">
+                <div class="slate-card {grade_class}">
                   <div class="slate-card-top">
                     <div>
                       <div class="slate-time">{rank_text}{html.escape(str(r['kickoff_et']))}</div>
                       <div class="slate-matchup">{html.escape(str(r['away_team']))} <span>@</span> {html.escape(str(r['home_team']))}</div>
                     </div>
-                    <div class="slate-badge {_verdict_class(verdict)}">{html.escape(verdict)}</div>
+                    <div class="slate-grade {grade_class}">{grade_letter}</div>
                   </div>
 
                   <div class="slate-reco">
-                    <div class="slate-reco-label">Top Model Call</div>
+                    <div class="slate-reco-label">{grade_label}</div>
                     <div class="slate-reco-value">{html.escape(best_market)}</div>
                     <div class="slate-reco-meta">Edge {edge} &nbsp;•&nbsp; EV {ev}</div>
                   </div>
@@ -6068,36 +6212,63 @@ if run_mode == "Full Slate":
                         reverse=True,
                     )
 
-                    for m in market_rows:
+                    abc_rows = [m for m in market_rows if str(m.get("verdict")) in {"STRONG BET","BET","LEAN"}]
+                    pass_rows = [m for m in market_rows if str(m.get("verdict")) not in {"STRONG BET","BET","LEAN"}]
+
+                    for m in abc_rows:
                         verdict_m = str(m.get("verdict", "PASS"))
                         market_m = str(m.get("market", ""))
                         odds_m = m.get("odds")
                         edge_m = m.get("edge")
                         ev_m = m.get("ev")
-
-                        icon = "🟢" if verdict_m in {"BET", "STRONG BET"} else ("🟡" if verdict_m == "LEAN" else "⚪")
+                        grade_m, _, label_m = _slate_grade(verdict_m)
                         odds_txt = f"{int(float(odds_m)):+d}" if odds_m is not None else ""
                         edge_txt = f"{float(edge_m)*100:+.1f}%" if edge_m is not None else "—"
                         ev_txt = f"{float(ev_m)*100:+.1f}%" if ev_m is not None else "—"
-
                         st.markdown(
                             f"""
-                            <div class="market-row">
-                              <div class="market-row-title">{icon} {html.escape(verdict_m)} · {html.escape(market_m)} {html.escape(odds_txt)}</div>
-                              <div class="market-row-sub">Edge {edge_txt} &nbsp;•&nbsp; EV {ev_txt}</div>
+                            <div class="slate-market-row">
+                              <div class="slate-market-grade">{grade_m}</div>
+                              <div class="slate-market-body">
+                                <div class="slate-market-pick">{html.escape(market_m)} {html.escape(odds_txt)}</div>
+                                <div class="slate-market-sub">{label_m} • Edge {edge_txt} • EV {ev_txt}</div>
+                              </div>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
 
+                    if pass_rows:
+                        with st.expander(f"Passed markets • {len(pass_rows)}", expanded=False):
+                            for m in pass_rows:
+                                market_m = str(m.get("market", ""))
+                                odds_m = m.get("odds")
+                                edge_m = m.get("edge")
+                                ev_m = m.get("ev")
+                                odds_txt = f"{int(float(odds_m)):+d}" if odds_m is not None else ""
+                                edge_txt = f"{float(edge_m)*100:+.1f}%" if edge_m is not None else "—"
+                                ev_txt = f"{float(ev_m)*100:+.1f}%" if ev_m is not None else "—"
+                                st.markdown(
+                                    f"""
+                                    <div class="slate-market-row" style="opacity:.72">
+                                      <div class="slate-market-grade">D</div>
+                                      <div class="slate-market-body">
+                                        <div class="slate-market-pick">{html.escape(market_m)} {html.escape(odds_txt)}</div>
+                                        <div class="slate-market-sub">PASS • Edge {edge_txt} • EV {ev_txt}</div>
+                                      </div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+
         # Top bets shown immediately, ordered strongest to weakest.
         top_bets = ranked_df[ranked_df["best_verdict"].isin(["STRONG BET", "BET"])].copy()
         if len(top_bets):
-            st.markdown('<div class="section-kicker">Top Bets</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-kicker">TOP PLAYS</div>', unsafe_allow_html=True)
             for i, (_, r) in enumerate(top_bets.iterrows(), start=1):
                 _render_slate_card(r, rank=i)
         else:
-            st.info("No BET or STRONG BET signals currently qualify.")
+            st.info("No A/B plays currently qualify. Check Leans for lower-confidence opportunities.")
 
         # Leans and passes stay out of the way until the user wants them.
         lean_df = ranked_df[ranked_df["best_verdict"].eq("LEAN")].copy()
@@ -6117,25 +6288,23 @@ if run_mode == "Full Slate":
             else:
                 st.caption("No pass/no-line games on this slate.")
 
-        with st.expander("View full slate data"):
+        with st.expander("Export / Full Slate Data", expanded=False):
             display_cols = [
                 "kickoff_et","away_team","home_team","projected_away_score","projected_home_score",
                 "model_home_spread","model_total","market_home_spread","market_total",
                 "best_verdict","best_market","best_edge","best_ev","model_confidence"
             ]
             st.dataframe(slate_df[display_cols], use_container_width=True, hide_index=True)
-
-        ios_save_button(
-            f"Save {slate_choice} Slate CSV",
-            slate_df.to_csv(index=False),
-            f"cfb_v032_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
-        )
-
-        st.caption(
-            "Slate lines use the median across available CFBD providers. "
-            "v0.3.2 applies early-season market shrinkage and wider uncertainty before grading. "
-            "Spread and total pricing are assumed at -110 in slate mode unless actual prices are available."
-        )
+            ios_save_button(
+                f"Save {slate_choice} Slate CSV",
+                slate_df.to_csv(index=False),
+                f"cfb_v141_{selected_date}_{slate_choice.lower().replace(' ','_')}_slate.csv",
+            )
+            st.caption(
+                "Slate lines use the median across available CFBD providers. "
+                "Early-season market shrinkage and wider uncertainty are applied before grading. "
+                "Spread and total pricing are assumed at -110 in slate mode unless actual prices are available."
+            )
 
     st.stop()
 
@@ -6576,10 +6745,23 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     )
 
     st.markdown('<div class="section-kicker">MARKET BOARD</div>', unsafe_allow_html=True)
-    st.markdown('<div class="market-board">', unsafe_allow_html=True)
-    for v,name,odds,prob,e,ev,fair in markets:
-        render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
-    st.markdown('</div>', unsafe_allow_html=True)
+    primary_markets = [m for m in markets if m[0] in {"STRONG BET","BET","LEAN"}]
+    pass_markets = [m for m in markets if m[0] == "PASS"]
+
+    if primary_markets:
+        st.markdown('<div class="market-board">', unsafe_allow_html=True)
+        for v,name,odds,prob,e,ev,fair in primary_markets:
+            render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.caption("No A/B/C markets on this game.")
+
+    if pass_markets:
+        with st.expander(f"Other markets • {len(pass_markets)} pass", expanded=False):
+            st.markdown('<div class="market-board">', unsafe_allow_html=True)
+            for v,name,odds,prob,e,ev,fair in pass_markets:
+                render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     market_export = {
         "line_provider": selected_line.get("provider") if selected_line else None,
@@ -6619,13 +6801,13 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     export_df = pd.DataFrame([export_row])
     csv_bytes = export_df.to_csv(index=False).encode("utf-8")
 
-    st.markdown('<div class="section-kicker">Audit Export</div>', unsafe_allow_html=True)
-    st.caption("Download this CSV and upload it back into ChatGPT so the inputs, projection, market comparison, and betting call can be audited.")
-    ios_save_button(
-        "Save Game CSV",
-        export_df.to_csv(index=False),
-        f"cfb_model_v031_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
-    )
+    with st.expander("Export / Audit", expanded=False):
+        st.caption("Download the full game audit CSV for review or upload back into ChatGPT.")
+        ios_save_button(
+            "Save Game CSV",
+            export_df.to_csv(index=False),
+            f"cfb_model_v141_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv",
+        )
 
 st.divider()
-st.caption("CFB Edge • v1.4.0-PREMIUM-UI • Premium mobile-first betting board with compact professional result cards.")
+st.caption("CFB Edge • v1.4.1-PREMIUM-SLATE-UI • Premium single-game and slate boards with compact pass-market handling.")

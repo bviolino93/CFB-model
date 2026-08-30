@@ -1,45 +1,28 @@
-CFB Edge v1.4.0-PREMIUM-UI
+CFB Edge v1.4.1-PREMIUM-SLATE-UI
 
-Purpose
--------
-Make the front end feel like a polished consumer betting product rather than
-a styled Streamlit research app.
+UI-only refinement. Model logic and v1.2 playable thresholds are unchanged.
 
-Model logic
+Single game
 -----------
-No betting-model or threshold changes from v1.2/v1.3.
-This release is visual/UX only.
+- A/B/C markets remain visible on the main board.
+- D/PASS markets move into a collapsed "Other markets" section.
+- Export/Audit moves into a collapsed expander.
+- Premium v1.4 top-play/no-play card remains unchanged.
 
-Major visual changes
---------------------
-- Premium dark navy visual system
-- Stronger typography and hierarchy
-- Cleaner hero and status strip
-- Smaller, denser A/B/C/D legend
-- Premium top-play card
-- Separate no-play state when every market is D
-- Compact market-board cards
-- Dense mobile layout so more markets fit on one screen
-- Cleaner metric chips for Model / Edge / EV / Fair
-- Refined buttons, tabs, inputs, metrics, expanders
-- Better spacing and reduced visual clutter
-- More professional mobile experience
-
-Top result behavior
--------------------
-If the top market is:
-A/B/C -> header shows TOP PLAY and a premium result card.
-D     -> header shows NO PLAY and a quieter no-play card.
+Full slate
+----------
+- Existing slate cards now use the same premium visual language.
+- Each game gets an A/B/C/D badge instead of raw STRONG BET/BET/LEAN/PASS text.
+- A/B games appear first under TOP PLAYS.
+- C games stay in a Leans expander.
+- D/PASS games stay in Passes / No Line.
+- Inside each game, A/B/C markets are shown first and D markets are collapsed.
+- Raw slate data and CSV export are moved into one "Export / Full Slate Data" expander.
+- Mobile layout is denser and consistent with the single-game board.
 
 Grades
 ------
-A — Best Bet
-B — Bet
-C — Lean
-D — Pass
-
-Suggested units are unchanged:
-A = 1.00u
-B = 0.50–0.75u
-C = 0.25u optional
-D = 0u
+A = Best Bet
+B = Bet
+C = Lean
+D = Pass
