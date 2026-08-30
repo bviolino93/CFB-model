@@ -16,7 +16,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.0-BACKTEST"
+MODEL_VERSION = "0.4.1-BACKTEST-ODDS-FIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1208,7 +1208,16 @@ def total_probability(model_total, market_total, side="over", sigma=None):
     p_over = 1.0 - NormalDist(mu=model_total, sigma=sigma).cdf(float(market_total))
     return p_over if side == "over" else 1 - p_over
 
+def _valid_american_odds(odds):
+    try:
+        x = float(odds)
+        return math.isfinite(x) and x != 0
+    except Exception:
+        return False
+
 def implied_prob(odds):
+    if not _valid_american_odds(odds):
+        return None
     odds = float(odds)
     return 100/(odds+100) if odds > 0 else abs(odds)/(abs(odds)+100)
 
@@ -1217,6 +1226,8 @@ def fair_ml(prob):
     return -round(100*p/(1-p)) if p >= .5 else round(100*(1-p)/p)
 
 def expected_value(prob, odds):
+    if not _valid_american_odds(odds):
+        return None
     odds = float(odds)
     profit = odds/100 if odds > 0 else 100/abs(odds)
     return prob*profit - (1-prob)
@@ -1237,6 +1248,8 @@ def grade(prob, odds, confidence=75, market_type="side", projection_gap=None, we
     - Weeks 1-2 require extra edge/EV.
     - Very large raw model/market gaps are review-only until calibrated.
     """
+    if not _valid_american_odds(odds):
+        return "PASS", 0.0, 0.0, None
     imp = implied_prob(odds)
     edge = prob - imp
     ev = expected_value(prob, odds)
@@ -1340,6 +1353,8 @@ def normalize_game_lines(rows, game_id=None):
 
 def grade_v031(prob, odds, confidence=75):
     """Exact v0.3.1 betting-layer grading retained for A/B comparison."""
+    if not _valid_american_odds(odds):
+        return "PASS", 0.0, 0.0, None
     imp = implied_prob(odds)
     edge = prob - imp
     ev = expected_value(prob, odds)
@@ -1573,7 +1588,7 @@ def _bt_candidate_rows(game, p, market, season, version):
         ("away", away_wp, market.get("away_ml"), f"{p['away']} ML"),
         ("home", home_wp, market.get("home_ml"), f"{p['home']} ML"),
     ]:
-        if odds is None:
+        if not _valid_american_odds(odds):
             continue
         if version == "v0.3.2":
             verdict, edge, ev, imp = grader(prob, odds, p["confidence"], market_type="side", week=week)
