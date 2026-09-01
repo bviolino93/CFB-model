@@ -7,6 +7,7 @@ import html
 import json
 import streamlit.components.v1 as components
 from datetime import date
+from pathlib import Path
 
 # ===== Embedded CFB v0.2.0 model engine =====
 
@@ -17,7 +18,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.6.1-LOGO-HOTFIX"
+MODEL_VERSION = "2.1.1-LABEL-LANGUAGE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1466,6 +1467,16 @@ def _slate_grade_meta(verdict):
     }.get(str(verdict), ("D", 0, "PASS"))
 
 
+def _grade_label_from_grade(grade):
+    return {
+        "A": "BEST BET",
+        "B": "BET",
+        "C": "LEAN",
+        "D": "PASS",
+        "—": "NO LINE",
+    }.get(str(grade), str(grade))
+
+
 def _slate_rank_score(verdict, prob, edge, ev, confidence):
     """
     Rank official plays by "best chance to make money," not by raw EV alone.
@@ -1538,6 +1549,7 @@ def _ranked_market_board(slate_df):
                 prob = None
 
             rows.append({
+                "game_id": game_row.get("game_id"),
                 "game": game,
                 "kickoff_et": game_row.get("kickoff_et", ""),
                 "away_team": game_row.get("away_team"),
@@ -1614,7 +1626,7 @@ def _render_top_slate_bet(row, rank):
             <div class="topbet-pick">{html.escape(market)} {html.escape(odds_txt)}</div>
             <div class="topbet-note">{html.escape(note)}</div>
           </div>
-          <div class="topbet-grade {cls}">{grade}</div>
+          <div class="topbet-grade {cls}">{row.get('grade_label','PASS')}</div>
           <div class="topbet-metrics">
             <div><span>Win Chance</span><b>{_fmt_market_pct(row.get("prob"))}</b></div>
             <div><span>Edge</span><b>{_fmt_market_pct(row.get("edge"), True)}</b></div>
@@ -1654,7 +1666,7 @@ def _render_game_market_stack(game_markets):
                 f"""
                 <div class="game-market-row">
                   <div class="game-market-rank">#{i+1}</div>
-                  <div class="game-market-grade {grade.lower()}">{grade}</div>
+                  <div class="game-market-grade {grade.lower()}">{_grade_label_from_grade(grade)}</div>
                   <div class="game-market-body">
                     <div class="game-market-pick">{html.escape(str(r.get('market','')))} {html.escape(odds_txt)}</div>
                     <div class="game-market-meta">{html.escape(str(r.get('market_type','')))} • Edge {_fmt_market_pct(r.get("edge"), True)} • EV {_fmt_market_pct(r.get("ev"), True)}</div>
@@ -1806,10 +1818,10 @@ def grade(prob, odds, confidence=75, market_type="spread", projection_gap=None, 
 
 def display_grade(verdict):
     return {
-        "STRONG BET": "A — BEST BET",
-        "BET": "B — BET",
-        "LEAN": "C — LEAN",
-        "PASS": "D — PASS",
+        "STRONG BET": "BEST BET",
+        "BET": "BET",
+        "LEAN": "LEAN",
+        "PASS": "PASS",
         "NO LINE": "NO LINE",
     }.get(str(verdict), str(verdict))
 
@@ -1889,7 +1901,7 @@ def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, e
             f"""
             <div class="no-play">
               <div class="result-top">
-                <div class="result-badge">D</div>
+                <div class="result-badge">PASS</div>
                 <div>
                   <div class="result-label">NO PLAY RECOMMENDED</div>
                   <div class="no-play-title">{title}</div>
@@ -1936,7 +1948,7 @@ def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, e
         f"""
         <div class="result-hero {cls}">
           <div class="result-top">
-            <div class="result-badge">{meta['grade']}</div>
+            <div class="result-badge">{meta['label']}</div>
             <div>
               <div class="result-label">{label}</div>
               <div class="result-pick">{title}</div>
@@ -1977,7 +1989,7 @@ def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, f
     st.markdown(
         f"""
         <div class="market-card">
-          <div class="market-grade {cls}">{meta['grade']}</div>
+          <div class="market-grade {cls}">{meta['label']}</div>
           <div class="market-main">
             <div class="market-pick">{bet_label} {odds_txt}</div>
             <div class="market-sub">{sub}</div>
@@ -4626,11 +4638,12 @@ div[data-testid="stMetric"]{
   display:flex;align-items:center;gap:12px;
 }
 .result-badge{
-  width:44px;height:44px;border-radius:13px;
+  min-width:84px;min-height:44px;padding:0 10px;border-radius:13px;
   display:flex;align-items:center;justify-content:center;
-  font-size:1.18rem;font-weight:950;color:#fff;
+  font-size:.66rem;font-weight:950;color:#fff;letter-spacing:.08em;text-transform:uppercase;
   border:1px solid rgba(255,255,255,.10);
   background:rgba(255,255,255,.06);
+  text-align:center;line-height:1.05;
 }
 .result-label{
   font-size:.68rem;letter-spacing:.14em;font-weight:900;color:#8fa3ba;
@@ -4699,13 +4712,14 @@ div[data-testid="stMetric"]{
   border-color:rgba(96,165,250,.20);
 }
 .market-grade{
-  flex:0 0 38px;
-  width:38px;height:38px;
+  flex:0 0 auto;
+  min-width:72px;min-height:38px;padding:0 9px;
   border-radius:11px;
   display:flex;align-items:center;justify-content:center;
-  font-size:1rem;font-weight:950;color:#fff;
+  font-size:.56rem;font-weight:950;color:#fff;letter-spacing:.07em;text-transform:uppercase;
   background:rgba(255,255,255,.05);
   border:1px solid rgba(255,255,255,.08);
+  text-align:center;line-height:1.05;
 }
 .market-grade.a{border-color:rgba(34,197,94,.28)}
 .market-grade.b{border-color:rgba(56,189,248,.28)}
@@ -4945,7 +4959,7 @@ div[data-testid="stMetric"]{
 
 .topbet-card{
   display:grid;
-  grid-template-columns:38px 1fr 42px;
+  grid-template-columns:38px 1fr auto;
   gap:9px;
   padding:12px;
   margin:8px 0;
@@ -4968,8 +4982,9 @@ div[data-testid="stMetric"]{
 }
 .topbet-note{margin-top:3px;color:#7890aa;font-size:.66rem}
 .topbet-grade{
-  width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  font-size:.96rem;font-weight:950;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+  min-width:78px;min-height:38px;padding:0 9px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:.56rem;font-weight:950;letter-spacing:.07em;text-transform:uppercase;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+  text-align:center;line-height:1.05;
 }
 .topbet-grade.a{border-color:rgba(34,197,94,.34)}
 .topbet-grade.b{border-color:rgba(56,189,248,.30)}
@@ -4989,15 +5004,16 @@ div[data-testid="stMetric"]{
   margin:4px 0 7px;color:#6f859d;font-size:.61rem;font-weight:900;letter-spacing:.10em;text-transform:uppercase;
 }
 .game-market-row{
-  display:grid;grid-template-columns:28px 30px 1fr;gap:8px;align-items:center;
+  display:grid;grid-template-columns:28px auto 1fr;gap:8px;align-items:center;
   padding:9px 2px;border-bottom:1px solid rgba(148,163,184,.07);
 }
 .game-market-row:last-child{border-bottom:none}
 .game-market-rank{color:#657b93;font-size:.67rem;font-weight:850}
 .game-market-grade{
-  width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  min-width:58px;min-height:28px;padding:0 8px;border-radius:8px;display:flex;align-items:center;justify-content:center;
   background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);
-  color:#e8eef6;font-size:.74rem;font-weight:900;
+  color:#e8eef6;font-size:.50rem;font-weight:900;letter-spacing:.06em;text-transform:uppercase;
+  text-align:center;line-height:1.05;
 }
 .game-market-grade.a{border-color:rgba(34,197,94,.30)}
 .game-market-grade.b{border-color:rgba(56,189,248,.28)}
@@ -5005,7 +5021,7 @@ div[data-testid="stMetric"]{
 .game-market-pick{color:#e7eef7;font-size:.84rem;font-weight:850}
 .game-market-meta{margin-top:2px;color:#71869f;font-size:.64rem}
 @media(max-width:700px){
-  .topbet-card{grid-template-columns:34px 1fr 38px;padding:11px}
+  .topbet-card{grid-template-columns:34px 1fr auto;padding:11px}
   .topbet-pick{font-size:.93rem}
   .topbet-metrics{grid-column:1 / 4}
 }
@@ -5067,9 +5083,167 @@ div[data-testid="stExpander"] summary{min-height:49px}
 @media(max-width:700px){
   .app-shell-head{padding:12px}
   .app-title{font-size:1.16rem}
-  .topbet-card{grid-template-columns:25px 34px 1fr 38px !important}
+  .topbet-card{grid-template-columns:25px 34px 1fr auto !important}
   .topbet-metrics{grid-column:1 / 5 !important}
   .game-team b{font-size:.70rem}
+}
+
+
+/* ===== CFB Edge v2.0 mobile app shell ===== */
+.block-container{padding-bottom:112px !important;}
+
+div[class*="st-key-cfb_main_navigation"]{
+  position:fixed !important;left:0 !important;right:0 !important;bottom:0 !important;
+  width:100vw !important;max-width:none !important;z-index:999999 !important;margin:0 !important;
+  padding:7px 6px calc(7px + env(safe-area-inset-bottom)) !important;min-height:80px !important;
+  background:linear-gradient(180deg,rgba(7,21,36,.965),rgba(4,14,25,.995)) !important;
+  border-top:1px solid rgba(91,137,177,.30) !important;box-shadow:0 -12px 32px rgba(0,0,0,.34) !important;
+  backdrop-filter:blur(18px) !important;
+}
+div[class*="st-key-cfb_main_navigation"] [role="radiogroup"]{
+  display:grid !important;grid-template-columns:repeat(5,minmax(0,1fr)) !important;
+  gap:0 !important;width:100% !important;max-width:none !important;margin:0 !important;
+}
+div[class*="st-key-cfb_main_navigation"] label{
+  display:flex !important;flex-direction:column !important;align-items:center !important;justify-content:center !important;
+  min-width:0 !important;min-height:62px !important;gap:4px !important;padding:4px 2px !important;margin:0 !important;
+  border:0 !important;border-radius:0 !important;background:transparent !important;box-shadow:none !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:has(input:checked){background:transparent !important;box-shadow:none !important;}
+div[class*="st-key-cfb_main_navigation"] input,
+div[class*="st-key-cfb_main_navigation"] label > div:first-child,
+div[class*="st-key-cfb_main_navigation"] [data-baseweb="radio"]{display:none !important;}
+div[class*="st-key-cfb_main_navigation"] label p{
+  color:#74889d !important;font-size:.56rem !important;font-weight:760 !important;line-height:1 !important;
+  margin:0 !important;padding:0 !important;text-transform:none !important;white-space:nowrap !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:has(input:checked) p{color:#4ea8ff !important;font-weight:900 !important;}
+div[class*="st-key-cfb_main_navigation"] label::before{
+  content:"" !important;display:block !important;width:25px !important;height:25px !important;background-color:#6f8498 !important;
+  -webkit-mask-size:contain !important;-webkit-mask-repeat:no-repeat !important;-webkit-mask-position:center !important;
+  mask-size:contain !important;mask-repeat:no-repeat !important;mask-position:center !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:has(input:checked)::before{
+  background-color:#4ea8ff !important;filter:drop-shadow(0 0 8px rgba(78,168,255,.28)) !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:nth-child(1)::before{
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10.5 12 3l9 7.5'/%3E%3Cpath d='M5 9.5V21h5v-6h4v6h5V9.5'/%3E%3C/svg%3E") !important;
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10.5 12 3l9 7.5'/%3E%3Cpath d='M5 9.5V21h5v-6h4v6h5V9.5'/%3E%3C/svg%3E") !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:nth-child(2)::before{
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='2.2'/%3E%3Cpath d='M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.7 4.7a10.4 10.4 0 0 0 0 14.6M19.3 4.7a10.4 10.4 0 0 1 0 14.6'/%3E%3C/svg%3E") !important;
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='2.2'/%3E%3Cpath d='M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.7 4.7a10.4 10.4 0 0 0 0 14.6M19.3 4.7a10.4 10.4 0 0 1 0 14.6'/%3E%3C/svg%3E") !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:nth-child(3)::before{
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20V10h4v10M10 20V6h4v14M16 20V12h4v8'/%3E%3Cpath d='m4 7 5-3 4 3 7-5'/%3E%3C/svg%3E") !important;
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20V10h4v10M10 20V6h4v14M16 20V12h4v8'/%3E%3Cpath d='m4 7 5-3 4 3 7-5'/%3E%3C/svg%3E") !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:nth-child(4)::before{
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 7h8M8 11h8M8 15h5'/%3E%3C/svg%3E") !important;
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 7h8M8 11h8M8 15h5'/%3E%3C/svg%3E") !important;
+}
+div[class*="st-key-cfb_main_navigation"] label:nth-child(5)::before{
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3C/svg%3E") !important;
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3C/svg%3E") !important;
+}
+
+.mobile-page-head{margin:4px 0 18px;}
+.mobile-page-kicker{color:#6ed0ff;font-size:.56rem;font-weight:950;letter-spacing:.14em;}
+.mobile-page-title{margin-top:3px;color:#fff;font-size:1.72rem;line-height:1.06;font-weight:950;letter-spacing:-.04em;}
+.mobile-page-sub{margin-top:6px;color:#8fa4b8;font-size:.75rem;}
+.page-count{display:inline-flex;min-width:27px;height:27px;align-items:center;justify-content:center;padding:0 7px;border-radius:8px;background:#20364f;color:#fff;font-size:.76rem;vertical-align:middle;}
+
+.cfb-live-card{margin:10px 0;padding:14px 15px;border-radius:18px;background:radial-gradient(circle at 94% 5%,rgba(57,189,248,.08),transparent 25%),linear-gradient(180deg,#11283f,#0b1c2e);border:1px solid #31536f;box-shadow:0 14px 30px rgba(0,0,0,.18);}
+.cfb-live-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.cfb-live-teams{flex:1;min-width:0;}
+.cfb-score-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;color:#fff;font-size:.96rem;font-weight:900;line-height:1.55;}
+.cfb-score-row b{font-size:1.05rem;}
+.cfb-game-state{flex:0 0 auto;padding:6px 9px;border-radius:999px;color:#79efaa;background:#0b3022;border:1px solid #2d7250;font-size:.57rem;font-weight:950;}
+.cfb-game-state.final{color:#c8d6e4;background:#1b2b3b;border-color:#42576b;}
+.cfb-live-meta{margin-top:8px;color:#8fa4b8;font-size:.66rem;}
+
+.saved-bets-shell{padding:14px;margin:8px 0 14px;border-radius:18px;background:linear-gradient(135deg,#102940,#0a1e31);border:1px solid #31516d;}
+.saved-bets-title{font-size:1.05rem;font-weight:950;color:#fff;}
+.saved-bets-sub{margin-top:4px;color:#91a6ba;font-size:.68rem;}
+.saved-bet-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-top:1px solid rgba(148,163,184,.10);}
+.saved-bet-row:first-of-type{margin-top:10px;}
+.saved-bet-rank{flex:0 0 28px;color:#69c8ff;font-size:.68rem;font-weight:950;}
+.saved-bet-main{flex:1;min-width:0;}
+.saved-bet-pick{color:#fff;font-size:.88rem;font-weight:900;}
+.saved-bet-sub{margin-top:2px;color:#8197aa;font-size:.60rem;}
+.saved-grade{padding:6px 10px;border-radius:999px;font-size:.52rem;font-weight:950;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;}
+.saved-grade.a{color:#7cf0ad;background:#0d3325;border:1px solid #2a7550;}
+.saved-grade.b{color:#7fd6ff;background:#0c2b43;border:1px solid #2f6f98;}
+
+.cfb-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:10px 0 16px;}
+.cfb-info-grid>div{padding:11px 12px;border-radius:12px;background:#0d2032;border:1px solid #29475f;}
+.cfb-info-grid span{display:block;color:#8ea4b8;font-size:.51rem;font-weight:900;letter-spacing:.09em;}
+.cfb-info-grid b{display:block;margin-top:4px;color:#fff;font-size:.69rem;word-break:break-word;}
+
+@media(max-width:700px){
+  div[class*="st-key-cfb_main_navigation"]{padding-left:4px !important;padding-right:4px !important;}
+  div[class*="st-key-cfb_main_navigation"] label::before{width:23px !important;height:23px !important;}
+  div[class*="st-key-cfb_main_navigation"] label p{font-size:.53rem !important;}
+}
+
+
+/* ===== CFB v2.1 live recommendation tracker ===== */
+.cfb-slate-pulse{
+  margin:0 0 15px;padding:14px;border-radius:17px;
+  background:radial-gradient(circle at 90% 0%,rgba(71,190,255,.12),transparent 30%),linear-gradient(135deg,#102a42,#0a1e31);
+  border:1px solid #315470;box-shadow:0 14px 30px rgba(0,0,0,.18);
+}
+.cfb-pulse-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.cfb-pulse-head span{display:block;color:#69d8ca;font-size:.50rem;font-weight:950;letter-spacing:.12em;}
+.cfb-pulse-head b{display:block;color:#fff;font-size:1.02rem;margin-top:3px;}
+.cfb-pulse-chip{padding:6px 8px;border-radius:999px;color:#83cfff;background:#0b2b45;border:1px solid #2b638b;font-size:.52rem;font-weight:950;}
+.cfb-pulse-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:11px;}
+.cfb-pulse-grid div{padding:8px 6px;border-radius:10px;background:rgba(5,17,29,.58);border:1px solid #25455f;}
+.cfb-pulse-grid span{display:block;color:#899fb3;font-size:.45rem;font-weight:900;letter-spacing:.06em;}
+.cfb-pulse-grid b{display:block;color:#fff;font-size:.78rem;margin-top:3px;}
+
+.cfb-tracker-card{
+  margin:10px 0;padding:14px;border-radius:18px;
+  background:radial-gradient(circle at 94% 5%,rgba(57,189,248,.08),transparent 26%),linear-gradient(180deg,#11293f,#0b1d2f);
+  border:1px solid #345771;box-shadow:0 15px 34px rgba(0,0,0,.19);
+}
+.cfb-track-score{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
+.cfb-live-chip{padding:6px 8px;border-radius:999px;color:#77efaa;background:#0c3022;border:1px solid #2c7551;font-size:.53rem;font-weight:950;}
+.cfb-track-divider{height:1px;background:#29465f;margin:12px 0;}
+.cfb-track-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
+.cfb-track-head span{display:block;color:#72cfff;font-size:.49rem;letter-spacing:.10em;font-weight:950;}
+.cfb-track-head b{display:block;color:#fff;font-size:.96rem;margin-top:4px;}
+.cfb-track-status{padding:5px 8px;border-radius:999px;font-size:.50rem;font-weight:950;white-space:nowrap;border:1px solid;}
+.cfb-track-status.good{color:#79efaa;background:#0c3324;border-color:#2b7650;}
+.cfb-track-status.risk{color:#ff858a;background:#371619;border-color:#81343a;}
+.cfb-track-status.neutral{color:#f0da82;background:#30280e;border-color:#75621b;}
+
+.cfb-track-stats{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px;}
+.cfb-track-stats>div{padding:9px 10px;border-radius:11px;background:#0a1c2e;border:1px solid #294962;}
+.cfb-track-stats span{display:block;color:#8fa5b8;font-size:.47rem;letter-spacing:.08em;font-weight:900;}
+.cfb-track-stats b{display:block;color:#fff;font-size:1.28rem;line-height:1.05;margin-top:4px;}
+
+.cfb-progress{position:relative;height:8px;margin:14px 2px 4px;border-radius:999px;background:#223d54;}
+.cfb-progress-fill{height:8px;border-radius:999px;}
+.cfb-progress-fill.good{background:linear-gradient(90deg,#36dd8e,#72f2b6);box-shadow:0 0 13px rgba(74,230,155,.28);}
+.cfb-progress-fill.risk{background:linear-gradient(90deg,#ff626c,#ff8d92);}
+.cfb-progress-fill.neutral{background:linear-gradient(90deg,#d7ba43,#f0d973);}
+.cfb-progress i{position:absolute;top:-6px;width:3px;height:20px;background:#fff;transform:translateX(-1px);box-shadow:0 0 10px rgba(255,255,255,.25);}
+
+.cfb-spread-meter{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin-top:14px;color:#8398ab;font-size:.47rem;font-weight:850;}
+.cfb-spread-meter i{height:7px;border-radius:999px;background:#42566b;}
+.cfb-spread-meter i.good{background:linear-gradient(90deg,#31485d,#46e096);}
+.cfb-spread-meter i.risk{background:linear-gradient(90deg,#ff666f,#3b4f63);}
+.cfb-spread-meter i.neutral{background:#d6b845;}
+
+.cfb-upcoming-track,.cfb-final-track{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid rgba(148,163,184,.10);}
+.cfb-upcoming-track b,.cfb-final-track b{display:block;color:#fff;font-size:.79rem;}
+.cfb-upcoming-track span,.cfb-final-track span{display:block;color:#879caf;font-size:.57rem;margin-top:2px;}
+
+@media(max-width:700px){
+  .cfb-pulse-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .cfb-pulse-grid div:last-child{grid-column:span 2;}
+  .cfb-track-stats b{font-size:1.18rem;}
 }
 
 </style>
@@ -5085,7 +5259,7 @@ st.markdown(
     </div>
     <div class="status-strip">
       <div class="status-live"><span class="status-dot"></span> Live model ready</div>
-      <div>A = Best Bet &nbsp;•&nbsp; B = Bet &nbsp;•&nbsp; C = Lean &nbsp;•&nbsp; D = Pass</div>
+      <div>Best Bet &nbsp;•&nbsp; Bet &nbsp;•&nbsp; Lean &nbsp;•&nbsp; Pass</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -6216,6 +6390,12 @@ if app_section == "Research Lab":
     st.stop()
 
 st.markdown(
+    '<div class="mobile-page-head"><div class="mobile-page-kicker">SINGLE GAME</div>'
+    '<div class="mobile-page-title">Home</div>'
+    '<div class="mobile-page-sub">Choose one matchup, review the projection, then price the markets.</div></div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
     '<div class="workflow-step"><div class="workflow-num">1</div><div>'
     '<div class="workflow-title">Choose your matchup</div>'
     '<div class="workflow-sub">Set the date, game level, and analysis mode.</div>'
@@ -6343,14 +6523,615 @@ def consensus_line(rows):
         "total": total,
     }
 
-run_mode = st.radio(
-    "Analysis mode",
-    ["Single Game", "Full Slate"],
+
+# ===== CFB v2.1 forward recommendation tracker =====
+CFB_TRACKER_DIR = Path(".cfb_edge_tracker")
+CFB_TRACKER_PATH = CFB_TRACKER_DIR / "cfb_recommendation_tracker.csv"
+
+CFB_TRACKER_COLUMNS = [
+    "Record_Key","Tracked_At_ET","Slate_Date","Game_ID","Game","Kickoff_ET",
+    "Market_Type","Pick","Side","Line","Odds","Grade","Edge","EV","Confidence",
+    "Result","Units","Final_Away_Score","Final_Home_Score","Graded_At_ET",
+]
+
+def _empty_cfb_tracker():
+    return pd.DataFrame(columns=CFB_TRACKER_COLUMNS)
+
+def _clean_cfb_tracker(df):
+    if df is None or df.empty:
+        return _empty_cfb_tracker()
+    out = df.copy()
+    for c in CFB_TRACKER_COLUMNS:
+        if c not in out.columns:
+            out[c] = None
+    return out[CFB_TRACKER_COLUMNS]
+
+def _load_cfb_tracker():
+    if "_cfb_tracker_df" in st.session_state:
+        return _clean_cfb_tracker(st.session_state["_cfb_tracker_df"])
+    try:
+        df = pd.read_csv(CFB_TRACKER_PATH) if CFB_TRACKER_PATH.exists() else _empty_cfb_tracker()
+    except Exception:
+        df = _empty_cfb_tracker()
+    st.session_state["_cfb_tracker_df"] = _clean_cfb_tracker(df)
+    return _clean_cfb_tracker(df)
+
+def _save_cfb_tracker(df):
+    df = _clean_cfb_tracker(df)
+    st.session_state["_cfb_tracker_df"] = df.copy()
+    try:
+        CFB_TRACKER_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CFB_TRACKER_PATH.with_suffix(".tmp")
+        df.to_csv(tmp, index=False)
+        tmp.replace(CFB_TRACKER_PATH)
+        return True
+    except Exception:
+        return False
+
+def _parse_cfb_market(market):
+    market = str(market or "").strip()
+    if market.endswith(" ML"):
+        team = market[:-3].strip()
+        return {"type":"MONEYLINE","pick":team,"side":team,"line":None}
+    m = re.match(r"^(Over|Under)\s+(-?\d+(?:\.\d+)?)$", market, flags=re.I)
+    if m:
+        return {
+            "type":"TOTAL",
+            "pick":market,
+            "side":m.group(1).upper(),
+            "line":float(m.group(2)),
+        }
+    m = re.match(r"^(.*?)\s+([+-]\d+(?:\.\d+)?)$", market)
+    if m:
+        team = m.group(1).strip()
+        return {
+            "type":"SPREAD",
+            "pick":market,
+            "side":team,
+            "line":float(m.group(2)),
+        }
+    return {"type":"OTHER","pick":market,"side":market,"line":None}
+
+def _track_cfb_official_board(market_board, slate_df, slate_date):
+    """Freeze the first Best Bet / Bet price for each official model market."""
+    if market_board is None or market_board.empty:
+        return 0
+
+    official = market_board[market_board["grade"].isin(["A","B"])].copy()
+    if official.empty:
+        return 0
+
+    tracker = _load_cfb_tracker()
+    existing = set(tracker["Record_Key"].astype(str))
+    new_rows = []
+
+    for _, r in official.iterrows():
+        gid = r.get("game_id")
+        market = str(r.get("market") or "")
+        if gid is None or market == "":
+            continue
+        key = f"{gid}|{market}"
+        if key in existing:
+            continue
+
+        parsed = _parse_cfb_market(market)
+        try:
+            odds = int(round(float(r.get("odds"))))
+        except Exception:
+            odds = -110
+
+        row = {
+            "Record_Key": key,
+            "Tracked_At_ET": pd.Timestamp.now(tz="America/New_York").isoformat(),
+            "Slate_Date": str(slate_date),
+            "Game_ID": gid,
+            "Game": r.get("game"),
+            "Kickoff_ET": r.get("kickoff_et"),
+            "Market_Type": parsed["type"],
+            "Pick": parsed["pick"],
+            "Side": parsed["side"],
+            "Line": parsed["line"],
+            "Odds": odds,
+            "Grade": r.get("grade"),
+            "Edge": r.get("edge"),
+            "EV": r.get("ev"),
+            "Confidence": r.get("confidence"),
+            "Result": "PENDING",
+            "Units": 0.0,
+            "Final_Away_Score": None,
+            "Final_Home_Score": None,
+            "Graded_At_ET": None,
+        }
+        new_rows.append(row)
+        existing.add(key)
+
+    if new_rows:
+        tracker = pd.concat([tracker, pd.DataFrame(new_rows)], ignore_index=True)
+        _save_cfb_tracker(tracker)
+    return len(new_rows)
+
+def _american_win_units(odds):
+    try:
+        o = float(odds)
+    except Exception:
+        o = -110.0
+    return o / 100.0 if o > 0 else 100.0 / abs(o)
+
+def _score_for_pick(game, team):
+    away = str(game.get("awayTeam") or "")
+    home = str(game.get("homeTeam") or "")
+    a = pd.to_numeric(pd.Series([game.get("awayPoints")]), errors="coerce").iloc[0]
+    h = pd.to_numeric(pd.Series([game.get("homePoints")]), errors="coerce").iloc[0]
+    if pd.isna(a) or pd.isna(h):
+        return None, None
+    a, h = float(a), float(h)
+    if team_key(team) == team_key(away):
+        return a, h
+    if team_key(team) == team_key(home):
+        return h, a
+    return None, None
+
+def _settle_cfb_tracker_row(rec, game):
+    market_type = str(rec.get("Market_Type") or "").upper()
+    side = str(rec.get("Side") or "")
+    line = pd.to_numeric(pd.Series([rec.get("Line")]), errors="coerce").iloc[0]
+    away_score = pd.to_numeric(pd.Series([game.get("awayPoints")]), errors="coerce").iloc[0]
+    home_score = pd.to_numeric(pd.Series([game.get("homePoints")]), errors="coerce").iloc[0]
+
+    if pd.isna(away_score) or pd.isna(home_score):
+        return None
+    away_score, home_score = float(away_score), float(home_score)
+
+    if market_type == "MONEYLINE":
+        picked, opp = _score_for_pick(game, side)
+        if picked is None:
+            return None
+        if picked > opp:
+            return "WIN"
+        if picked < opp:
+            return "LOSS"
+        return "PUSH"
+
+    if market_type == "SPREAD":
+        picked, opp = _score_for_pick(game, side)
+        if picked is None or pd.isna(line):
+            return None
+        covered = picked + float(line) - opp
+        if covered > 0:
+            return "WIN"
+        if covered < 0:
+            return "LOSS"
+        return "PUSH"
+
+    if market_type == "TOTAL":
+        if pd.isna(line):
+            return None
+        total = away_score + home_score
+        if side.upper() == "OVER":
+            if total > float(line):
+                return "WIN"
+            if total < float(line):
+                return "LOSS"
+            return "PUSH"
+        if side.upper() == "UNDER":
+            if total < float(line):
+                return "WIN"
+            if total > float(line):
+                return "LOSS"
+            return "PUSH"
+
+    return None
+
+def _grade_cfb_tracker(games_today):
+    tracker = _load_cfb_tracker()
+    if tracker.empty:
+        return 0
+    game_map = {str(g.get("id")): g for g in games_today}
+    changed = 0
+
+    for idx, rec in tracker.iterrows():
+        if str(rec.get("Result","PENDING")) != "PENDING":
+            continue
+        game = game_map.get(str(rec.get("Game_ID")))
+        if not game or not bool(game.get("completed")):
+            continue
+        result = _settle_cfb_tracker_row(rec, game)
+        if result is None:
+            continue
+
+        tracker.at[idx,"Result"] = result
+        if result == "WIN":
+            tracker.at[idx,"Units"] = _american_win_units(rec.get("Odds"))
+        elif result == "LOSS":
+            tracker.at[idx,"Units"] = -1.0
+        else:
+            tracker.at[idx,"Units"] = 0.0
+        tracker.at[idx,"Final_Away_Score"] = game.get("awayPoints")
+        tracker.at[idx,"Final_Home_Score"] = game.get("homePoints")
+        tracker.at[idx,"Graded_At_ET"] = pd.Timestamp.now(tz="America/New_York").isoformat()
+        changed += 1
+
+    if changed:
+        _save_cfb_tracker(tracker)
+    return changed
+
+def _cfb_live_market_status(rec, game):
+    market_type = str(rec.get("Market_Type") or "").upper()
+    side = str(rec.get("Side") or "")
+    try:
+        line = float(rec.get("Line"))
+    except Exception:
+        line = None
+
+    a = pd.to_numeric(pd.Series([game.get("awayPoints")]), errors="coerce").iloc[0]
+    h = pd.to_numeric(pd.Series([game.get("homePoints")]), errors="coerce").iloc[0]
+    if pd.isna(a) or pd.isna(h):
+        return "WAITING", "neutral", None
+    a, h = float(a), float(h)
+
+    if market_type == "MONEYLINE":
+        picked, opp = _score_for_pick(game, side)
+        if picked is None:
+            return "WAITING","neutral",None
+        diff = picked - opp
+        return (
+            ("LEADING","good",diff) if diff > 0
+            else (("TRAILING","risk",diff) if diff < 0 else ("TIED","neutral",0))
+        )
+
+    if market_type == "SPREAD":
+        picked, opp = _score_for_pick(game, side)
+        if picked is None or line is None:
+            return "WAITING","neutral",None
+        cover_margin = picked + line - opp
+        return (
+            ("COVERING","good",cover_margin) if cover_margin > 0
+            else (("NOT COVERING","risk",cover_margin) if cover_margin < 0 else ("PUSHING","neutral",0))
+        )
+
+    if market_type == "TOTAL":
+        if line is None:
+            return "WAITING","neutral",None
+        current = a + h
+        # This is deliberately descriptive, not a live win-probability estimate.
+        if side.upper() == "OVER":
+            if current > line:
+                return "OVER LINE","good",current
+            return "BELOW LINE","neutral",current
+        if side.upper() == "UNDER":
+            if current < line:
+                return "BELOW LINE","good",current
+            return "OVER LINE","risk",current
+
+    return "WAITING","neutral",None
+
+def _cfb_tracker_summary(tracker, games_today, slate_date):
+    rows = tracker[tracker["Slate_Date"].astype(str) == str(slate_date)].copy() if not tracker.empty else tracker
+    out = {
+        "tracked":len(rows),"wins":0,"losses":0,"pushes":0,"live":0,
+        "favorable":0,"unfavorable":0,"neutral":0,"units":0.0
+    }
+    if rows is None or rows.empty:
+        return out
+    game_map = {str(g.get("id")): g for g in games_today}
+    for _, rec in rows.iterrows():
+        result = str(rec.get("Result","PENDING"))
+        if result == "WIN":
+            out["wins"] += 1
+            out["units"] += float(rec.get("Units") or 0)
+        elif result == "LOSS":
+            out["losses"] += 1
+            out["units"] += float(rec.get("Units") or 0)
+        elif result == "PUSH":
+            out["pushes"] += 1
+        else:
+            game = game_map.get(str(rec.get("Game_ID")))
+            if game and _cfb_game_state(game) == "LIVE":
+                out["live"] += 1
+                _, cls, _ = _cfb_live_market_status(rec, game)
+                if cls == "good":
+                    out["favorable"] += 1
+                elif cls == "risk":
+                    out["unfavorable"] += 1
+                else:
+                    out["neutral"] += 1
+    return out
+
+def _render_cfb_tracker_page(games_today, slate_date):
+    _grade_cfb_tracker(games_today)
+    tracker = _load_cfb_tracker()
+    today = tracker[tracker["Slate_Date"].astype(str) == str(slate_date)].copy() if not tracker.empty else tracker
+    summary = _cfb_tracker_summary(tracker, games_today, slate_date)
+    game_map = {str(g.get("id")): g for g in games_today}
+
+    st.markdown(
+        f'<div class="mobile-page-head"><div class="mobile-page-kicker">LIVE MODEL MONITOR</div>'
+        f'<div class="mobile-page-title">Tracker <span class="page-count">{summary["live"]}</span></div>'
+        f'<div class="mobile-page-sub">Frozen Best Bet / Bet recommendations, live score progress, and final grading.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    record = f'{summary["wins"]}-{summary["losses"]}' + (f'-{summary["pushes"]}P' if summary["pushes"] else "")
+    pulse = "POSITIVE" if (summary["wins"] + summary["favorable"]) > (summary["losses"] + summary["unfavorable"]) else (
+        "UNDER PRESSURE" if (summary["wins"] + summary["favorable"]) < (summary["losses"] + summary["unfavorable"]) else "MIXED"
+    )
+    st.markdown(
+        f'<div class="cfb-slate-pulse"><div class="cfb-pulse-head"><div>'
+        f'<span>TODAY\'S TRACKED CARD</span><b>{pulse}</b></div>'
+        f'<div class="cfb-pulse-chip">{summary["tracked"]} TRACKED</div></div>'
+        f'<div class="cfb-pulse-grid">'
+        f'<div><span>FINAL</span><b>{record}</b></div>'
+        f'<div><span>LIVE</span><b>{summary["live"]}</b></div>'
+        f'<div><span>FAVORABLE</span><b>{summary["favorable"]}</b></div>'
+        f'<div><span>UNFAVORABLE</span><b>{summary["unfavorable"]}</b></div>'
+        f'<div><span>FINAL UNITS</span><b>{summary["units"]:+.2f}u</b></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    c1,c2 = st.columns(2)
+    with c1:
+        if st.button("Refresh Live Scores", use_container_width=True, key="cfb_tracker_refresh"):
+            get_games.clear()
+            st.rerun()
+    with c2:
+        st.download_button(
+            "Download Tracker",
+            data=tracker.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_model_tracker.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="cfb_tracker_download",
+        )
+
+    if today is None or today.empty:
+        st.info("No tracked recommendations for this date yet. Run the Bets slate and analyze the card first.")
+    else:
+        live_rows, upcoming_rows, final_rows = [], [], []
+        for _, rec in today.iterrows():
+            g = game_map.get(str(rec.get("Game_ID")))
+            result = str(rec.get("Result","PENDING"))
+            if result != "PENDING":
+                final_rows.append((rec,g))
+            elif g and _cfb_game_state(g) == "LIVE":
+                live_rows.append((rec,g))
+            else:
+                upcoming_rows.append((rec,g))
+
+        if live_rows:
+            st.markdown('<div class="section-kicker">LIVE TRACKED BETS</div>', unsafe_allow_html=True)
+            for rec,g in live_rows:
+                status, cls, value = _cfb_live_market_status(rec,g)
+                a = _cfb_score(g.get("awayPoints"))
+                h = _cfb_score(g.get("homePoints"))
+                market_type = str(rec.get("Market_Type"))
+                line = rec.get("Line")
+                try:
+                    line_txt = f"{float(line):g}"
+                except Exception:
+                    line_txt = "—"
+
+                visual = ""
+                if market_type == "TOTAL":
+                    current = float(g.get("awayPoints") or 0) + float(g.get("homePoints") or 0)
+                    max_v = max(float(line or 1) * 1.5, current + 7, 50)
+                    pct = max(0,min(100,current/max_v*100))
+                    lpct = max(2,min(96,float(line or 0)/max_v*100))
+                    visual = (
+                        f'<div class="cfb-track-stats"><div><span>CURRENT POINTS</span><b>{current:g}</b></div>'
+                        f'<div><span>BET LINE</span><b>{line_txt}</b></div></div>'
+                        f'<div class="cfb-progress"><div class="cfb-progress-fill {cls}" style="width:{pct:.1f}%"></div>'
+                        f'<i style="left:{lpct:.1f}%"></i></div>'
+                    )
+                elif market_type == "SPREAD":
+                    try:
+                        cover = float(value)
+                        cover_text = f"{cover:+.1f}"
+                    except Exception:
+                        cover_text = "—"
+                    visual = (
+                        f'<div class="cfb-track-stats"><div><span>CURRENT COVER MARGIN</span><b>{cover_text}</b></div>'
+                        f'<div><span>BET LINE</span><b>{float(line):+.1f}</b></div></div>'
+                        f'<div class="cfb-spread-meter"><span>NOT COVERING</span><i class="{cls}"></i><span>COVERING</span></div>'
+                    )
+                else:
+                    try:
+                        lead = float(value)
+                        lead_text = f"{lead:+.0f}"
+                    except Exception:
+                        lead_text = "—"
+                    visual = (
+                        f'<div class="cfb-track-stats"><div><span>PICK SCORE MARGIN</span><b>{lead_text}</b></div>'
+                        f'<div><span>MARKET</span><b>ML</b></div></div>'
+                    )
+
+                st.markdown(
+                    f'<div class="cfb-tracker-card">'
+                    f'<div class="cfb-track-score"><div>'
+                    f'<div class="cfb-score-row"><span>{html.escape(str(g.get("awayTeam")))}</span><b>{a}</b></div>'
+                    f'<div class="cfb-score-row"><span>{html.escape(str(g.get("homeTeam")))}</span><b>{h}</b></div>'
+                    f'</div><div class="cfb-live-chip">LIVE</div></div>'
+                    f'<div class="cfb-track-divider"></div>'
+                    f'<div class="cfb-track-head"><div><span>{market_type}</span><b>{html.escape(str(rec.get("Pick")))}</b></div>'
+                    f'<div class="cfb-track-status {cls}">{status}</div></div>'
+                    f'{visual}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        if upcoming_rows:
+            with st.expander(f"Upcoming Tracked Bets — {len(upcoming_rows)}", expanded=False):
+                for rec,g in upcoming_rows:
+                    st.markdown(
+                        f'<div class="cfb-upcoming-track"><b>{html.escape(str(rec.get("Pick")))}</b>'
+                        f'<span>{html.escape(str(rec.get("Game")))} • {rec.get("Kickoff_ET")} • Grade {rec.get("Grade")}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+
+        if final_rows:
+            with st.expander(f"Completed Tracked Bets — {len(final_rows)}", expanded=False):
+                for rec,g in final_rows:
+                    result = str(rec.get("Result"))
+                    cls = "good" if result=="WIN" else ("risk" if result=="LOSS" else "neutral")
+                    st.markdown(
+                        f'<div class="cfb-final-track"><div><b>{html.escape(str(rec.get("Pick")))}</b>'
+                        f'<span>{html.escape(str(rec.get("Game")))}</span></div>'
+                        f'<div class="cfb-track-status {cls}">{result} • {float(rec.get("Units") or 0):+.2f}u</div></div>',
+                        unsafe_allow_html=True,
+                    )
+
+    with st.expander("Tracker backup / restore", expanded=False):
+        restore = st.file_uploader("Restore tracker CSV", type=["csv"], key="cfb_tracker_restore")
+        if st.button("Merge Tracker Backup", disabled=(restore is None), use_container_width=True, key="cfb_tracker_restore_btn"):
+            try:
+                incoming = _clean_cfb_tracker(pd.read_csv(restore))
+                current = _load_cfb_tracker()
+                merged = pd.concat([current,incoming],ignore_index=True).drop_duplicates("Record_Key",keep="first")
+                _save_cfb_tracker(merged)
+                st.success(f"Tracker restored: {len(merged)} records.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not restore tracker: {e}")
+
+def _cfb_game_state(g):
+    if bool(g.get("completed")):
+        return "FINAL"
+    k = kickoff_et(g)
+    if k is not None and k <= pd.Timestamp.now(tz="America/New_York"):
+        return "LIVE"
+    return "UPCOMING"
+
+def _cfb_score(v):
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return str(int(float(v)))
+    except Exception:
+        return "—"
+
+def _render_cfb_live_page(games_today):
+    live = [g for g in games_today if _cfb_game_state(g) == "LIVE"]
+    finals = [g for g in games_today if _cfb_game_state(g) == "FINAL"]
+    st.markdown(
+        f'<div class="mobile-page-head"><div class="mobile-page-kicker">SCOREBOARD</div>'
+        f'<div class="mobile-page-title">Live <span class="page-count">{len(live)}</span></div>'
+        f'<div class="mobile-page-sub">Current scores for the selected date. Refresh the app to update game state.</div></div>',
+        unsafe_allow_html=True,
+    )
+    if live:
+        for g in sorted(live, key=lambda x: kickoff_et(x) or pd.Timestamp.max.tz_localize("UTC")):
+            away = str(g.get("awayTeam") or "Away")
+            home = str(g.get("homeTeam") or "Home")
+            st.markdown(
+                f'<div class="cfb-live-card"><div class="cfb-live-top">'
+                f'<div class="cfb-live-teams">'
+                f'<div class="cfb-score-row"><span>{html.escape(away)}</span><b>{_cfb_score(g.get("awayPoints"))}</b></div>'
+                f'<div class="cfb-score-row"><span>{html.escape(home)}</span><b>{_cfb_score(g.get("homePoints"))}</b></div>'
+                f'</div><div class="cfb-game-state">LIVE</div></div>'
+                f'<div class="cfb-live-meta">{html.escape(str(g.get("venue") or ""))}</div></div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No games are currently live on this date.")
+    if finals:
+        with st.expander(f"Final Games — {len(finals)}", expanded=False):
+            for g in sorted(finals, key=lambda x: kickoff_et(x) or pd.Timestamp.max.tz_localize("UTC")):
+                away = str(g.get("awayTeam") or "Away")
+                home = str(g.get("homeTeam") or "Home")
+                st.markdown(
+                    f'<div class="cfb-live-card"><div class="cfb-live-top">'
+                    f'<div class="cfb-live-teams">'
+                    f'<div class="cfb-score-row"><span>{html.escape(away)}</span><b>{_cfb_score(g.get("awayPoints"))}</b></div>'
+                    f'<div class="cfb-score-row"><span>{html.escape(home)}</span><b>{_cfb_score(g.get("homePoints"))}</b></div>'
+                    f'</div><div class="cfb-game-state final">FINAL</div></div></div>',
+                    unsafe_allow_html=True,
+                )
+
+def _render_saved_bets_page():
+    board = st.session_state.get("cfb_latest_market_board")
+    slate_name = st.session_state.get("cfb_latest_slate_name", "")
+    slate_date_saved = st.session_state.get("cfb_latest_slate_date", "")
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">BETTING CARD</div>'
+        '<div class="mobile-page-title">Bets</div>'
+        '<div class="mobile-page-sub">Your most recently analyzed full-slate recommendations.</div></div>',
+        unsafe_allow_html=True,
+    )
+    if not isinstance(board, pd.DataFrame) or board.empty:
+        st.info("No saved slate yet. Open the Bets tab and run Analyze Slate first.")
+        return
+    official = board[board["grade"].isin(["A","B"])].copy().head(10)
+    st.markdown(
+        f'<div class="saved-bets-shell"><div class="saved-bets-title">{html.escape(str(slate_name or "Latest"))} Slate</div>'
+        f'<div class="saved-bets-sub">{html.escape(str(slate_date_saved))} • {len(official)} Best Bet / Bet play(s)</div>',
+        unsafe_allow_html=True,
+    )
+    if official.empty:
+        st.caption("No Best Bet / Bet plays qualified on the most recently analyzed slate.")
+    else:
+        for i, (_, r) in enumerate(official.iterrows(), start=1):
+            grade = str(r.get("grade","B"))
+            st.markdown(
+                f'<div class="saved-bet-row"><div class="saved-bet-rank">#{i}</div>'
+                f'<div class="saved-bet-main"><div class="saved-bet-pick">{html.escape(str(r.get("market","")))}</div>'
+                f'<div class="saved-bet-sub">{html.escape(str(r.get("game","")))} • '
+                f'Edge {float(r.get("edge") or 0)*100:+.1f}% • EV {float(r.get("ev") or 0)*100:+.1f}%</div></div>'
+                f'<div class="saved-grade {grade.lower()}">{_grade_label_from_grade(grade)}</div></div>',
+                unsafe_allow_html=True,
+            )
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.download_button(
+        "Download Latest Ranked Bets",
+        data=board.to_csv(index=False).encode("utf-8"),
+        file_name="cfb_latest_ranked_bets.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="cfb_latest_bets_download",
+    )
+
+def _render_more_page():
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">CFB EDGE</div>'
+        '<div class="mobile-page-title">More</div>'
+        '<div class="mobile-page-sub">Model information and app notes.</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="cfb-info-grid"><div><span>APP</span><b>2.1.1 Label Language</b></div>'
+        f'<div><span>MODEL</span><b>{html.escape(MODEL_VERSION)}</b></div></div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Model details & limitations", expanded=False):
+        st.write("The interface is redesigned, while the projection, calibration, FCS protection, longshot guard, and grading rules are preserved.")
+    with st.expander("Workflow", expanded=False):
+        st.write("Home is single-game analysis. Bets runs the ranked full slate. Live shows scores. Tracker freezes Best Bet / Bet recommendations and grades them.")
+
+main_view = st.radio(
+    "Main view",
+    ["Home", "Live", "Tracker", "Bets", "More"],
     horizontal=True,
-    index=0,
+    label_visibility="collapsed",
+    key="cfb_main_navigation",
 )
 
+if main_view == "Live":
+    _render_cfb_live_page(daily)
+    st.stop()
+if main_view == "Tracker":
+    _render_cfb_tracker_page(daily, selected_date)
+    st.stop()
+if main_view == "More":
+    _render_more_page()
+    st.stop()
+
+run_mode = "Full Slate" if main_view == "Bets" else "Single Game"
+
 if run_mode == "Full Slate":
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">FULL SLATE</div>'
+        '<div class="mobile-page-title">Slate</div>'
+        '<div class="mobile-page-sub">Rank the strongest spread, moneyline and total opportunities across the selected slate.</div></div>',
+        unsafe_allow_html=True,
+    )
     slate_choice = st.selectbox(
         "Slate",
         ["Early", "Midday", "Night", "All Day"],
@@ -6579,6 +7360,13 @@ if run_mode == "Full Slate":
         st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
         market_board = _ranked_market_board(slate_df)
+        st.session_state["cfb_latest_market_board"] = market_board.copy()
+        st.session_state["cfb_latest_slate_df"] = slate_df.copy()
+        st.session_state["cfb_latest_slate_name"] = slate_choice
+        st.session_state["cfb_latest_slate_date"] = str(selected_date)
+        _tracked_added = _track_cfb_official_board(market_board, slate_df, selected_date)
+        if _tracked_added:
+            st.toast(f"Tracker froze {_tracked_added} new Best Bet / Bet recommendation(s).")
 
         st.markdown(
             f"""
@@ -6594,7 +7382,7 @@ if run_mode == "Full Slate":
             unsafe_allow_html=True,
         )
         st.markdown('<div class="section-kicker">SLATE BETTING CARD</div>', unsafe_allow_html=True)
-        st.caption("Top Bets ranks official A/B plays by the best combination of win probability, edge, EV and model confidence. Spreads, moneylines and totals all compete for the same list.")
+        st.caption("Top Bets ranks Best Bet and Bet plays by the best combination of win probability, edge, EV and model confidence. Spreads, moneylines and totals all compete for the same list.")
 
         top_n = st.radio(
             "Ranked card size",
@@ -6620,9 +7408,9 @@ if run_mode == "Full Slate":
             st.caption("Ranking favors the most likely profitable bets—not simply the biggest projected EV.")
 
             if len(top_bets) < show_n:
-                st.caption(f"Only {len(top_bets)} A/B bets qualify. The list is not padded with weaker C leans.")
+                st.caption(f"Only {len(top_bets)} Best Bet / Bet plays qualify. The list is not padded with weaker Leans.")
         else:
-            st.info("No A/B bets currently qualify on this slate.")
+            st.info("No Best Bet / Bet plays currently qualify on this slate.")
 
         if len(lean_board):
             with st.expander(f"Next Best Leans • {min(show_n, len(lean_board))}", expanded=False):
@@ -6632,7 +7420,7 @@ if run_mode == "Full Slate":
         a_n = int((market_board["grade"] == "A").sum()) if len(market_board) else 0
         b_n = int((market_board["grade"] == "B").sum()) if len(market_board) else 0
         c_n = int((market_board["grade"] == "C").sum()) if len(market_board) else 0
-        st.caption(f"Slate pool: {a_n} A • {b_n} B • {c_n} C")
+        st.caption(f"Slate pool: {a_n} Best Bet • {b_n} Bet • {c_n} Lean")
 
         st.markdown('<div class="section-kicker">ALL GAMES</div>', unsafe_allow_html=True)
         st.caption("Games are listed in kickoff order. Open any matchup to see its #1 market first, followed by every other available spread, ML and total ranked underneath.")
@@ -6693,7 +7481,7 @@ if run_mode == "Full Slate":
                             {_logo_html(home_logo, home, 34)}
                           </div>
                         </div>
-                        <div class="game-detail-sub">{html.escape(kickoff)} • Best market: {html.escape(best_name)} • Grade {html.escape(grade)}</div>
+                        <div class="game-detail-sub">{html.escape(kickoff)} • Best market: {html.escape(best_name)} • {html.escape(_grade_label_from_grade(grade))}</div>
                         """,
                         unsafe_allow_html=True,
                     )
@@ -7111,10 +7899,10 @@ st.markdown(
 )
 st.markdown(
     '<div class="grade-legend-inline">'
-    '<div class="grade-pill a"><b>A</b>Best Bet</div>'
-    '<div class="grade-pill b"><b>B</b>Bet</div>'
-    '<div class="grade-pill c"><b>C</b>Lean</div>'
-    '<div class="grade-pill d"><b>D</b>Pass</div>'
+    '<div class="grade-pill a"><b>Best Bet</b></div>'
+    '<div class="grade-pill b"><b>Bet</b></div>'
+    '<div class="grade-pill c"><b>Lean</b></div>'
+    '<div class="grade-pill d"><b>Pass</b></div>'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -7162,7 +7950,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     if p.get("fcs_fallback_used", False):
-        st.warning("FCS opponent uses a generic fallback rating. Confidence is reduced and A/B plays are capped at C until better team-specific data is available.")
+        st.warning("FCS opponent uses a generic fallback rating. Confidence is reduced and Best Bet / Bet recommendations are capped at Lean until better team-specific data is available.")
 
         rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
     markets.sort(key=lambda x:(rank[x[0]],x[5]),reverse=True)
@@ -7187,7 +7975,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
             render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
         st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.caption("No A/B/C markets on this game.")
+        st.caption("No Best Bet, Bet, or Lean markets on this game.")
 
     if pass_markets:
         with st.expander(f"Other markets • {len(pass_markets)} pass", expanded=False):
@@ -7243,4 +8031,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v1.6.1-LOGO-HOTFIX • Team-logo scope fix with premium ranked-slate UI.")
+st.caption("CFB Edge • v2.0.0 Mobile UI • Projection and betting logic preserved.")
