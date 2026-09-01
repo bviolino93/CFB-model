@@ -5,6 +5,7 @@ import numpy as np
 import base64
 import html
 import json
+import re
 import streamlit.components.v1 as components
 from datetime import date
 from pathlib import Path
@@ -18,7 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.2.0-APP-CLEANUP"
+MODEL_VERSION = "2.2.1-TRACKER-REGEX-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6699,7 +6700,7 @@ def _parse_cfb_market(market):
     if market.endswith(" ML"):
         team = market[:-3].strip()
         return {"type":"MONEYLINE","pick":team,"side":team,"line":None}
-    m = re.match(r"^(Over|Under)\s+(-?\d+(?:\.\d+)?)$", market, flags=re.I)
+    m = re.match(r"^(Over|Under)\s+(-?\d+(?:\.\d+)?)$", market, flags=re.IGNORECASE)
     if m:
         return {
             "type":"TOTAL",
