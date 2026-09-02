@@ -21,7 +21,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.8.1-DOWNLOAD-BUNDLE"
+MODEL_VERSION = "3.0.0-POINT-IN-TIME-REBUILD"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -327,6 +327,33 @@ def fetch_fbs_teams(api_key, year):
 
 def fetch_venues(api_key):
     return cfbd_get("/venues", api_key, {})
+
+# ===== v3.0 richer-data endpoints =====
+def fetch_core(api_key, year):
+    return cfbd_get("/ratings/core", api_key, {"year": int(year)})
+
+def fetch_fpi(api_key, year):
+    return cfbd_get("/ratings/fpi", api_key, {"year": int(year)})
+
+def fetch_recruiting_teams(api_key, year):
+    return cfbd_get("/recruiting/teams", api_key, {"year": int(year)})
+
+def fetch_portal(api_key, year):
+    return cfbd_get("/player/portal", api_key, {"year": int(year)})
+
+def fetch_advanced_through_week(api_key, year, end_week):
+    if end_week is None or int(end_week) < 1:
+        return []
+    return cfbd_get(
+        "/stats/season/advanced",
+        api_key,
+        {
+            "year": int(year),
+            "endWeek": int(end_week),
+            "excludeGarbageTime": "true",
+            "classification": "fbs",
+        },
+    )
 
 
 def _team_logo_url(data, team):
@@ -5839,6 +5866,839 @@ def get_backtest_model_data(year):
     return load_model_data(API_KEY, int(year))
 
 
+# ===== v3.0 point-in-time CFB rebuild =====
+V3_VERSION = "v3.0.0-point-in-time"
+V3_TRAIN_START = 2018
+V3_RIDGE_ALPHA = 20.0
+V3_MIN_TRAIN_ROWS = 500
+V3_RESIDUAL_CAP_SPREAD = 5.0
+V3_RESIDUAL_CAP_TOTAL = 4.0
+
+
+def _v3_num(v, default=np.nan):
+    try:
+        if v is None or v == "":
+            return default
+        x = float(v)
+        return x if np.isfinite(x) else default
+    except Exception:
+        return default
+
+
+def _v3_map(rows, key="team"):
+    out = {}
+    for r in rows or []:
+        k = r.get(key)
+        if k:
+            out[str(k)] = r
+    return out
+
+
+def _v3_sp_fields(row):
+    row = row or {}
+    off = row.get("offense") or {}
+    deff = row.get("defense") or {}
+    havoc = deff.get("havoc") or {}
+    stx = row.get("specialTeams") or {}
+    return {
+        "rating": _v3_num(row.get("rating")),
+        "off_rating": _v3_num(off.get("rating")),
+        "def_rating": _v3_num(deff.get("rating")),
+        "st_rating": _v3_num(stx.get("rating")),
+        "off_pass": _v3_num(off.get("passing")),
+        "off_rush": _v3_num(off.get("rushing")),
+        "off_success": _v3_num(off.get("success")),
+        "off_expl": _v3_num(off.get("explosiveness")),
+        "off_pace": _v3_num(off.get("pace")),
+        "off_run_rate": _v3_num(off.get("runRate")),
+        "off_standard": _v3_num(off.get("standardDowns")),
+        "off_passing_downs": _v3_num(off.get("passingDowns")),
+        "def_pass": _v3_num(deff.get("passing")),
+        "def_rush": _v3_num(deff.get("rushing")),
+        "def_success": _v3_num(deff.get("success")),
+        "def_expl": _v3_num(deff.get("explosiveness")),
+        "def_standard": _v3_num(deff.get("standardDowns")),
+        "def_passing_downs": _v3_num(deff.get("passingDowns")),
+        "def_havoc": _v3_num(havoc.get("total")),
+    }
+
+
+def _v3_core_fields(row):
+    row = row or {}
+    return {
+        "overall": _v3_num(row.get("overall")),
+        "offense": _v3_num(row.get("offense")),
+        "defense": _v3_num(row.get("defense")),
+    }
+
+
+def _v3_fpi_fields(row):
+    row = row or {}
+    eff = row.get("efficiencies") or {}
+    return {
+        "fpi": _v3_num(row.get("fpi")),
+        "overall": _v3_num(eff.get("overall")),
+        "offense": _v3_num(eff.get("offense")),
+        "defense": _v3_num(eff.get("defense")),
+        "special": _v3_num(eff.get("specialTeams")),
+    }
+
+
+def _v3_adv_fields(row):
+    row = row or {}
+    off = row.get("offense") or {}
+    deff = row.get("defense") or {}
+
+    def split(side, key):
+        return side.get(key) or {}
+
+    op = split(off, "passingPlays")
+    oru = split(off, "rushingPlays")
+    osd = split(off, "standardDowns")
+    opd = split(off, "passingDowns")
+    oh = split(off, "havoc")
+    ofp = split(off, "fieldPosition")
+
+    dp = split(deff, "passingPlays")
+    dru = split(deff, "rushingPlays")
+    dsd = split(deff, "standardDowns")
+    dpd = split(deff, "passingDowns")
+    dh = split(deff, "havoc")
+    dfp = split(deff, "fieldPosition")
+
+    return {
+        "off_ppa": _v3_num(off.get("ppa")),
+        "off_success": _v3_num(off.get("successRate")),
+        "off_expl": _v3_num(off.get("explosiveness")),
+        "off_ppo": _v3_num(off.get("pointsPerOpportunity")),
+        "off_plays": _v3_num(off.get("plays")),
+        "off_drives": _v3_num(off.get("drives")),
+        "off_pass_ppa": _v3_num(op.get("ppa")),
+        "off_pass_success": _v3_num(op.get("successRate")),
+        "off_pass_expl": _v3_num(op.get("explosiveness")),
+        "off_pass_rate": _v3_num(op.get("rate")),
+        "off_rush_ppa": _v3_num(oru.get("ppa")),
+        "off_rush_success": _v3_num(oru.get("successRate")),
+        "off_rush_expl": _v3_num(oru.get("explosiveness")),
+        "off_rush_rate": _v3_num(oru.get("rate")),
+        "off_std_ppa": _v3_num(osd.get("ppa")),
+        "off_std_success": _v3_num(osd.get("successRate")),
+        "off_passdown_ppa": _v3_num(opd.get("ppa")),
+        "off_passdown_success": _v3_num(opd.get("successRate")),
+        "off_line_yards": _v3_num(off.get("lineYards")),
+        "off_stuff_rate": _v3_num(off.get("stuffRate")),
+        "off_power_success": _v3_num(off.get("powerSuccess")),
+        "off_open_field": _v3_num(off.get("openFieldYards")),
+        "off_second_level": _v3_num(off.get("secondLevelYards")),
+        "off_field_start": _v3_num(ofp.get("averageStart")),
+        "off_field_ep": _v3_num(ofp.get("averagePredictedPoints")),
+        "off_havoc": _v3_num(oh.get("total")),
+
+        "def_ppa": _v3_num(deff.get("ppa")),
+        "def_success": _v3_num(deff.get("successRate")),
+        "def_expl": _v3_num(deff.get("explosiveness")),
+        "def_ppo": _v3_num(deff.get("pointsPerOpportunity")),
+        "def_plays": _v3_num(deff.get("plays")),
+        "def_drives": _v3_num(deff.get("drives")),
+        "def_pass_ppa": _v3_num(dp.get("ppa")),
+        "def_pass_success": _v3_num(dp.get("successRate")),
+        "def_pass_expl": _v3_num(dp.get("explosiveness")),
+        "def_rush_ppa": _v3_num(dru.get("ppa")),
+        "def_rush_success": _v3_num(dru.get("successRate")),
+        "def_rush_expl": _v3_num(dru.get("explosiveness")),
+        "def_std_ppa": _v3_num(dsd.get("ppa")),
+        "def_std_success": _v3_num(dsd.get("successRate")),
+        "def_passdown_ppa": _v3_num(dpd.get("ppa")),
+        "def_passdown_success": _v3_num(dpd.get("successRate")),
+        "def_line_yards": _v3_num(deff.get("lineYards")),
+        "def_stuff_rate": _v3_num(deff.get("stuffRate")),
+        "def_power_success": _v3_num(deff.get("powerSuccess")),
+        "def_open_field": _v3_num(deff.get("openFieldYards")),
+        "def_second_level": _v3_num(deff.get("secondLevelYards")),
+        "def_field_start": _v3_num(dfp.get("averageStart")),
+        "def_field_ep": _v3_num(dfp.get("averagePredictedPoints")),
+        "def_havoc": _v3_num(dh.get("total")),
+    }
+
+
+def _v3_portal_team_map(rows):
+    out = {}
+    for r in rows or []:
+        rating = _v3_num(r.get("rating"), 0.0)
+        stars = _v3_num(r.get("stars"), 0.0)
+        origin = r.get("origin")
+        dest = r.get("destination")
+
+        if origin:
+            x = out.setdefault(str(origin), {
+                "in_count": 0, "out_count": 0,
+                "in_rating": 0.0, "out_rating": 0.0,
+                "in_stars": 0.0, "out_stars": 0.0,
+            })
+            x["out_count"] += 1
+            x["out_rating"] += rating
+            x["out_stars"] += stars
+        if dest:
+            x = out.setdefault(str(dest), {
+                "in_count": 0, "out_count": 0,
+                "in_rating": 0.0, "out_rating": 0.0,
+                "in_stars": 0.0, "out_stars": 0.0,
+            })
+            x["in_count"] += 1
+            x["in_rating"] += rating
+            x["in_stars"] += stars
+
+    for team, x in out.items():
+        x["net_count"] = x["in_count"] - x["out_count"]
+        x["net_rating"] = x["in_rating"] - x["out_rating"]
+        x["net_stars"] = x["in_stars"] - x["out_stars"]
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _v3_preseason_data(year):
+    """
+    Only information knowable before or at the start of the target season:
+    prior-season ratings/advanced data plus current recruiting, talent,
+    returning production and portal movement.
+    """
+    y = int(year)
+    prev_sp = _v3_map(_safe_fetch(fetch_sp, API_KEY, y - 1))
+    prev_core = _v3_map(_safe_fetch(fetch_core, API_KEY, y - 1))
+    prev_fpi = _v3_map(_safe_fetch(fetch_fpi, API_KEY, y - 1))
+    prev_adv = _v3_map(_safe_fetch(fetch_advanced, API_KEY, y - 1))
+    talent = _v3_map(_safe_fetch(fetch_talent, API_KEY, y))
+    returning = _v3_map(_safe_fetch(fetch_returning, API_KEY, y))
+    recruiting = _v3_map(_safe_fetch(fetch_recruiting_teams, API_KEY, y))
+    portal = _v3_portal_team_map(_safe_fetch(fetch_portal, API_KEY, y))
+    return {
+        "prev_sp": prev_sp,
+        "prev_core": prev_core,
+        "prev_fpi": prev_fpi,
+        "prev_adv": prev_adv,
+        "talent": talent,
+        "returning": returning,
+        "recruiting": recruiting,
+        "portal": portal,
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _v3_advanced_through(year, end_week):
+    if int(end_week) < 1:
+        return {}
+    return _v3_map(_safe_fetch(fetch_advanced_through_week, API_KEY, int(year), int(end_week)))
+
+
+def _v3_team_snapshot(team, preseason, current_adv):
+    t = str(team)
+    sp = _v3_sp_fields((preseason["prev_sp"] or {}).get(t))
+    core = _v3_core_fields((preseason["prev_core"] or {}).get(t))
+    fpi = _v3_fpi_fields((preseason["prev_fpi"] or {}).get(t))
+    pa = _v3_adv_fields((preseason["prev_adv"] or {}).get(t))
+    ca = _v3_adv_fields((current_adv or {}).get(t))
+    talent = (preseason["talent"] or {}).get(t) or {}
+    ret = (preseason["returning"] or {}).get(t) or {}
+    rec = (preseason["recruiting"] or {}).get(t) or {}
+    portal = (preseason["portal"] or {}).get(t) or {}
+    return {
+        "sp": sp,
+        "core": core,
+        "fpi": fpi,
+        "prior_adv": pa,
+        "cur_adv": ca,
+        "talent": _v3_num(talent.get("talent")),
+        "returning_ppa": _v3_num(ret.get("percentPPA")),
+        "returning_pass": _v3_num(ret.get("percentPassingPPA")),
+        "returning_rush": _v3_num(ret.get("percentRushingPPA")),
+        "returning_usage": _v3_num(ret.get("usage")),
+        "recruit_points": _v3_num(rec.get("points")),
+        "recruit_rank": _v3_num(rec.get("rank")),
+        "portal_net_count": _v3_num(portal.get("net_count"), 0.0),
+        "portal_net_rating": _v3_num(portal.get("net_rating"), 0.0),
+        "portal_net_stars": _v3_num(portal.get("net_stars"), 0.0),
+    }
+
+
+def _v3_diff(row, h, a, key):
+    return _v3_num(h.get(key)) - _v3_num(a.get(key))
+
+
+def _v3_matchup(home_adv, away_adv, prefix="cur"):
+    """
+    Margin-oriented matchup features: home offense vs away defense minus
+    away offense vs home defense. Positive generally favors the home team.
+    """
+    def n(d, k):
+        return _v3_num(d.get(k))
+
+    return {
+        f"{prefix}_ppa_match": (n(home_adv, "off_ppa") - n(away_adv, "def_ppa")) - (n(away_adv, "off_ppa") - n(home_adv, "def_ppa")),
+        f"{prefix}_pass_ppa_match": (n(home_adv, "off_pass_ppa") - n(away_adv, "def_pass_ppa")) - (n(away_adv, "off_pass_ppa") - n(home_adv, "def_pass_ppa")),
+        f"{prefix}_rush_ppa_match": (n(home_adv, "off_rush_ppa") - n(away_adv, "def_rush_ppa")) - (n(away_adv, "off_rush_ppa") - n(home_adv, "def_rush_ppa")),
+        f"{prefix}_success_match": (n(home_adv, "off_success") - n(away_adv, "def_success")) - (n(away_adv, "off_success") - n(home_adv, "def_success")),
+        f"{prefix}_pass_success_match": (n(home_adv, "off_pass_success") - n(away_adv, "def_pass_success")) - (n(away_adv, "off_pass_success") - n(home_adv, "def_pass_success")),
+        f"{prefix}_rush_success_match": (n(home_adv, "off_rush_success") - n(away_adv, "def_rush_success")) - (n(away_adv, "off_rush_success") - n(home_adv, "def_rush_success")),
+        f"{prefix}_expl_match": (n(home_adv, "off_expl") - n(away_adv, "def_expl")) - (n(away_adv, "off_expl") - n(home_adv, "def_expl")),
+        f"{prefix}_std_match": (n(home_adv, "off_std_ppa") - n(away_adv, "def_std_ppa")) - (n(away_adv, "off_std_ppa") - n(home_adv, "def_std_ppa")),
+        f"{prefix}_passdown_match": (n(home_adv, "off_passdown_ppa") - n(away_adv, "def_passdown_ppa")) - (n(away_adv, "off_passdown_ppa") - n(home_adv, "def_passdown_ppa")),
+        f"{prefix}_line_match": (n(home_adv, "off_line_yards") - n(away_adv, "def_line_yards")) - (n(away_adv, "off_line_yards") - n(home_adv, "def_line_yards")),
+        f"{prefix}_stuff_match": (n(away_adv, "def_stuff_rate") - n(home_adv, "off_stuff_rate")) - (n(home_adv, "def_stuff_rate") - n(away_adv, "off_stuff_rate")),
+        f"{prefix}_ppo_match": (n(home_adv, "off_ppo") - n(away_adv, "def_ppo")) - (n(away_adv, "off_ppo") - n(home_adv, "def_ppo")),
+        f"{prefix}_havoc_diff": n(home_adv, "def_havoc") - n(away_adv, "def_havoc"),
+        f"{prefix}_field_pos_diff": n(home_adv, "off_field_ep") - n(away_adv, "off_field_ep"),
+        f"{prefix}_pace_sum": (
+            n(home_adv, "off_plays") / max(n(home_adv, "off_drives"), 1.0)
+            + n(away_adv, "off_plays") / max(n(away_adv, "off_drives"), 1.0)
+        ),
+    }
+
+
+def _v3_total_context(home_adv, away_adv, prefix="cur"):
+    def n(d, k):
+        return _v3_num(d.get(k))
+    return {
+        f"{prefix}_total_ppa": n(home_adv, "off_ppa") + n(away_adv, "off_ppa") + n(home_adv, "def_ppa") + n(away_adv, "def_ppa"),
+        f"{prefix}_total_success": n(home_adv, "off_success") + n(away_adv, "off_success") + n(home_adv, "def_success") + n(away_adv, "def_success"),
+        f"{prefix}_total_expl": n(home_adv, "off_expl") + n(away_adv, "off_expl") + n(home_adv, "def_expl") + n(away_adv, "def_expl"),
+        f"{prefix}_total_ppo": n(home_adv, "off_ppo") + n(away_adv, "off_ppo") + n(home_adv, "def_ppo") + n(away_adv, "def_ppo"),
+        f"{prefix}_total_pass": n(home_adv, "off_pass_ppa") + n(away_adv, "off_pass_ppa") + n(home_adv, "def_pass_ppa") + n(away_adv, "def_pass_ppa"),
+        f"{prefix}_total_rush": n(home_adv, "off_rush_ppa") + n(away_adv, "off_rush_ppa") + n(home_adv, "def_rush_ppa") + n(away_adv, "def_rush_ppa"),
+        f"{prefix}_total_pace": (
+            n(home_adv, "off_plays") / max(n(home_adv, "off_drives"), 1.0)
+            + n(away_adv, "off_plays") / max(n(away_adv, "off_drives"), 1.0)
+        ),
+        f"{prefix}_total_havoc": n(home_adv, "def_havoc") + n(away_adv, "def_havoc"),
+    }
+
+
+def _v3_game_feature_row(game, market, preseason, current_adv):
+    home = game.get("homeTeam")
+    away = game.get("awayTeam")
+    hs = _v3_team_snapshot(home, preseason, current_adv)
+    as_ = _v3_team_snapshot(away, preseason, current_adv)
+
+    week = int(game.get("week") or 1)
+    neutral = 1.0 if bool(game.get("neutralSite")) else 0.0
+    hfa = 0.0 if neutral else DEFAULT_HFA
+
+    row = {
+        "season": int(game.get("season") or 0),
+        "week": week,
+        "game_id": game.get("id"),
+        "home_team": home,
+        "away_team": away,
+        "home_points": _v3_num(game.get("homePoints")),
+        "away_points": _v3_num(game.get("awayPoints")),
+        "actual_margin": _v3_num(game.get("homePoints")) - _v3_num(game.get("awayPoints")),
+        "actual_total": _v3_num(game.get("homePoints")) + _v3_num(game.get("awayPoints")),
+        "market_margin": -_v3_num(market.get("home_spread")) if market and market.get("home_spread") is not None else np.nan,
+        "market_total": _v3_num(market.get("total")) if market else np.nan,
+        "week_num": float(week),
+        "early_week": 1.0 if week <= 3 else 0.0,
+        "hfa": float(hfa),
+        "neutral": neutral,
+        "conference_game": 1.0 if bool(game.get("conferenceGame")) else 0.0,
+        "home_pregame_elo": _v3_num(game.get("homePregameElo")),
+        "away_pregame_elo": _v3_num(game.get("awayPregameElo")),
+        "elo_diff": _v3_num(game.get("homePregameElo")) - _v3_num(game.get("awayPregameElo")),
+        "talent_diff": hs["talent"] - as_["talent"],
+        "returning_ppa_diff": hs["returning_ppa"] - as_["returning_ppa"],
+        "returning_pass_diff": hs["returning_pass"] - as_["returning_pass"],
+        "returning_rush_diff": hs["returning_rush"] - as_["returning_rush"],
+        "returning_usage_diff": hs["returning_usage"] - as_["returning_usage"],
+        "recruit_points_diff": hs["recruit_points"] - as_["recruit_points"],
+        "recruit_rank_diff": as_["recruit_rank"] - hs["recruit_rank"],  # positive = better home rank
+        "portal_net_count_diff": hs["portal_net_count"] - as_["portal_net_count"],
+        "portal_net_rating_diff": hs["portal_net_rating"] - as_["portal_net_rating"],
+        "portal_net_stars_diff": hs["portal_net_stars"] - as_["portal_net_stars"],
+    }
+
+    # Prior rating differentials.
+    for k in [
+        "rating","off_rating","def_rating","st_rating","off_pass","off_rush",
+        "off_success","off_expl","off_pace","off_standard","off_passing_downs",
+        "def_pass","def_rush","def_success","def_expl","def_standard",
+        "def_passing_downs","def_havoc",
+    ]:
+        row[f"sp_{k}_diff"] = _v3_num(hs["sp"].get(k)) - _v3_num(as_["sp"].get(k))
+
+    for k in ["overall","offense","defense"]:
+        row[f"core_{k}_diff"] = _v3_num(hs["core"].get(k)) - _v3_num(as_["core"].get(k))
+
+    for k in ["fpi","overall","offense","defense","special"]:
+        row[f"fpi_{k}_diff"] = _v3_num(hs["fpi"].get(k)) - _v3_num(as_["fpi"].get(k))
+
+    row.update(_v3_matchup(hs["prior_adv"], as_["prior_adv"], "prior"))
+    row.update(_v3_matchup(hs["cur_adv"], as_["cur_adv"], "cur"))
+    row.update(_v3_total_context(hs["prior_adv"], as_["prior_adv"], "prior"))
+    row.update(_v3_total_context(hs["cur_adv"], as_["cur_adv"], "cur"))
+
+    return row
+
+
+V3_MARGIN_FEATURES = [
+    "week_num","early_week","hfa","neutral","conference_game","elo_diff",
+    "sp_rating_diff","sp_off_rating_diff","sp_def_rating_diff","sp_st_rating_diff",
+    "sp_off_pass_diff","sp_off_rush_diff","sp_def_pass_diff","sp_def_rush_diff",
+    "sp_off_success_diff","sp_def_success_diff","sp_off_expl_diff","sp_def_expl_diff",
+    "sp_def_havoc_diff",
+    "core_overall_diff","core_offense_diff","core_defense_diff",
+    "fpi_fpi_diff","fpi_offense_diff","fpi_defense_diff","fpi_special_diff",
+    "talent_diff","returning_ppa_diff","returning_pass_diff","returning_rush_diff",
+    "returning_usage_diff","recruit_points_diff","recruit_rank_diff",
+    "portal_net_count_diff","portal_net_rating_diff","portal_net_stars_diff",
+    "prior_ppa_match","prior_pass_ppa_match","prior_rush_ppa_match",
+    "prior_success_match","prior_expl_match","prior_std_match","prior_passdown_match",
+    "prior_line_match","prior_stuff_match","prior_ppo_match","prior_havoc_diff",
+    "cur_ppa_match","cur_pass_ppa_match","cur_rush_ppa_match",
+    "cur_success_match","cur_pass_success_match","cur_rush_success_match",
+    "cur_expl_match","cur_std_match","cur_passdown_match","cur_line_match",
+    "cur_stuff_match","cur_ppo_match","cur_havoc_diff","cur_field_pos_diff",
+]
+
+V3_TOTAL_FEATURES = [
+    "week_num","early_week","neutral",
+    "sp_off_pace_diff",
+    "prior_total_ppa","prior_total_success","prior_total_expl","prior_total_ppo",
+    "prior_total_pass","prior_total_rush","prior_total_pace","prior_total_havoc",
+    "cur_total_ppa","cur_total_success","cur_total_expl","cur_total_ppo",
+    "cur_total_pass","cur_total_rush","cur_total_pace","cur_total_havoc",
+    "talent_diff","returning_ppa_diff","recruit_points_diff",
+]
+
+
+def _v3_impute_train_test(train_df, test_df, features, min_coverage=0.45):
+    usable = []
+    medians = {}
+    for f in features:
+        if f not in train_df.columns or f not in test_df.columns:
+            continue
+        tr = pd.to_numeric(train_df[f], errors="coerce")
+        coverage = float(tr.notna().mean()) if len(tr) else 0.0
+        if coverage < min_coverage:
+            continue
+        med = float(tr.median()) if tr.notna().any() else 0.0
+        usable.append(f)
+        medians[f] = med
+
+    if not usable:
+        return None, None, []
+
+    Xtr = np.column_stack([
+        pd.to_numeric(train_df[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    Xte = np.column_stack([
+        pd.to_numeric(test_df[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    return Xtr, Xte, usable
+
+
+def _v3_ridge_predict(train_df, test_df, features, target, alpha=V3_RIDGE_ALPHA):
+    tr = train_df.dropna(subset=[target]).copy()
+    te = test_df.dropna(subset=[target]).copy()
+    if len(tr) < V3_MIN_TRAIN_ROWS or te.empty:
+        return None
+
+    Xtr, Xte, usable = _v3_impute_train_test(tr, te, features)
+    if Xtr is None or len(usable) < 5:
+        return None
+
+    ytr = pd.to_numeric(tr[target], errors="coerce").to_numpy(dtype=float)
+    fit = _ridge_fit_numpy(Xtr, ytr, alpha)
+    preds = np.array([_ridge_predict_numpy(fit, x) for x in Xte], dtype=float)
+    return {
+        "preds": preds,
+        "test_index": te.index.to_numpy(),
+        "usable_features": usable,
+        "n_train": len(tr),
+        "n_test": len(te),
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _v3_history_frame(start_year, end_year, scope):
+    """
+    Build a true point-in-time game frame.
+    For a Week N game, current-season advanced stats are aggregated only
+    through Week N-1. Pregame Elo comes directly from the historical game row.
+    """
+    rows = []
+    for year in range(int(start_year), int(end_year) + 1):
+        games = get_backtest_games(year)
+        line_payload = get_backtest_lines(year)
+        preseason = _v3_preseason_data(year)
+
+        line_index = {}
+        for lr in line_payload or []:
+            gid = lr.get("id")
+            if gid is None:
+                continue
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            line_index[key] = normalize_game_lines([lr], game_id=gid)
+
+        weeks = sorted(set(
+            int(g.get("week") or 1)
+            for g in games or []
+            if g.get("completed") is True
+        ))
+
+        adv_by_week = {}
+        for w in weeks:
+            adv_by_week[w] = _v3_advanced_through(year, w - 1)
+
+        for g in games or []:
+            if g.get("completed") is not True:
+                continue
+            if g.get("homePoints") is None or g.get("awayPoints") is None:
+                continue
+            if not _bt_game_scope(g, scope):
+                continue
+
+            gid = g.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            market = _bt_consensus_line(line_index.get(key, []))
+            if not market:
+                continue
+
+            w = int(g.get("week") or 1)
+            try:
+                rows.append(_v3_game_feature_row(
+                    g, market, preseason, adv_by_week.get(w, {})
+                ))
+            except Exception:
+                continue
+
+    return pd.DataFrame(rows)
+
+
+def _v3_model_suite(history, test_seasons):
+    if history is None or history.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    result_rows = []
+    pred_rows = []
+
+    for season in sorted(set(int(s) for s in test_seasons)):
+        train = history[history["season"].astype(int) < season].copy()
+        test = history[history["season"].astype(int) == season].copy()
+        if test.empty:
+            continue
+
+        # Direct football margin.
+        direct_sp = _v3_ridge_predict(
+            train, test, V3_MARGIN_FEATURES, "actual_margin"
+        )
+
+        # Market residual margin.
+        train_sp_resid = train.copy()
+        test_sp_resid = test.copy()
+        train_sp_resid["spread_residual_target"] = (
+            pd.to_numeric(train_sp_resid["actual_margin"], errors="coerce")
+            - pd.to_numeric(train_sp_resid["market_margin"], errors="coerce")
+        )
+        test_sp_resid["spread_residual_target"] = (
+            pd.to_numeric(test_sp_resid["actual_margin"], errors="coerce")
+            - pd.to_numeric(test_sp_resid["market_margin"], errors="coerce")
+        )
+        residual_sp_features = V3_MARGIN_FEATURES + [
+            "market_margin",
+        ]
+        resid_sp = _v3_ridge_predict(
+            train_sp_resid, test_sp_resid, residual_sp_features,
+            "spread_residual_target"
+        )
+
+        # Direct football total.
+        direct_tot = _v3_ridge_predict(
+            train, test, V3_TOTAL_FEATURES, "actual_total"
+        )
+
+        # Market residual total.
+        train_tot_resid = train.copy()
+        test_tot_resid = test.copy()
+        train_tot_resid["total_residual_target"] = (
+            pd.to_numeric(train_tot_resid["actual_total"], errors="coerce")
+            - pd.to_numeric(train_tot_resid["market_total"], errors="coerce")
+        )
+        test_tot_resid["total_residual_target"] = (
+            pd.to_numeric(test_tot_resid["actual_total"], errors="coerce")
+            - pd.to_numeric(test_tot_resid["market_total"], errors="coerce")
+        )
+        residual_tot_features = V3_TOTAL_FEATURES + ["market_total"]
+        resid_tot = _v3_ridge_predict(
+            train_tot_resid, test_tot_resid, residual_tot_features,
+            "total_residual_target"
+        )
+
+        # Common scoring helper.
+        def add_market_rows(market_type, target_col, market_col):
+            ss = test.dropna(subset=[target_col, market_col]).copy()
+            if ss.empty:
+                return
+            y = pd.to_numeric(ss[target_col], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ss[market_col], errors="coerce").to_numpy(dtype=float)
+            mae = float(np.mean(np.abs(y - m)))
+            result_rows.append({
+                "Market": market_type,
+                "Model": "A · Market Control",
+                "Season": season,
+                "Games": len(ss),
+                "MAE": mae,
+                "Improvement vs Market": 0.0,
+            })
+
+        add_market_rows("SPREAD", "actual_margin", "market_margin")
+        add_market_rows("TOTAL", "actual_total", "market_total")
+
+        if direct_sp is not None:
+            ss = test.loc[direct_sp["test_index"]].copy()
+            y = pd.to_numeric(ss["actual_margin"], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ss["market_margin"], errors="coerce").to_numpy(dtype=float)
+            p = direct_sp["preds"]
+            model_mae = float(np.mean(np.abs(y - p)))
+            market_mae = float(np.mean(np.abs(y - m)))
+            result_rows.append({
+                "Market": "SPREAD",
+                "Model": "B · Football Direct",
+                "Season": season,
+                "Games": len(ss),
+                "MAE": model_mae,
+                "Improvement vs Market": market_mae - model_mae,
+            })
+            for idx, yy, mm, pp in zip(ss.index, y, m, p):
+                pred_rows.append({
+                    "market_type": "spread", "model": "B · Football Direct",
+                    "season": season, "row_index": int(idx),
+                    "actual": yy, "market": mm, "prediction": pp,
+                    "abs_error": abs(yy - pp),
+                })
+
+        if resid_sp is not None:
+            ss = test_sp_resid.loc[resid_sp["test_index"]].copy()
+            y = pd.to_numeric(ss["actual_margin"], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ss["market_margin"], errors="coerce").to_numpy(dtype=float)
+            corr = np.clip(resid_sp["preds"], -V3_RESIDUAL_CAP_SPREAD, V3_RESIDUAL_CAP_SPREAD)
+            p = m + corr
+            model_mae = float(np.mean(np.abs(y - p)))
+            market_mae = float(np.mean(np.abs(y - m)))
+            result_rows.append({
+                "Market": "SPREAD",
+                "Model": "C · Point-in-Time Hybrid",
+                "Season": season,
+                "Games": len(ss),
+                "MAE": model_mae,
+                "Improvement vs Market": market_mae - model_mae,
+            })
+            for idx, yy, mm, pp, cc in zip(ss.index, y, m, p, corr):
+                pred_rows.append({
+                    "market_type": "spread", "model": "C · Point-in-Time Hybrid",
+                    "season": season, "row_index": int(idx),
+                    "actual": yy, "market": mm, "prediction": pp,
+                    "correction": cc, "abs_error": abs(yy - pp),
+                })
+
+        if direct_tot is not None:
+            ss = test.loc[direct_tot["test_index"]].copy()
+            y = pd.to_numeric(ss["actual_total"], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ss["market_total"], errors="coerce").to_numpy(dtype=float)
+            p = direct_tot["preds"]
+            model_mae = float(np.mean(np.abs(y - p)))
+            market_mae = float(np.mean(np.abs(y - m)))
+            result_rows.append({
+                "Market": "TOTAL",
+                "Model": "B · Football Direct",
+                "Season": season,
+                "Games": len(ss),
+                "MAE": model_mae,
+                "Improvement vs Market": market_mae - model_mae,
+            })
+
+        if resid_tot is not None:
+            ss = test_tot_resid.loc[resid_tot["test_index"]].copy()
+            y = pd.to_numeric(ss["actual_total"], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ss["market_total"], errors="coerce").to_numpy(dtype=float)
+            corr = np.clip(resid_tot["preds"], -V3_RESIDUAL_CAP_TOTAL, V3_RESIDUAL_CAP_TOTAL)
+            p = m + corr
+            model_mae = float(np.mean(np.abs(y - p)))
+            market_mae = float(np.mean(np.abs(y - m)))
+            result_rows.append({
+                "Market": "TOTAL",
+                "Model": "C · Point-in-Time Hybrid",
+                "Season": season,
+                "Games": len(ss),
+                "MAE": model_mae,
+                "Improvement vs Market": market_mae - model_mae,
+            })
+
+    return pd.DataFrame(result_rows), pd.DataFrame(pred_rows)
+
+
+def _v3_summary(results, holdout):
+    if results is None or results.empty:
+        return pd.DataFrame()
+    rows = []
+    for (market, model_name), g in results.groupby(["Market", "Model"]):
+        overall = float(np.average(
+            pd.to_numeric(g["MAE"], errors="coerce"),
+            weights=pd.to_numeric(g["Games"], errors="coerce"),
+        ))
+        avg_impr = float(np.average(
+            pd.to_numeric(g["Improvement vs Market"], errors="coerce"),
+            weights=pd.to_numeric(g["Games"], errors="coerce"),
+        ))
+        h = g[g["Season"].astype(int) == int(holdout)]
+        hold_mae = float(h.iloc[0]["MAE"]) if not h.empty else np.nan
+        hold_impr = float(h.iloc[0]["Improvement vs Market"]) if not h.empty else np.nan
+        wins = int((pd.to_numeric(g["Improvement vs Market"], errors="coerce") > 0).sum())
+        n = int(len(g))
+
+        if model_name == "A · Market Control":
+            status = "CONTROL"
+        elif (
+            market == "SPREAD"
+            and n >= 3
+            and wins >= max(2, n - 1)
+            and avg_impr > 0
+            and pd.notna(hold_impr) and hold_impr > 0
+        ):
+            status = "PROMOTION REVIEW"
+        elif avg_impr > 0:
+            status = "RESEARCH POSITIVE"
+        else:
+            status = "RESEARCH"
+
+        rows.append({
+            "Market": market,
+            "Model": model_name,
+            "Overall MAE": overall,
+            "Weighted Improvement": avg_impr,
+            f"{holdout} Holdout MAE": hold_mae,
+            f"{holdout} Holdout Improvement": hold_impr,
+            "Seasons Beat Market": f"{wins}/{n}",
+            "Status": status,
+        })
+    return pd.DataFrame(rows)
+
+
+def _v3_data_readiness(history):
+    if history is None or history.empty:
+        return pd.DataFrame()
+    checks = {
+        "Pregame Elo": ["elo_diff"],
+        "Prior SP+": ["sp_rating_diff"],
+        "Prior CORE": ["core_overall_diff"],
+        "Prior FPI": ["fpi_fpi_diff"],
+        "Talent": ["talent_diff"],
+        "Returning production": ["returning_ppa_diff"],
+        "Recruiting": ["recruit_points_diff"],
+        "Transfer portal": ["portal_net_rating_diff"],
+        "Prior advanced": ["prior_ppa_match", "prior_success_match"],
+        "Point-in-time advanced": ["cur_ppa_match", "cur_success_match", "cur_line_match"],
+        "Historical market": ["market_margin", "market_total"],
+    }
+    rows = []
+    for label, cols in checks.items():
+        vals = []
+        for c in cols:
+            if c in history.columns:
+                vals.append(float(pd.to_numeric(history[c], errors="coerce").notna().mean()))
+        coverage = float(np.mean(vals)) if vals else 0.0
+        rows.append({
+            "Data Source": label,
+            "Coverage": coverage,
+            "Status": "READY" if coverage >= 0.80 else ("PARTIAL" if coverage >= 0.35 else "MISSING"),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v3_point_in_time_lab(test_seasons_tuple, scope, holdout, train_start):
+    test_seasons = sorted(set(int(s) for s in test_seasons_tuple))
+    end_year = max(test_seasons)
+    start_year = min(int(train_start), min(test_seasons) - 1)
+    history = _v3_history_frame(start_year, end_year, scope)
+    results, preds = _v3_model_suite(history, test_seasons)
+    summary = _v3_summary(results, holdout)
+    readiness = _v3_data_readiness(history)
+    return history, results, summary, preds, readiness
+
+
+def _render_v3_lab(history, results, summary, preds, readiness, holdout):
+    st.markdown("#### v3.0 Point-in-Time Rebuild")
+    st.caption(
+        "This is the first validation layer that uses current-season advanced stats only through the week BEFORE each historical game, "
+        "plus pregame Elo and preseason-safe roster/recruiting/portal priors."
+    )
+
+    if summary is None or summary.empty:
+        st.info("Run the v3.0 lab to build the richer point-in-time historical feature set.")
+        return
+
+    st.markdown("##### Data readiness")
+    rshow = readiness.copy()
+    rshow["Coverage"] = rshow["Coverage"].map(lambda v: f"{100*v:.1f}%")
+    st.dataframe(rshow, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Model comparison")
+    sshow = summary.copy()
+    for c in [
+        "Overall MAE", "Weighted Improvement",
+        f"{holdout} Holdout MAE", f"{holdout} Holdout Improvement",
+    ]:
+        if c in sshow.columns:
+            sshow[c] = sshow[c].map(
+                lambda v: f"{v:+.4f}" if "Improvement" in c else (f"{v:.4f}" if pd.notna(v) else "—")
+            )
+    st.dataframe(sshow, use_container_width=True, hide_index=True)
+
+    promo = summary[
+        (summary["Market"] == "SPREAD") &
+        (summary["Status"] == "PROMOTION REVIEW")
+    ]
+    if not promo.empty:
+        st.success(
+            "At least one v3 spread architecture passed the locked projection screen. "
+            "Do not change live betting thresholds yet; the next step is ATS calibration and confirmation."
+        )
+    else:
+        st.warning(
+            "No v3 spread architecture passed the locked projection screen yet. "
+            "The richer data may still improve specific calibrated betting signals, but there is no automatic promotion."
+        )
+
+    with st.expander("Season-by-season v3 results", expanded=False):
+        x = results.copy()
+        x["MAE"] = x["MAE"].map(lambda v: f"{v:.4f}")
+        x["Improvement vs Market"] = x["Improvement vs Market"].map(lambda v: f"{v:+.4f}")
+        st.dataframe(x, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.0 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v300_summary.csv": summary,
+            "cfb_v300_seasons.csv": results,
+            "cfb_v300_predictions.csv": preds,
+            "cfb_v300_data_readiness.csv": readiness,
+            "cfb_v300_history_features.csv": history,
+        })
+        st.download_button(
+            "Download All v3.0 Files",
+            data=bundle,
+            file_name="cfb_v300_point_in_time_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v300_all",
+        )
+        st.caption("One ZIP contains every file needed for review.")
+
 # ===== v2.4 current-production spread / total validation =====
 
 VALIDATION_GAP_BUCKETS = [
@@ -7663,8 +8523,8 @@ def _format_validation_bets(df):
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
-        '<div class="mobile-page-title">Spread + Total + Feature + Sparse + Situational Audit</div>'
-        '<div class="mobile-page-sub">Walk-forward market-baseline validation, feature ablation, sparse-model bake-off, situational discovery, and same-game matched comparisons. Every test season uses only earlier seasons.</div></div>',
+        '<div class="mobile-page-title">Spread + Total + Feature + Sparse + Situational + v3 Point-in-Time</div>'
+        '<div class="mobile-page-sub">Walk-forward validation now includes a v3 point-in-time rebuild using weekly pregame advanced stats, pregame Elo and richer preseason roster priors. Every test season uses only earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -7918,6 +8778,70 @@ def _render_model_validation_page():
         matched_seasons,
         matched_summary,
         matched_detail,
+        holdout,
+    )
+
+    st.markdown("### 10. v3.0 Point-in-Time Model Lab")
+    st.caption(
+        "Major rebuild: true pregame weekly advanced stats, pregame Elo, prior SP+/CORE/FPI, talent, returning production, recruiting and transfer portal."
+    )
+    v3_train_start = st.selectbox(
+        "v3 training history start",
+        options=[2016, 2017, 2018, 2019, 2021],
+        index=2,
+        key="v3_train_start",
+        help="2018 is the recommended balance of sample size and modern-era relevance. 2020 remains in the history unless you start at 2021.",
+    )
+    st.caption(
+        "The first run can use a meaningful number of CFBD API calls because advanced stats are rebuilt through Week N-1 for each season/week. Results are cached."
+    )
+
+    if st.button(
+        "Run v3.0 Point-in-Time Lab",
+        use_container_width=True,
+        key="run_v300_point_in_time_lab",
+    ):
+        v3prog = st.progress(0, text="Building leakage-safe weekly history…")
+        try:
+            v3prog.progress(0.20, text="Loading preseason priors and historical markets…")
+            (
+                v3_history,
+                v3_results,
+                v3_summary,
+                v3_preds,
+                v3_readiness,
+            ) = _run_v3_point_in_time_lab(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v3prog.progress(1.0, text="v3.0 point-in-time lab complete.")
+        except Exception as e:
+            v3prog.empty()
+            st.error(f"v3.0 lab failed: {e}")
+            st.exception(e)
+        else:
+            v3prog.empty()
+            st.session_state["cfb_v300_history"] = v3_history
+            st.session_state["cfb_v300_results"] = v3_results
+            st.session_state["cfb_v300_summary"] = v3_summary
+            st.session_state["cfb_v300_preds"] = v3_preds
+            st.session_state["cfb_v300_readiness"] = v3_readiness
+            st.success("v3.0 point-in-time rebuild complete.")
+
+    v3_history = st.session_state.get("cfb_v300_history", pd.DataFrame())
+    v3_results = st.session_state.get("cfb_v300_results", pd.DataFrame())
+    v3_summary = st.session_state.get("cfb_v300_summary", pd.DataFrame())
+    v3_preds = st.session_state.get("cfb_v300_preds", pd.DataFrame())
+    v3_readiness = st.session_state.get("cfb_v300_readiness", pd.DataFrame())
+
+    _render_v3_lab(
+        v3_history,
+        v3_results,
+        v3_summary,
+        v3_preds,
+        v3_readiness,
         holdout,
     )
 
@@ -10697,4 +11621,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v2.8.1 Download Bundle • One-tap validation exports • Totals research-only.")
+st.caption("CFB Edge • v3.0.0 Point-in-Time Rebuild • Weekly pregame features • Live logic unchanged pending validation.")

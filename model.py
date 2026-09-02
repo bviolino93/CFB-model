@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.3-DOWNLOAD-BUNDLE"
+MODEL_VERSION = "1.0.0-POINT-IN-TIME-REBUILD"
 
 DEFAULT_HFA = 2.5
 
@@ -702,3 +702,10 @@ SITUATIONAL_DISCOVERY_VERSION = "v2.8.0-situational-discovery"
 # v2.8.1 UX note:
 # Validation output can now be downloaded as a single ZIP bundle from app.py.
 DOWNLOAD_BUNDLE_VERSION = "v2.8.1-download-bundle"
+
+
+# v1.0.0 point-in-time rebuild note:
+# app.py now contains the research-grade v3 engine using weekly advanced stats
+# only through the prior week, pregame Elo, and richer preseason priors.
+# Live production promotion remains gated on out-of-sample validation.
+POINT_IN_TIME_REBUILD_VERSION = "v3.0.0-point-in-time"
