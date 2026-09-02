@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.1.1-DEPENDENCY-HOTFIX"
+MODEL_VERSION = "3.2.0-SIGNAL-STABILITY-ENSEMBLE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -7260,12 +7260,32 @@ def _v31_betting_summary(bets):
     return pd.DataFrame(rows)
 
 
-def _v31_holdout_gate(reg, cls, bets, holdout):
+def _v31_holdout_gate(reg, cls, bets_raw, holdout):
+    """
+    v3.2 hotfix: every "holdout" betting metric is now calculated from the
+    actual holdout-season bet rows, never from the all-season aggregate table.
+    """
     rows = []
     for market in ["SPREAD", "TOTAL"]:
-        rr = reg[(reg["Market"] == market) & (reg["Season"].astype(int) == int(holdout))].copy()
-        cc = cls[(cls["Market"] == market) & (cls["Season"].astype(int) == int(holdout))].copy()
-        bb = bets[(bets["Market"] == market)] if bets is not None and not bets.empty else pd.DataFrame()
+        rr = reg[
+            (reg["Market"] == market) &
+            (reg["Season"].astype(int) == int(holdout))
+        ].copy()
+
+        cc = cls[
+            (cls["Market"] == market) &
+            (cls["Season"].astype(int) == int(holdout))
+        ].copy()
+
+        raw_market = market.lower()
+        hb = (
+            bets_raw[
+                (bets_raw["market_type"] == raw_market) &
+                (bets_raw["season"].astype(int) == int(holdout))
+            ].copy()
+            if bets_raw is not None and not bets_raw.empty
+            else pd.DataFrame()
+        )
 
         best_reg = None
         if not rr.empty:
@@ -7280,18 +7300,41 @@ def _v31_holdout_gate(reg, cls, bets, holdout):
                 best_cls = c2.iloc[0]
 
         best_bet = None
-        if not bb.empty:
-            b2 = bb[(bb["Bets"] >= 100)].sort_values(["ROI", "Bets"], ascending=[False, False])
-            if not b2.empty:
-                best_bet = b2.iloc[0]
+        if not hb.empty:
+            hold_rows = []
+            for (model_name, threshold), g in hb.groupby(["model", "threshold"]):
+                wins = int(pd.to_numeric(g["won"], errors="coerce").fillna(0).sum())
+                n = int(len(g))
+                losses = n - wins
+                hold_rows.append({
+                    "Model": model_name,
+                    "Threshold": float(threshold),
+                    "Bets": n,
+                    "Wins": wins,
+                    "Losses": losses,
+                    "Win Rate": wins / n if n else np.nan,
+                    "ROI": _v31_roi_from_wins(wins, losses, 0, V31_STANDARD_JUICE),
+                })
+            hold_df = pd.DataFrame(hold_rows)
+            eligible = hold_df[hold_df["Bets"] >= 25].copy()
+            if not eligible.empty:
+                best_bet = eligible.sort_values(
+                    ["ROI", "Bets"], ascending=[False, False]
+                ).iloc[0]
 
-        reg_pass = bool(best_reg is not None and float(best_reg["Improvement vs Market"]) > 0)
-        cls_pass = bool(best_cls is not None and float(best_cls["Brier"]) < 0.25)
+        reg_pass = bool(
+            best_reg is not None and
+            float(best_reg["Improvement vs Market"]) > 0
+        )
+        cls_pass = bool(
+            best_cls is not None and
+            float(best_cls["Brier"]) < 0.25
+        )
         bet_pass = bool(
-            market == "SPREAD"
-            and best_bet is not None
-            and int(best_bet["Bets"]) >= 100
-            and float(best_bet["ROI"]) > 0
+            market == "SPREAD" and
+            best_bet is not None and
+            int(best_bet["Bets"]) >= 25 and
+            float(best_bet["ROI"]) > 0
         )
 
         if market == "SPREAD" and reg_pass and cls_pass and bet_pass:
@@ -7307,10 +7350,10 @@ def _v31_holdout_gate(reg, cls, bets, holdout):
             "Holdout Regression Improvement": np.nan if best_reg is None else float(best_reg["Improvement vs Market"]),
             "Best Holdout Classifier": None if best_cls is None else best_cls["Model"],
             "Holdout Brier": np.nan if best_cls is None else float(best_cls["Brier"]),
-            "Best Betting Model": None if best_bet is None else best_bet["Model"],
-            "Best Betting Threshold": np.nan if best_bet is None else float(best_bet["Threshold"]),
-            "Best Betting ROI": np.nan if best_bet is None else float(best_bet["ROI"]),
-            "Best Betting N": 0 if best_bet is None else int(best_bet["Bets"]),
+            "Best Holdout Betting Model": None if best_bet is None else best_bet["Model"],
+            "Best Holdout Betting Threshold": np.nan if best_bet is None else float(best_bet["Threshold"]),
+            "Holdout Betting ROI": np.nan if best_bet is None else float(best_bet["ROI"]),
+            "Holdout Betting N": 0 if best_bet is None else int(best_bet["Bets"]),
             "Verdict": verdict,
         })
     return pd.DataFrame(rows)
@@ -7336,7 +7379,7 @@ def _run_v31_ml_bakeoff(test_seasons_tuple, scope, holdout, train_start):
     reg_summary = _v31_regression_summary(reg)
     cls_summary = _v31_classification_summary(cls)
     bet_summary = _v31_betting_summary(bets_raw)
-    gate = _v31_holdout_gate(reg, cls, bet_summary, holdout)
+    gate = _v31_holdout_gate(reg, cls, bets_raw, holdout)
     return history, reg, reg_summary, cls, cls_summary, bets_raw, bet_summary, preds, gate
 
 
@@ -7381,9 +7424,9 @@ def _render_v31_ml_bakeoff(
     st.markdown("##### Locked holdout gate")
     g = gate.copy()
     if not g.empty:
-        for col in ["Holdout Regression Improvement", "Holdout Brier", "Best Betting ROI"]:
+        for col in ["Holdout Regression Improvement", "Holdout Brier", "Holdout Betting ROI"]:
             if col in g.columns:
-                if col == "Best Betting ROI":
+                if col == "Holdout Betting ROI":
                     g[col] = g[col].map(lambda v: "—" if pd.isna(v) else f"{100*v:+.1f}%")
                 else:
                     g[col] = g[col].map(lambda v: "—" if pd.isna(v) else f"{v:+.4f}")
@@ -7424,6 +7467,584 @@ def _render_v31_ml_bakeoff(
             mime="application/zip",
             use_container_width=True,
             key="download_v310_all",
+        )
+        st.caption("Upload this single ZIP back to ChatGPT for review.")
+
+# ===== v3.2 signal stability + ensemble discovery =====
+V32_VERSION = "v3.2.0-signal-stability-ensemble"
+V32_CORE_MODELS = ("Gradient Boosting", "Extra Trees", "Logistic")
+V32_MIN_SEGMENT_BETS = 20
+V32_DISCOVERY_SEASONS = (2022, 2023, 2024)
+V32_PROB_BUCKETS = [
+    (0.50, 0.52, "50–51.9%"),
+    (0.52, 0.54, "52–53.9%"),
+    (0.54, 0.56, "54–55.9%"),
+    (0.56, 0.58, "56–57.9%"),
+    (0.58, 0.60, "58–59.9%"),
+    (0.60, 1.01, "60%+"),
+]
+
+
+def _v32_join_spread_predictions(history, preds):
+    if history is None or history.empty or preds is None or preds.empty:
+        return pd.DataFrame()
+
+    p = preds[
+        (preds["market_type"] == "spread") &
+        (preds["task"] == "classification")
+    ].copy()
+    if p.empty:
+        return pd.DataFrame()
+
+    h = history.copy()
+    h = h.reset_index().rename(columns={"index": "row_index"})
+    keep = [
+        "row_index", "season", "week", "game_id", "home_team", "away_team",
+        "market_margin", "actual_margin", "conference_game", "elo_diff",
+        "talent_diff", "returning_ppa_diff", "cur_ppa_match",
+        "cur_success_match", "cur_line_match",
+    ]
+    keep = [c for c in keep if c in h.columns]
+    h = h[keep].copy()
+
+    d = p.merge(h, on=["row_index", "season"], how="left")
+    residual = (
+        pd.to_numeric(d["actual_margin"], errors="coerce")
+        - pd.to_numeric(d["market_margin"], errors="coerce")
+    )
+    d["home_cover"] = np.where(residual > 0, 1.0, np.where(residual < 0, 0.0, np.nan))
+    d["pick_side"] = np.where(
+        pd.to_numeric(d["probability"], errors="coerce") >= 0.5, "HOME", "AWAY"
+    )
+    d["pick_probability"] = np.maximum(
+        pd.to_numeric(d["probability"], errors="coerce"),
+        1.0 - pd.to_numeric(d["probability"], errors="coerce"),
+    )
+    d["won"] = np.where(
+        d["home_cover"].isna(),
+        np.nan,
+        np.where(
+            d["pick_side"] == "HOME",
+            d["home_cover"],
+            1.0 - d["home_cover"],
+        ),
+    )
+    return d
+
+
+def _v32_add_segments(d):
+    if d is None or d.empty:
+        return pd.DataFrame()
+    x = d.copy()
+    abs_spread = pd.to_numeric(x["market_margin"], errors="coerce").abs()
+
+    x["Week Segment"] = np.where(
+        pd.to_numeric(x["week"], errors="coerce") <= 3,
+        "Weeks 0–3", "Weeks 4+"
+    )
+    x["Favorite / Dog"] = np.where(
+        pd.to_numeric(x["market_margin"], errors="coerce") > 0,
+        "Home Favorite",
+        np.where(pd.to_numeric(x["market_margin"], errors="coerce") < 0, "Home Dog", "Pick'em"),
+    )
+    x["Spread Range"] = pd.cut(
+        abs_spread,
+        bins=[-0.01, 3, 7, 14, np.inf],
+        labels=["PK–3", "3–7", "7–14", "14+"],
+        include_lowest=True,
+        right=True,
+    ).astype(str)
+    x["Conference"] = np.where(
+        pd.to_numeric(x.get("conference_game"), errors="coerce").fillna(0) > 0,
+        "Conference", "Non-Conference"
+    )
+
+    elo = pd.to_numeric(x.get("elo_diff"), errors="coerce").abs()
+    x["Elo Gap"] = pd.cut(
+        elo,
+        bins=[-0.01, 50, 100, 200, np.inf],
+        labels=["<50", "50–99", "100–199", "200+"],
+        include_lowest=True,
+    ).astype(str)
+
+    talent = pd.to_numeric(x.get("talent_diff"), errors="coerce").abs()
+    q1 = float(talent.quantile(0.50)) if talent.notna().any() else 0.0
+    q2 = float(talent.quantile(0.80)) if talent.notna().any() else 0.0
+    x["Talent Gap"] = pd.cut(
+        talent,
+        bins=[-0.01, q1, q2, np.inf],
+        labels=["Lower", "Medium", "High"],
+        include_lowest=True,
+        duplicates="drop",
+    ).astype(str)
+
+    ret = pd.to_numeric(x.get("returning_ppa_diff"), errors="coerce").abs()
+    rq = float(ret.quantile(0.67)) if ret.notna().any() else 0.0
+    x["Returning Uncertainty"] = np.where(
+        ret >= rq, "High Differential", "Normal"
+    )
+
+    cur = pd.to_numeric(x.get("cur_ppa_match"), errors="coerce")
+    x["Data Maturity"] = np.where(
+        pd.to_numeric(x["week"], errors="coerce") <= 3,
+        "Early / Thin",
+        np.where(cur.notna(), "In-Season Mature", "Missing Current Advanced"),
+    )
+    return x
+
+
+def _v32_prob_bucket(p):
+    try:
+        v = float(p)
+    except Exception:
+        return "Unknown"
+    for lo, hi, label in V32_PROB_BUCKETS:
+        if lo <= v < hi:
+            return label
+    return "Unknown"
+
+
+def _v32_roi(wins, losses):
+    return _v31_roi_from_wins(int(wins), int(losses), 0, V31_STANDARD_JUICE)
+
+
+def _v32_segment_summary(joined, holdout):
+    if joined is None or joined.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    x = _v32_add_segments(joined)
+    x = x[x["model"].isin(V32_CORE_MODELS)].copy()
+
+    segment_cols = [
+        "Week Segment", "Favorite / Dog", "Spread Range", "Conference",
+        "Elo Gap", "Talent Gap", "Returning Uncertainty", "Data Maturity",
+    ]
+
+    detail_rows = []
+    summary_rows = []
+
+    for model_name in V32_CORE_MODELS:
+        md = x[x["model"] == model_name].copy()
+        for seg_col in segment_cols:
+            if seg_col not in md.columns:
+                continue
+            for seg_value, sg in md.groupby(seg_col, dropna=False):
+                for threshold in V31_BET_PROB_THRESHOLDS:
+                    bets = sg[
+                        pd.to_numeric(sg["pick_probability"], errors="coerce") >= float(threshold)
+                    ].dropna(subset=["won"]).copy()
+                    if bets.empty:
+                        continue
+
+                    season_stats = []
+                    for season, ss in bets.groupby("season"):
+                        w = int(pd.to_numeric(ss["won"], errors="coerce").sum())
+                        n = int(len(ss))
+                        l = n - w
+                        roi = _v32_roi(w, l)
+                        row = {
+                            "Model": model_name,
+                            "Segment Type": seg_col,
+                            "Segment": str(seg_value),
+                            "Threshold": float(threshold),
+                            "Season": int(season),
+                            "Bets": n,
+                            "Wins": w,
+                            "Losses": l,
+                            "Win Rate": w / n if n else np.nan,
+                            "ROI": roi,
+                        }
+                        detail_rows.append(row)
+                        season_stats.append(row)
+
+                    all_w = int(pd.to_numeric(bets["won"], errors="coerce").sum())
+                    all_n = int(len(bets))
+                    all_l = all_n - all_w
+
+                    dev = [r for r in season_stats if int(r["Season"]) in V32_DISCOVERY_SEASONS]
+                    hld = [r for r in season_stats if int(r["Season"]) == int(holdout)]
+                    dev_n = sum(r["Bets"] for r in dev)
+                    dev_w = sum(r["Wins"] for r in dev)
+                    dev_l = sum(r["Losses"] for r in dev)
+                    hold_n = sum(r["Bets"] for r in hld)
+                    hold_w = sum(r["Wins"] for r in hld)
+                    hold_l = sum(r["Losses"] for r in hld)
+                    pos_dev = sum(1 for r in dev if np.isfinite(r["ROI"]) and r["ROI"] > 0)
+
+                    dev_roi = _v32_roi(dev_w, dev_l) if dev_n else np.nan
+                    hold_roi = _v32_roi(hold_w, hold_l) if hold_n else np.nan
+
+                    if (
+                        dev_n >= 100 and
+                        len(dev) >= 2 and
+                        pos_dev >= 2 and
+                        np.isfinite(dev_roi) and dev_roi > 0 and
+                        hold_n >= 25 and
+                        np.isfinite(hold_roi) and hold_roi > 0
+                    ):
+                        label = "HOLDOUT CONFIRMED"
+                    elif (
+                        dev_n >= 100 and
+                        len(dev) >= 2 and
+                        pos_dev >= 2 and
+                        np.isfinite(dev_roi) and dev_roi > 0
+                    ):
+                        label = "DISCOVERY SIGNAL"
+                    else:
+                        label = "NO STABLE SIGNAL"
+
+                    summary_rows.append({
+                        "Model": model_name,
+                        "Segment Type": seg_col,
+                        "Segment": str(seg_value),
+                        "Threshold": float(threshold),
+                        "All Bets": all_n,
+                        "All Win Rate": all_w / all_n if all_n else np.nan,
+                        "All ROI": _v32_roi(all_w, all_l),
+                        "Development Bets": dev_n,
+                        "Development ROI": dev_roi,
+                        "Positive Development Seasons": f"{pos_dev}/{len(dev)}",
+                        "Holdout Bets": hold_n,
+                        "Holdout ROI": hold_roi,
+                        "Status": label,
+                    })
+
+    return pd.DataFrame(summary_rows), pd.DataFrame(detail_rows)
+
+
+def _v32_probability_monotonicity(joined):
+    if joined is None or joined.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    x = joined[joined["model"].isin(V32_CORE_MODELS)].copy()
+    x = x.dropna(subset=["won", "pick_probability"]).copy()
+    x["Probability Bucket"] = x["pick_probability"].map(_v32_prob_bucket)
+
+    rows = []
+    diag = []
+    order = [b[2] for b in V32_PROB_BUCKETS]
+
+    for model_name, md in x.groupby("model"):
+        bucket_rates = []
+        for bucket in order:
+            g = md[md["Probability Bucket"] == bucket]
+            if g.empty:
+                continue
+            w = int(pd.to_numeric(g["won"], errors="coerce").sum())
+            n = int(len(g))
+            l = n - w
+            realized = w / n if n else np.nan
+            avg_pred = float(pd.to_numeric(g["pick_probability"], errors="coerce").mean())
+            rows.append({
+                "Model": model_name,
+                "Probability Bucket": bucket,
+                "Games": n,
+                "Avg Predicted": avg_pred,
+                "Realized Win Rate": realized,
+                "Calibration Error": realized - avg_pred,
+                "ROI": _v32_roi(w, l),
+            })
+            if n >= 50:
+                bucket_rates.append((bucket, realized))
+
+        realized_only = [v for _, v in bucket_rates]
+        monotonic = all(
+            realized_only[i] <= realized_only[i+1] + 0.005
+            for i in range(len(realized_only)-1)
+        ) if len(realized_only) >= 3 else False
+        diag.append({
+            "Model": model_name,
+            "Qualified Buckets": len(realized_only),
+            "Monotonic": bool(monotonic),
+            "Status": "PASS" if monotonic else "FAIL / INSUFFICIENT",
+        })
+
+    return pd.DataFrame(rows), pd.DataFrame(diag)
+
+
+def _v32_ensemble_rows(joined, holdout):
+    if joined is None or joined.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    x = joined[joined["model"].isin(V32_CORE_MODELS)].copy()
+    if x.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    pivot = x.pivot_table(
+        index=["season", "row_index", "game_id", "home_team", "away_team"],
+        columns="model",
+        values="probability",
+        aggfunc="first",
+    ).reset_index()
+
+    needed = [m for m in V32_CORE_MODELS if m in pivot.columns]
+    if len(needed) < 2:
+        return pd.DataFrame(), pd.DataFrame()
+
+    meta = x.sort_values("model").drop_duplicates(
+        ["season", "row_index"]
+    )[
+        ["season", "row_index", "home_cover", "market_margin", "week"]
+    ]
+    pivot = pivot.merge(meta, on=["season", "row_index"], how="left")
+
+    rows = []
+    for _, r in pivot.iterrows():
+        probs = {m: _v3_num(r.get(m)) for m in needed}
+        valid = {m: p for m, p in probs.items() if np.isfinite(p)}
+        if len(valid) < 2:
+            continue
+
+        votes = {m: ("HOME" if p >= 0.5 else "AWAY") for m, p in valid.items()}
+        home_votes = sum(1 for s in votes.values() if s == "HOME")
+        away_votes = len(votes) - home_votes
+        if home_votes == away_votes:
+            continue
+
+        side = "HOME" if home_votes > away_votes else "AWAY"
+        agreement = max(home_votes, away_votes)
+        agreeing_probs = [
+            (p if side == "HOME" else 1.0 - p)
+            for m, p in valid.items()
+            if votes[m] == side
+        ]
+        ens_prob = float(np.mean(agreeing_probs))
+        y = _v3_num(r.get("home_cover"))
+        if not np.isfinite(y):
+            continue
+        won = int(y == 1) if side == "HOME" else int(y == 0)
+
+        rows.append({
+            "season": int(r["season"]),
+            "row_index": int(r["row_index"]),
+            "game_id": r.get("game_id"),
+            "home_team": r.get("home_team"),
+            "away_team": r.get("away_team"),
+            "market_margin": _v3_num(r.get("market_margin")),
+            "week": _v3_num(r.get("week")),
+            "models_available": len(valid),
+            "agreement_count": agreement,
+            "side": side,
+            "ensemble_probability": ens_prob,
+            "won": won,
+        })
+
+    detail = pd.DataFrame(rows)
+    if detail.empty:
+        return detail, pd.DataFrame()
+
+    summary = []
+    for rule_name, min_agree in [("2+ Model Agreement", 2), ("Unanimous", len(needed))]:
+        dd = detail[detail["agreement_count"] >= min_agree].copy()
+        for threshold in V31_BET_PROB_THRESHOLDS:
+            bb = dd[dd["ensemble_probability"] >= threshold].copy()
+            if bb.empty:
+                continue
+
+            for season, sg in bb.groupby("season"):
+                w = int(pd.to_numeric(sg["won"], errors="coerce").sum())
+                n = int(len(sg))
+                l = n - w
+                summary.append({
+                    "Rule": rule_name,
+                    "Threshold": float(threshold),
+                    "Season": int(season),
+                    "Bets": n,
+                    "Wins": w,
+                    "Losses": l,
+                    "Win Rate": w / n if n else np.nan,
+                    "ROI": _v32_roi(w, l),
+                })
+
+            # Aggregate and locked holdout rows.
+            w = int(pd.to_numeric(bb["won"], errors="coerce").sum())
+            n = int(len(bb))
+            l = n - w
+            hb = bb[bb["season"].astype(int) == int(holdout)]
+            hw = int(pd.to_numeric(hb["won"], errors="coerce").sum()) if not hb.empty else 0
+            hn = int(len(hb))
+            hl = hn - hw
+            summary.append({
+                "Rule": rule_name,
+                "Threshold": float(threshold),
+                "Season": "ALL",
+                "Bets": n,
+                "Wins": w,
+                "Losses": l,
+                "Win Rate": w / n if n else np.nan,
+                "ROI": _v32_roi(w, l),
+                "Holdout Bets": hn,
+                "Holdout Win Rate": hw / hn if hn else np.nan,
+                "Holdout ROI": _v32_roi(hw, hl) if hn else np.nan,
+            })
+
+    return detail, pd.DataFrame(summary)
+
+
+def _v32_feature_signal_report(history, joined):
+    """
+    Lightweight football-signal diagnostic. This does not choose a betting rule.
+    It measures whether model confidence behaves differently as key predeclared
+    football inputs become more extreme.
+    """
+    if joined is None or joined.empty:
+        return pd.DataFrame()
+
+    x = _v32_add_segments(joined)
+    rows = []
+    dims = ["Elo Gap", "Talent Gap", "Returning Uncertainty", "Data Maturity", "Spread Range"]
+    for model_name in V32_CORE_MODELS:
+        md = x[x["model"] == model_name].dropna(subset=["won", "pick_probability"])
+        for dim in dims:
+            if dim not in md.columns:
+                continue
+            for val, g in md.groupby(dim, dropna=False):
+                if len(g) < 30:
+                    continue
+                w = int(pd.to_numeric(g["won"], errors="coerce").sum())
+                n = int(len(g))
+                rows.append({
+                    "Model": model_name,
+                    "Dimension": dim,
+                    "Bucket": str(val),
+                    "Games": n,
+                    "Avg Confidence": float(pd.to_numeric(g["pick_probability"], errors="coerce").mean()),
+                    "Realized Win Rate": w / n,
+                    "ROI": _v32_roi(w, n - w),
+                })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v32_signal_stability(test_seasons_tuple, scope, holdout, train_start):
+    # Reuse exact v3.1 walk-forward predictions; no model retuning here.
+    (
+        history, reg, reg_summary, cls, cls_summary,
+        bets_raw, bet_summary, preds, fixed_gate,
+    ) = _run_v31_ml_bakeoff(
+        tuple(sorted(set(int(s) for s in test_seasons_tuple))),
+        scope,
+        int(holdout),
+        int(train_start),
+    )
+
+    joined = _v32_join_spread_predictions(history, preds)
+    segment_summary, segment_seasons = _v32_segment_summary(joined, holdout)
+    prob_buckets, monotonicity = _v32_probability_monotonicity(joined)
+    ensemble_detail, ensemble_summary = _v32_ensemble_rows(joined, holdout)
+    football_signals = _v32_feature_signal_report(history, joined)
+
+    return (
+        history, fixed_gate, joined,
+        segment_summary, segment_seasons,
+        prob_buckets, monotonicity,
+        ensemble_detail, ensemble_summary,
+        football_signals,
+    )
+
+
+def _render_v32_signal_stability(
+    fixed_gate, joined, segment_summary, segment_seasons,
+    prob_buckets, monotonicity, ensemble_detail, ensemble_summary,
+    football_signals, holdout
+):
+    st.markdown("#### v3.2 Signal Stability + Ensemble Discovery")
+    st.caption(
+        "No new model is fit here. v3.2 audits the exact v3.1 walk-forward probabilities for "
+        "season stability, probability monotonicity, predeclared situations, and multi-model agreement."
+    )
+
+    if joined is None or joined.empty:
+        st.info("Run v3.2 after selecting the same 2022–2025 / 2025 holdout setup.")
+        return
+
+    st.markdown("##### Corrected holdout gate")
+    g = fixed_gate.copy()
+    if not g.empty:
+        if "Holdout Betting ROI" in g.columns:
+            g["Holdout Betting ROI"] = g["Holdout Betting ROI"].map(
+                lambda v: "—" if pd.isna(v) else f"{100*v:+.1f}%"
+            )
+        st.dataframe(g, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Probability monotonicity")
+    st.caption(
+        "A legitimate probability model should generally produce better realized outcomes as predicted confidence rises."
+    )
+    pb = prob_buckets.copy()
+    if not pb.empty:
+        for c in ["Avg Predicted", "Realized Win Rate", "Calibration Error", "ROI"]:
+            if c in pb.columns:
+                pb[c] = pb[c].map(lambda v: f"{100*v:+.1f}%" if c in ["Calibration Error", "ROI"] else f"{100*v:.1f}%")
+        st.dataframe(pb, use_container_width=True, hide_index=True)
+    st.dataframe(monotonicity, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Situational stability")
+    st.caption(
+        "Discovery is restricted to 2022–2024. The selected holdout season is shown separately and is never used to create the status label."
+    )
+    ss = segment_summary.copy()
+    if not ss.empty:
+        for c in ["Threshold", "All Win Rate", "All ROI", "Development ROI", "Holdout ROI"]:
+            if c in ss.columns:
+                ss[c] = ss[c].map(
+                    lambda v: "—" if pd.isna(v) else f"{100*v:+.1f}%"
+                    if "ROI" in c else f"{100*v:.1f}%"
+                )
+        confirmed = ss[ss["Status"] == "HOLDOUT CONFIRMED"]
+        discovery = ss[ss["Status"] == "DISCOVERY SIGNAL"]
+        if not confirmed.empty:
+            st.success(f"{len(confirmed)} predeclared model/segment combinations survived the holdout screen.")
+        elif not discovery.empty:
+            st.warning(
+                f"{len(discovery)} discovery signals appeared in 2022–2024, but none met the locked holdout confirmation rule."
+            )
+        else:
+            st.warning("No predeclared segment showed stable development-season evidence.")
+        st.dataframe(
+            ss.sort_values(
+                ["Status", "Development Bets"],
+                ascending=[True, False]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("##### Ensemble agreement")
+    es = ensemble_summary.copy()
+    if not es.empty:
+        for c in ["Threshold", "Win Rate", "ROI", "Holdout Win Rate", "Holdout ROI"]:
+            if c in es.columns:
+                es[c] = es[c].map(
+                    lambda v: "—" if pd.isna(v) else f"{100*v:+.1f}%"
+                    if "ROI" in c else f"{100*v:.1f}%"
+                )
+        st.dataframe(es, use_container_width=True, hide_index=True)
+    else:
+        st.info("Not enough common predictions to form the locked ensemble.")
+
+    with st.expander("Football signal diagnostics", expanded=False):
+        st.dataframe(football_signals, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.2 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v320_fixed_holdout_gate.csv": fixed_gate,
+            "cfb_v320_joined_predictions.csv": joined,
+            "cfb_v320_segment_summary.csv": segment_summary,
+            "cfb_v320_segment_seasons.csv": segment_seasons,
+            "cfb_v320_probability_buckets.csv": prob_buckets,
+            "cfb_v320_monotonicity.csv": monotonicity,
+            "cfb_v320_ensemble_summary.csv": ensemble_summary,
+            "cfb_v320_ensemble_predictions.csv": ensemble_detail,
+            "cfb_v320_football_signal_diagnostics.csv": football_signals,
+        })
+        st.download_button(
+            "Download All v3.2 Files",
+            data=bundle,
+            file_name="cfb_v320_signal_stability_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v320_all",
         )
         st.caption("Upload this single ZIP back to ChatGPT for review.")
 
@@ -9635,6 +10256,68 @@ def _render_model_validation_page():
         st.session_state.get("cfb_v310_bet_summary", pd.DataFrame()),
         st.session_state.get("cfb_v310_preds", pd.DataFrame()),
         st.session_state.get("cfb_v310_gate", pd.DataFrame()),
+        holdout,
+    )
+
+    st.markdown("### 12. v3.2 Signal Stability + Ensemble")
+    st.caption(
+        "Audits the exact v3.1 predictions. Development discovery is limited to 2022–2024; "
+        "2025 remains the locked confirmation season when selected as holdout."
+    )
+
+    if st.button(
+        "Run v3.2 Signal Stability Audit",
+        use_container_width=True,
+        key="run_v320_signal_stability",
+    ):
+        v32prog = st.progress(0, text="Loading v3.1 walk-forward predictions…")
+        try:
+            v32prog.progress(0.20, text="Rebuilding corrected holdout gate…")
+            (
+                v32_history,
+                v32_fixed_gate,
+                v32_joined,
+                v32_segment_summary,
+                v32_segment_seasons,
+                v32_prob_buckets,
+                v32_monotonicity,
+                v32_ensemble_detail,
+                v32_ensemble_summary,
+                v32_football_signals,
+            ) = _run_v32_signal_stability(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v32prog.progress(1.0, text="v3.2 stability audit complete.")
+        except Exception as e:
+            v32prog.empty()
+            st.error(f"v3.2 stability audit failed: {e}")
+            st.exception(e)
+        else:
+            v32prog.empty()
+            st.session_state["cfb_v320_fixed_gate"] = v32_fixed_gate
+            st.session_state["cfb_v320_joined"] = v32_joined
+            st.session_state["cfb_v320_segment_summary"] = v32_segment_summary
+            st.session_state["cfb_v320_segment_seasons"] = v32_segment_seasons
+            st.session_state["cfb_v320_prob_buckets"] = v32_prob_buckets
+            st.session_state["cfb_v320_monotonicity"] = v32_monotonicity
+            st.session_state["cfb_v320_ensemble_detail"] = v32_ensemble_detail
+            st.session_state["cfb_v320_ensemble_summary"] = v32_ensemble_summary
+            st.session_state["cfb_v320_football_signals"] = v32_football_signals
+            st.success("v3.2 signal stability audit complete.")
+
+    _render_v32_signal_stability(
+        st.session_state.get("cfb_v320_fixed_gate", pd.DataFrame()),
+        st.session_state.get("cfb_v320_joined", pd.DataFrame()),
+        st.session_state.get("cfb_v320_segment_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v320_segment_seasons", pd.DataFrame()),
+        st.session_state.get("cfb_v320_prob_buckets", pd.DataFrame()),
+        st.session_state.get("cfb_v320_monotonicity", pd.DataFrame()),
+        st.session_state.get("cfb_v320_ensemble_detail", pd.DataFrame()),
+        st.session_state.get("cfb_v320_ensemble_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v320_football_signals", pd.DataFrame()),
         holdout,
     )
 
@@ -12414,4 +13097,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.1.1 Dependency Hotfix • Nonlinear ML Bake-Off • Live logic unchanged pending validation.")
+st.caption("CFB Edge • v3.2.0 Signal Stability + Ensemble • Locked holdout audit • Live logic unchanged pending confirmation.")

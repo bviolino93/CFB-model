@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.1.1-DEPENDENCY-HOTFIX"
+MODEL_VERSION = "1.2.0-SIGNAL-STABILITY-ENSEMBLE"
 
 DEFAULT_HFA = 2.5
 
@@ -716,3 +716,10 @@ POINT_IN_TIME_REBUILD_VERSION = "v3.0.0-point-in-time"
 # for market-residual regression and direct ATS / O-U classification.
 # Live production logic remains unchanged pending out-of-sample confirmation.
 NONLINEAR_ML_BAKEOFF_VERSION = "v3.1.0-nonlinear-ml-bakeoff"
+
+
+# v1.2.0 signal-stability / ensemble note:
+# v3.2 audits v3.1 probabilities for fixed holdout betting evidence,
+# monotonic calibration, situational stability and cross-model agreement.
+# No live production promotion occurs automatically.
+SIGNAL_STABILITY_ENSEMBLE_VERSION = "v3.2.0-signal-stability-ensemble"
