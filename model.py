@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.2.0-MATCHUP"
+MODEL_VERSION = "0.4.0-RESIDUAL-MARKET"
 
 DEFAULT_HFA = 2.5
 
@@ -655,3 +655,26 @@ def normalize_game_lines(rows, game_id=None):
                 "home_ml": home_ml,
             })
     return providers
+
+
+# ===== v0.4 residual-market architecture =====
+# The Streamlit app trains the residual coefficients point-in-time on historical
+# seasons. This helper applies a supplied correction to the sportsbook baseline.
+
+RESIDUAL_SPREAD_CAP = 4.0
+RESIDUAL_TOTAL_CAP = 3.0
+
+def apply_market_residual(market_home_spread=None, market_total=None,
+                          spread_correction=0.0, total_correction=0.0):
+    spread_correction = max(-RESIDUAL_SPREAD_CAP, min(RESIDUAL_SPREAD_CAP, float(spread_correction)))
+    total_correction = max(-RESIDUAL_TOTAL_CAP, min(RESIDUAL_TOTAL_CAP, float(total_correction)))
+    out = {
+        "spread_correction": spread_correction,
+        "total_correction": total_correction,
+    }
+    if market_home_spread is not None:
+        market_margin = -float(market_home_spread)
+        out["fair_home_spread"] = -(market_margin + spread_correction)
+    if market_total is not None:
+        out["fair_total"] = float(market_total) + total_correction
+    return out

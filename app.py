@@ -19,7 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.4.0-SPREAD-TOTAL-VALIDATION"
+MODEL_VERSION = "2.5.0-RESIDUAL-MARKET"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -76,6 +76,188 @@ def calibrated_market_projection(raw_value, market_value, week, market_type):
     weight = _shrink_weight(week, market_type)
     adjusted = float(market_value) + weight * (float(raw_value) - float(market_value))
     return adjusted, weight, float(raw_value) - adjusted
+
+
+# ===== v0.4 residual-market layer =====
+# The sportsbook line is now the baseline forecast. The football model only
+# supplies a regularized estimate of the market's residual error.
+RESIDUAL_TRAIN_START = 2018
+RESIDUAL_RIDGE_ALPHA = 12.0
+RESIDUAL_SPREAD_CAP = 4.0
+RESIDUAL_TOTAL_CAP = 3.0
+RESIDUAL_MIN_ROWS = 300
+
+RESIDUAL_SPREAD_FEATURES = [
+    "raw_gap",
+    "raw_margin",
+    "market_margin",
+    "abs_market_margin",
+    "base_power_margin",
+    "matchup_margin_adjustment",
+    "hfa_adjustment",
+    "week",
+    "confidence",
+]
+
+RESIDUAL_TOTAL_FEATURES = [
+    "raw_gap",
+    "raw_total",
+    "market_total",
+    "sp_total_base",
+    "efficiency_total_adjustment",
+    "pace_total_adjustment",
+    "week",
+    "confidence",
+]
+
+
+def _ridge_fit_numpy(X, y, alpha=RESIDUAL_RIDGE_ALPHA):
+    """Small dependency-free standardized ridge regression."""
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mu = np.nanmean(X, axis=0)
+    sd = np.nanstd(X, axis=0)
+    sd = np.where((~np.isfinite(sd)) | (sd < 1e-8), 1.0, sd)
+    Xs = (X - mu) / sd
+    y_mu = float(np.nanmean(y))
+    yc = y - y_mu
+
+    xtx = Xs.T @ Xs
+    penalty = float(alpha) * np.eye(Xs.shape[1])
+    beta = np.linalg.solve(xtx + penalty, Xs.T @ yc)
+
+    fitted = y_mu + Xs @ beta
+    resid = y - fitted
+    sigma = float(np.nanstd(resid, ddof=max(1, min(Xs.shape[1], len(y)-1))))
+    return {
+        "mu": mu,
+        "sd": sd,
+        "beta": beta,
+        "intercept": y_mu,
+        "sigma": sigma,
+        "n": int(len(y)),
+        "alpha": float(alpha),
+    }
+
+
+def _ridge_predict_numpy(fit, values):
+    if not fit:
+        return 0.0
+    x = np.asarray(values, dtype=float)
+    xs = (x - fit["mu"]) / fit["sd"]
+    return float(fit["intercept"] + xs @ fit["beta"])
+
+
+def _residual_feature_dict(p, market):
+    comps = p.get("components") or {}
+    raw_home_spread = float(p["model_home_spread"])
+    raw_margin = -raw_home_spread
+
+    hs = market.get("home_spread")
+    mt = market.get("total")
+
+    spread = None
+    if hs is not None:
+        market_margin = -float(hs)
+        spread = {
+            "raw_gap": raw_margin - market_margin,
+            "raw_margin": raw_margin,
+            "market_margin": market_margin,
+            "abs_market_margin": abs(market_margin),
+            "base_power_margin": float(comps.get("base_power_margin") or 0.0),
+            "matchup_margin_adjustment": float(comps.get("matchup_margin_adjustment") or 0.0),
+            "hfa_adjustment": float(comps.get("hfa_adjustment") or 0.0),
+            "week": float(_week_num(p.get("week"))),
+            "confidence": float(p.get("confidence") or 70.0),
+        }
+
+    total = None
+    if mt is not None:
+        total = {
+            "raw_gap": float(p["model_total"]) - float(mt),
+            "raw_total": float(p["model_total"]),
+            "market_total": float(mt),
+            "sp_total_base": float(comps.get("sp_total_base") or 0.0),
+            "efficiency_total_adjustment": float(comps.get("efficiency_total_adjustment") or 0.0),
+            "pace_total_adjustment": float(comps.get("pace_total_adjustment") or 0.0),
+            "week": float(_week_num(p.get("week"))),
+            "confidence": float(p.get("confidence") or 70.0),
+        }
+    return spread, total
+
+
+def residual_market_projection(p, market, residual_models=None):
+    """
+    Return a market-baseline fair spread/total plus residual probabilities.
+
+    Spread target:
+        actual home margin - market implied home margin
+
+    Total target:
+        actual total - market total
+
+    If no trained residual model is available, the correction is zero and the
+    market remains the forecast. This is deliberately conservative.
+    """
+    spread_features, total_features = _residual_feature_dict(p, market)
+    sm = (residual_models or {}).get("spread")
+    tm = (residual_models or {}).get("total")
+
+    spread_correction = 0.0
+    spread_sigma = 15.0
+    if spread_features is not None and sm and sm.get("n", 0) >= RESIDUAL_MIN_ROWS:
+        values = [spread_features[k] for k in RESIDUAL_SPREAD_FEATURES]
+        spread_correction = _ridge_predict_numpy(sm, values)
+        spread_correction = max(-RESIDUAL_SPREAD_CAP, min(RESIDUAL_SPREAD_CAP, spread_correction))
+        spread_sigma = max(12.5, min(18.5, float(sm.get("sigma") or 15.0)))
+
+    total_correction = 0.0
+    total_sigma = 13.0
+    if total_features is not None and tm and tm.get("n", 0) >= RESIDUAL_MIN_ROWS:
+        values = [total_features[k] for k in RESIDUAL_TOTAL_FEATURES]
+        total_correction = _ridge_predict_numpy(tm, values)
+        total_correction = max(-RESIDUAL_TOTAL_CAP, min(RESIDUAL_TOTAL_CAP, total_correction))
+        total_sigma = max(10.5, min(16.5, float(tm.get("sigma") or 13.0)))
+
+    out = {
+        "spread_correction": spread_correction,
+        "spread_sigma": spread_sigma,
+        "spread_model_n": int(sm.get("n", 0)) if sm else 0,
+        "total_correction": total_correction,
+        "total_sigma": total_sigma,
+        "total_model_n": int(tm.get("n", 0)) if tm else 0,
+    }
+
+    if market.get("home_spread") is not None:
+        market_margin = -float(market["home_spread"])
+        fair_margin = market_margin + spread_correction
+        out["adjusted_home_spread"] = -fair_margin
+        out["home_cover_prob"] = 1.0 - NormalDist(
+            mu=spread_correction, sigma=spread_sigma
+        ).cdf(0.0)
+        out["away_cover_prob"] = 1.0 - out["home_cover_prob"]
+    else:
+        out["adjusted_home_spread"] = float(p["model_home_spread"])
+        out["home_cover_prob"] = None
+        out["away_cover_prob"] = None
+
+    if market.get("total") is not None:
+        out["adjusted_total"] = float(market["total"]) + total_correction
+        out["over_prob"] = 1.0 - NormalDist(
+            mu=total_correction, sigma=total_sigma
+        ).cdf(0.0)
+        out["under_prob"] = 1.0 - out["over_prob"]
+    else:
+        out["adjusted_total"] = float(p["model_total"])
+        out["over_prob"] = None
+        out["under_prob"] = None
+
+    return out
+
+
+def cap_total_research_verdict(verdict):
+    """Totals remain research-only until the residual model passes validation."""
+    return "LEAN" if verdict in {"BET", "STRONG BET"} else verdict
 
 def calibrated_sigmas(margin_sd, total_sd, week):
     """Extra uncertainty in Weeks 0-2/1-2 while priors dominate."""
@@ -2160,6 +2342,109 @@ def _bt_project_game(game, data, hfa=DEFAULT_HFA):
     }
 
 
+
+def _residual_training_rows_for_season(season, scope="Major FBS"):
+    """Build point-in-time-safe residual training rows for one completed season."""
+    games = get_backtest_games(int(season))
+    line_payload = get_backtest_lines(int(season))
+    data = _bt_prior_only_data(get_backtest_model_data(int(season)))
+
+    line_index = {}
+    for lr in line_payload or []:
+        gid = lr.get("id")
+        if gid is None:
+            continue
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        line_index[key] = normalize_game_lines([lr], game_id=gid)
+
+    rows = []
+    for g in games or []:
+        if g.get("completed") is not True:
+            continue
+        if g.get("homePoints") is None or g.get("awayPoints") is None:
+            continue
+        if not _bt_game_scope(g, scope):
+            continue
+
+        gid = g.get("id")
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        market = _bt_consensus_line(line_index.get(key, []))
+        if market.get("home_spread") is None and market.get("total") is None:
+            continue
+
+        try:
+            p = _bt_project_game(g, data, hfa=DEFAULT_HFA)
+        except Exception:
+            continue
+
+        sf, tf = _residual_feature_dict(p, market)
+        actual_margin = float(g["homePoints"]) - float(g["awayPoints"])
+        actual_total = float(g["homePoints"]) + float(g["awayPoints"])
+
+        if sf is not None:
+            rows.append({
+                "market_type": "spread",
+                "season": int(season),
+                **sf,
+                "target": actual_margin - (-float(market["home_spread"])),
+            })
+        if tf is not None:
+            rows.append({
+                "market_type": "total",
+                "season": int(season),
+                **tf,
+                "target": actual_total - float(market["total"]),
+            })
+    return rows
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fit_residual_models_cached(train_seasons_tuple, scope="Major FBS"):
+    all_rows = []
+    for season in train_seasons_tuple:
+        all_rows.extend(_residual_training_rows_for_season(int(season), scope))
+    df = pd.DataFrame(all_rows)
+
+    out = {"spread": None, "total": None, "train_seasons": list(train_seasons_tuple)}
+    if df.empty:
+        return out
+
+    sd = df[df["market_type"] == "spread"].dropna(
+        subset=RESIDUAL_SPREAD_FEATURES + ["target"]
+    )
+    td = df[df["market_type"] == "total"].dropna(
+        subset=RESIDUAL_TOTAL_FEATURES + ["target"]
+    )
+
+    if len(sd) >= RESIDUAL_MIN_ROWS:
+        out["spread"] = _ridge_fit_numpy(
+            sd[RESIDUAL_SPREAD_FEATURES].values,
+            sd["target"].values,
+        )
+    if len(td) >= RESIDUAL_MIN_ROWS:
+        out["total"] = _ridge_fit_numpy(
+            td[RESIDUAL_TOTAL_FEATURES].values,
+            td["target"].values,
+        )
+    return out
+
+
+def fit_residual_models_before_season(test_season, scope="Major FBS"):
+    test_season = int(test_season)
+    train_seasons = tuple(range(RESIDUAL_TRAIN_START, test_season))
+    return _fit_residual_models_cached(train_seasons, scope)
+
+
+def fit_live_residual_models(current_season, scope="Major FBS"):
+    """2026 live model trains only on completed prior seasons."""
+    return fit_residual_models_before_season(int(current_season), scope)
+
 def _bt_consensus_line(rows):
     if not rows:
         return {}
@@ -2247,7 +2532,25 @@ def _bt_candidate_rows(game, p, market, season, version):
     raw_home_spread = float(p["model_home_spread"])
     raw_total = float(p["model_total"])
 
-    if version == "v0.3.2":
+    if version == "v0.4.0":
+        residual_models = fit_residual_models_before_season(int(season), "Major FBS")
+        rp = residual_market_projection(p, market, residual_models)
+        margin_sd, total_sd = rp["spread_sigma"], rp["total_sigma"]
+        adj_home_spread = rp["adjusted_home_spread"]
+        adj_total = rp["adjusted_total"]
+        side_weight, side_shrink = 0.0, rp["spread_correction"]
+        total_weight, total_shrink = 0.0, rp["total_correction"]
+        home_margin = -adj_home_spread
+
+        # ML remains conservative legacy-market calibration. v0.4 is a spread residual model.
+        ml_spread, _, _ = calibrated_market_projection(
+            raw_home_spread, market.get("home_spread"), week, "side"
+        )
+        ml_margin = -ml_spread
+        home_wp = 1.0 - NormalDist(mu=ml_margin, sigma=max(margin_sd, 15.0)).cdf(0)
+        away_wp = 1.0 - home_wp
+        grader = grade
+    elif version == "v0.3.2":
         margin_sd, total_sd = calibrated_sigmas(p["margin_sd"], p["total_sd"], week)
         adj_home_spread, side_weight, side_shrink = calibrated_market_projection(
             raw_home_spread, market.get("home_spread"), week, "side"
@@ -2312,9 +2615,14 @@ def _bt_candidate_rows(game, p, market, season, version):
     # Spread; CFBD generic feed does not reliably carry side-specific juice, so -110.
     if market.get("home_spread") is not None:
         line = float(market["home_spread"])
-        hp = cover_probability(home_margin, line, "home", margin_sd)
-        ap = 1.0 - hp
-        spread_gap = raw_home_spread - line
+        if version == "v0.4.0":
+            hp = rp["home_cover_prob"]
+            ap = rp["away_cover_prob"]
+            spread_gap = rp["spread_correction"]
+        else:
+            hp = cover_probability(home_margin, line, "home", margin_sd)
+            ap = 1.0 - hp
+            spread_gap = raw_home_spread - line
         for side, prob, name in [
             ("home", hp, f"{p['home']} {line:+.1f}"),
             ("away", ap, f"{p['away']} {-line:+.1f}"),
@@ -2333,9 +2641,14 @@ def _bt_candidate_rows(game, p, market, season, version):
     # Total; -110 generic price assumption.
     if market.get("total") is not None:
         line = float(market["total"])
-        op = total_probability(adj_total, line, "over", total_sd)
-        up = 1.0 - op
-        total_gap = raw_total - line
+        if version == "v0.4.0":
+            op = rp["over_prob"]
+            up = rp["under_prob"]
+            total_gap = rp["total_correction"]
+        else:
+            op = total_probability(adj_total, line, "over", total_sd)
+            up = 1.0 - op
+            total_gap = raw_total - line
         for side, prob, name in [
             ("over", op, f"Over {line:g}"),
             ("under", up, f"Under {line:g}"),
@@ -2345,6 +2658,8 @@ def _bt_candidate_rows(game, p, market, season, version):
                                                  projection_gap=total_gap, week=week)
             else:
                 verdict, edge, ev, imp = grader(prob, -110, p["confidence"])
+            if version == "v0.4.0":
+                verdict = cap_total_research_verdict(verdict)
             result = _bt_settle("total", side, game["homePoints"], game["awayPoints"], line)
             rows.append({**base, "market_type":"total", "side":side, "market":name,
                          "line":line, "odds":-110, "prob":prob, "implied_prob":imp,
@@ -5782,12 +6097,10 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
             except Exception:
                 continue
 
-            adj_spread, _, _ = calibrated_market_projection(
-                p["model_home_spread"], market.get("home_spread"), p["week"], "side"
-            )
-            adj_total, _, _ = calibrated_market_projection(
-                p["model_total"], market.get("total"), p["week"], "total"
-            )
+            residual_models = fit_residual_models_before_season(int(season), scope)
+            residual_p = residual_market_projection(p, market, residual_models)
+            adj_spread = residual_p["adjusted_home_spread"]
+            adj_total = residual_p["adjusted_total"]
 
             game_rows.append({
                 "season": season,
@@ -5806,7 +6119,7 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
                 "confidence": float(p["confidence"]),
             })
 
-            rows = _bt_candidate_rows(g, p, market, season, "v0.3.2")
+            rows = _bt_candidate_rows(g, p, market, season, "v0.4.0")
             candidate_rows.extend(
                 r for r in rows if r.get("market_type") in ("spread", "total")
             )
@@ -5855,7 +6168,7 @@ def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
         '<div class="mobile-page-title">Spread + Total Audit</div>'
-        '<div class="mobile-page-sub">Evaluate the exact current calibrated production layer before changing the model.</div></div>',
+        '<div class="mobile-page-sub">Walk-forward test of the new market-baseline residual model. Every season is fit only on earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -7889,30 +8202,33 @@ if run_mode == "Full Slate":
 
             candidates = []
 
-            # v0.3.2: calibrate projections to the market before converting to
-            # probabilities. Raw projections remain in the export for audit.
-            cal_margin_sd, cal_total_sd = calibrated_sigmas(gp["margin_sd"], gp["total_sd"], gp["week"])
+            # v0.4: sportsbook market is the baseline. Historical seasons prior
+            # to the current year train a small regularized residual correction.
             raw_home_spread = gp["model_home_spread"]
             raw_total = gp["model_total"]
+            residual_models = fit_live_residual_models(int(year), "Major FBS")
+            residual_p = residual_market_projection(gp, market, residual_models)
 
-            adjusted_home_spread = raw_home_spread
-            side_weight = 1.0
-            side_shrink = 0.0
-            if market.get("home_spread") is not None:
-                adjusted_home_spread, side_weight, side_shrink = calibrated_market_projection(
-                    raw_home_spread, market["home_spread"], gp["week"], "side"
-                )
+            adjusted_home_spread = residual_p["adjusted_home_spread"]
             adjusted_home_margin = -adjusted_home_spread
+            adjusted_total = residual_p["adjusted_total"]
+            cal_margin_sd = residual_p["spread_sigma"]
+            cal_total_sd = residual_p["total_sigma"]
 
-            adjusted_total = raw_total
-            total_weight = 1.0
-            total_shrink = 0.0
-            if market.get("total") is not None:
-                adjusted_total, total_weight, total_shrink = calibrated_market_projection(
-                    raw_total, market["total"], gp["week"], "total"
-                )
+            side_weight = 0.0
+            side_shrink = residual_p["spread_correction"]
+            total_weight = 0.0
+            total_shrink = residual_p["total_correction"]
 
-            adjusted_home_wp = 1.0 - NormalDist(mu=adjusted_home_margin, sigma=cal_margin_sd).cdf(0)
+            # Moneyline is not the promoted v0.4 market; keep a conservative
+            # market-calibrated probability rather than deriving ML from ATS residual.
+            ml_spread, _, _ = calibrated_market_projection(
+                raw_home_spread, market.get("home_spread"), gp["week"], "side"
+            )
+            ml_margin = -ml_spread
+            adjusted_home_wp = 1.0 - NormalDist(
+                mu=ml_margin, sigma=max(cal_margin_sd, 15.0)
+            ).cdf(0)
             adjusted_away_wp = 1.0 - adjusted_home_wp
 
             if market.get("away_ml") is not None:
@@ -7929,9 +8245,9 @@ if run_mode == "Full Slate":
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
 
             if market.get("home_spread") is not None:
-                spread_gap = raw_home_spread - market["home_spread"]
-                hp = cover_probability(adjusted_home_margin, market["home_spread"], "home", cal_margin_sd)
-                ap = 1 - hp
+                spread_gap = residual_p["spread_correction"]
+                hp = residual_p["home_cover_prob"]
+                ap = residual_p["away_cover_prob"]
                 v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
                                  projection_gap=spread_gap, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
@@ -7942,15 +8258,17 @@ if run_mode == "Full Slate":
                 candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
             if market.get("total") is not None:
-                total_gap = raw_total - market["total"]
-                op = total_probability(adjusted_total, market["total"], "over", cal_total_sd)
-                up = 1 - op
+                total_gap = residual_p["total_correction"]
+                op = residual_p["over_prob"]
+                up = residual_p["under_prob"]
                 v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
+                v = cap_total_research_verdict(v)
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
                 v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
                                  projection_gap=total_gap, week=gp["week"])
+                v = cap_total_research_verdict(v)
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
@@ -8025,10 +8343,14 @@ if run_mode == "Full Slate":
                 "adjusted_model_home_spread": round(adjusted_home_spread, 3),
                 "side_market_weight": round(side_weight, 3),
                 "side_shrink_points": round(side_shrink, 3),
+                "spread_residual_correction": round(residual_p["spread_correction"], 3),
+                "spread_residual_train_n": residual_p["spread_model_n"],
                 "raw_model_total": round(raw_total, 3),
                 "adjusted_model_total": round(adjusted_total, 3),
                 "total_market_weight": round(total_weight, 3),
                 "total_shrink_points": round(total_shrink, 3),
+                "total_residual_correction": round(residual_p["total_correction"], 3),
+                "total_residual_train_n": residual_p["total_model_n"],
                 "calibrated_margin_sd": round(cal_margin_sd, 3),
                 "calibrated_total_sd": round(cal_total_sd, 3),
                 "best_verdict": best_verdict,
@@ -8614,16 +8936,31 @@ st.markdown(
 if st.button("Analyze Markets",type="primary",use_container_width=True):
     markets=[]
 
-    # v0.3.2 guarded single-game calibration.
-    cal_margin_sd, cal_total_sd = calibrated_sigmas(p["margin_sd"], p["total_sd"], p["week"])
-    adj_home_spread, side_weight, side_shrink = calibrated_market_projection(
+    # v0.4 market-baseline residual layer.
+    single_market = {
+        "home_spread": float(home_spread),
+        "total": float(market_total),
+        "away_ml": int(away_ml),
+        "home_ml": int(home_ml),
+    }
+    residual_models = fit_live_residual_models(int(selected_date.year), "Major FBS")
+    residual_p = residual_market_projection(p, single_market, residual_models)
+
+    adj_home_spread = residual_p["adjusted_home_spread"]
+    adj_home_margin = -adj_home_spread
+    adj_total = residual_p["adjusted_total"]
+    cal_margin_sd = residual_p["spread_sigma"]
+    cal_total_sd = residual_p["total_sigma"]
+    side_weight = 0.0
+    side_shrink = residual_p["spread_correction"]
+    total_weight = 0.0
+    total_shrink = residual_p["total_correction"]
+
+    ml_spread, _, _ = calibrated_market_projection(
         p["model_home_spread"], home_spread, p["week"], "side"
     )
-    adj_home_margin = -adj_home_spread
-    adj_total, total_weight, total_shrink = calibrated_market_projection(
-        p["model_total"], market_total, p["week"], "total"
-    )
-    adj_home_wp = 1.0 - NormalDist(mu=adj_home_margin, sigma=cal_margin_sd).cdf(0)
+    ml_margin = -ml_spread
+    adj_home_wp = 1.0 - NormalDist(mu=ml_margin, sigma=max(cal_margin_sd, 15.0)).cdf(0)
     adj_away_wp = 1.0 - adj_home_wp
 
     for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
@@ -8632,9 +8969,9 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         v = apply_moneyline_guard(v, odds, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    spread_gap = p["model_home_spread"] - home_spread
-    hc=cover_probability(adj_home_margin,home_spread,"home",cal_margin_sd)
-    ac=1-hc
+    spread_gap = residual_p["spread_correction"]
+    hc=residual_p["home_cover_prob"]
+    ac=residual_p["away_cover_prob"]
     for name,prob,odds in [
         (f"{p['home']} {home_spread:+.1f}",hc,home_spread_odds),
         (f"{p['away']} {away_spread:+.1f}",ac,away_spread_odds)
@@ -8644,12 +8981,13 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    total_gap = p["model_total"] - market_total
-    op=total_probability(adj_total,market_total,"over",cal_total_sd)
-    up=1-op
+    total_gap = residual_p["total_correction"]
+    op=residual_p["over_prob"]
+    up=residual_p["under_prob"]
     for name,prob,odds in [(f"Over {market_total:g}",op,over_odds),(f"Under {market_total:g}",up,under_odds)]:
         v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="total",
                          projection_gap=total_gap,week=p["week"])
+        v = cap_total_research_verdict(v)
         v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
@@ -8708,10 +9046,14 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         "adjusted_model_home_spread": round(adj_home_spread, 3),
         "side_market_weight": round(side_weight, 3),
         "side_shrink_points": round(side_shrink, 3),
+        "spread_residual_correction": round(residual_p["spread_correction"], 3),
+        "spread_residual_train_n": residual_p["spread_model_n"],
         "raw_model_total": round(p["model_total"], 3),
         "adjusted_model_total": round(adj_total, 3),
         "total_market_weight": round(total_weight, 3),
         "total_shrink_points": round(total_shrink, 3),
+        "total_residual_correction": round(residual_p["total_correction"], 3),
+        "total_residual_train_n": residual_p["total_model_n"],
         "calibrated_margin_sd": round(cal_margin_sd, 3),
         "calibrated_total_sd": round(cal_total_sd, 3),
         "best_market": best[1],
@@ -8735,4 +9077,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v2.0.0 Mobile UI • Projection and betting logic preserved.")
+st.caption("CFB Edge • v2.5.0 Residual Market • Spread market-baseline model • Totals research-only.")
