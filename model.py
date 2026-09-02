@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.1-RESIDUAL-FEATURE-AUDIT"
+MODEL_VERSION = "0.4.2-SPARSE-RESIDUAL-BAKEOFF"
 
 DEFAULT_HFA = 2.5
 
@@ -685,3 +685,9 @@ def apply_market_residual(market_home_spread=None, market_total=None,
 # historical audit tests interpretable football feature groups strictly
 # walk-forward before any future promotion into the live residual layer.
 FEATURE_AUDIT_VERSION = "v2.6.0-feature-audit"
+
+
+# v0.4.2 sparse-model research note:
+# The live model remains on the prior market-baseline residual architecture.
+# app.py compares locked sparse candidates out-of-sample before any promotion.
+SPARSE_BAKEOFF_VERSION = "v2.7.0-sparse-bakeoff"

@@ -19,7 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.6.0-RESIDUAL-FEATURE-AUDIT"
+MODEL_VERSION = "2.7.0-SPARSE-RESIDUAL-BAKEOFF"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6743,6 +6743,382 @@ def _render_feature_audit_results(season_df, ablation_df, summary_df, preds_df, 
             key="download_feature_audit_predictions",
         )
 
+
+# ===== v2.7 sparse residual bake-off =====
+SPARSE_BAKEOFF_VERSION = "v2.7.0-sparse-bakeoff"
+SPARSE_ALPHA = 12.0
+SPARSE_MIN_TRAIN = 300
+
+# Locked candidate definitions. These are intentionally small and interpretable.
+# The current full v2.6 audit set is retained as a benchmark only.
+SPARSE_SPREAD_MODELS = {
+    "A · Market Control": [],
+    "B · Minimal": [
+        "sp_hfa",
+        "week_num",
+        "early_week_flag",
+        "confidence_num",
+    ],
+    "C · Minimal + Power": [
+        "sp_hfa",
+        "week_num",
+        "early_week_flag",
+        "confidence_num",
+        "sp_rating_diff",
+        "srs_adjustment_diff",
+        "talent_adjustment_diff",
+    ],
+    "D · Full Residual": _flatten_feature_groups(SPREAD_FEATURE_GROUPS),
+}
+
+# Totals remain research-only. We include a sparse comparison for diagnostics,
+# but no total candidate can be auto-promoted from this page.
+SPARSE_TOTAL_MODELS = {
+    "A · Market Control": [],
+    "B · Minimal": [
+        "week_num",
+        "early_week_flag",
+        "confidence_num",
+        "market_total",
+    ],
+    "C · Minimal + Pace": [
+        "week_num",
+        "early_week_flag",
+        "confidence_num",
+        "market_total",
+        "total_pace_adj",
+        "avg_plays_per_drive",
+    ],
+    "D · Full Residual": _flatten_feature_groups(TOTAL_FEATURE_GROUPS),
+}
+
+
+def _sparse_model_predict(train, test, features, target):
+    """
+    Market-control candidate uses a zero residual correction.
+    Other candidates use the same fixed-alpha standardized ridge and are fit
+    only on seasons before the test season.
+    """
+    te = test.dropna(subset=[target]).copy()
+    if te.empty:
+        return None
+
+    actual = te[target].to_numpy(dtype=float)
+
+    if not features:
+        preds = np.zeros(len(te), dtype=float)
+        return {
+            "n_train": int(len(train)),
+            "n_test": int(len(te)),
+            "mae": float(np.mean(np.abs(actual))),
+            "preds": preds,
+            "actual": actual,
+            "index": te.index.to_numpy(),
+        }
+
+    usable = [f for f in features if f in train.columns and f in test.columns]
+    if len(usable) != len(features):
+        return None
+
+    tr = train.dropna(subset=usable + [target]).copy()
+    te = test.dropna(subset=usable + [target]).copy()
+    if len(tr) < SPARSE_MIN_TRAIN or te.empty:
+        return None
+
+    fit = _ridge_fit_numpy(
+        tr[usable].values,
+        tr[target].values,
+        SPARSE_ALPHA,
+    )
+    preds = np.array([
+        _ridge_predict_numpy(fit, row)
+        for row in te[usable].to_numpy(dtype=float)
+    ])
+    actual = te[target].to_numpy(dtype=float)
+
+    return {
+        "n_train": int(len(tr)),
+        "n_test": int(len(te)),
+        "mae": float(np.mean(np.abs(actual - preds))),
+        "preds": preds,
+        "actual": actual,
+        "index": te.index.to_numpy(),
+    }
+
+
+def _run_sparse_market_bakeoff(feature_df, test_seasons, market_type, holdout):
+    """
+    Compare locked candidate architectures season-by-season.
+
+    No model is allowed to select features, alpha, or thresholds using the
+    test season. Every test season is scored exactly once.
+    """
+    if feature_df is None or feature_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if market_type == "spread":
+        candidates = SPARSE_SPREAD_MODELS
+        target = "spread_target_residual"
+    else:
+        candidates = SPARSE_TOTAL_MODELS
+        target = "total_target_residual"
+
+    season_rows = []
+    pred_rows = []
+
+    for season in sorted(set(int(s) for s in test_seasons)):
+        train = feature_df[feature_df["season"].astype(int) < season].copy()
+        test = feature_df[feature_df["season"].astype(int) == season].copy()
+
+        for model_name, features in candidates.items():
+            result = _sparse_model_predict(train, test, features, target)
+            if result is None:
+                continue
+
+            season_rows.append({
+                "Market": market_type.upper(),
+                "Model": model_name,
+                "Test Season": int(season),
+                "Games": result["n_test"],
+                "Train Games": result["n_train"],
+                "MAE": result["mae"],
+                "Holdout": "YES" if int(season) == int(holdout) else "NO",
+            })
+
+            for idx, actual, pred in zip(
+                result["index"], result["actual"], result["preds"]
+            ):
+                pred_rows.append({
+                    "market_type": market_type,
+                    "model": model_name,
+                    "season": int(season),
+                    "row_index": int(idx),
+                    "actual_market_residual": float(actual),
+                    "predicted_residual": float(pred),
+                    "abs_error": abs(float(actual) - float(pred)),
+                })
+
+    return pd.DataFrame(season_rows), pd.DataFrame(pred_rows)
+
+
+def _sparse_bakeoff_summary(season_df, holdout):
+    if season_df is None or season_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (market, model_name), g in season_df.groupby(["Market", "Model"]):
+        g = g.sort_values("Test Season")
+        overall_mae = float(
+            np.average(
+                pd.to_numeric(g["MAE"], errors="coerce"),
+                weights=pd.to_numeric(g["Games"], errors="coerce"),
+            )
+        )
+
+        hold = g[g["Test Season"].astype(int) == int(holdout)]
+        holdout_mae = float(hold.iloc[0]["MAE"]) if not hold.empty else np.nan
+
+        market_rows = season_df[
+            (season_df["Market"] == market) &
+            (season_df["Model"] == "A · Market Control")
+        ]
+        market_overall = float(
+            np.average(
+                pd.to_numeric(market_rows["MAE"], errors="coerce"),
+                weights=pd.to_numeric(market_rows["Games"], errors="coerce"),
+            )
+        ) if not market_rows.empty else np.nan
+
+        market_hold = market_rows[
+            market_rows["Test Season"].astype(int) == int(holdout)
+        ]
+        market_holdout = float(market_hold.iloc[0]["MAE"]) if not market_hold.empty else np.nan
+
+        full_rows = season_df[
+            (season_df["Market"] == market) &
+            (season_df["Model"] == "D · Full Residual")
+        ]
+        full_overall = float(
+            np.average(
+                pd.to_numeric(full_rows["MAE"], errors="coerce"),
+                weights=pd.to_numeric(full_rows["Games"], errors="coerce"),
+            )
+        ) if not full_rows.empty else np.nan
+
+        full_hold = full_rows[
+            full_rows["Test Season"].astype(int) == int(holdout)
+        ]
+        full_holdout = float(full_hold.iloc[0]["MAE"]) if not full_hold.empty else np.nan
+
+        seasons_vs_market = 0
+        tested_seasons = 0
+        for _, r in g.iterrows():
+            s = int(r["Test Season"])
+            mr = market_rows[market_rows["Test Season"].astype(int) == s]
+            if mr.empty:
+                continue
+            tested_seasons += 1
+            if float(r["MAE"]) < float(mr.iloc[0]["MAE"]):
+                seasons_vs_market += 1
+
+        rows.append({
+            "Market": market,
+            "Model": model_name,
+            "Overall MAE": overall_mae,
+            "Holdout MAE": holdout_mae,
+            "Overall vs Market": market_overall - overall_mae if pd.notna(market_overall) else np.nan,
+            "Holdout vs Market": market_holdout - holdout_mae if pd.notna(market_holdout) else np.nan,
+            "Overall vs Full": full_overall - overall_mae if pd.notna(full_overall) else np.nan,
+            "Holdout vs Full": full_holdout - holdout_mae if pd.notna(full_holdout) else np.nan,
+            "Seasons Beat Market": f"{seasons_vs_market}/{tested_seasons}",
+        })
+
+    out = pd.DataFrame(rows)
+
+    # Locked candidate recommendation logic.
+    # Spread only: candidate must beat market and current full model overall and
+    # on holdout, and beat market in at least 3 of 4 tested seasons.
+    verdicts = []
+    for _, r in out.iterrows():
+        if r["Model"] == "A · Market Control":
+            verdicts.append("CONTROL")
+            continue
+        if r["Market"] == "TOTAL":
+            verdicts.append("RESEARCH ONLY")
+            continue
+
+        try:
+            season_wins = int(str(r["Seasons Beat Market"]).split("/")[0])
+            season_n = int(str(r["Seasons Beat Market"]).split("/")[1])
+        except Exception:
+            season_wins, season_n = 0, 0
+
+        promote = (
+            pd.notna(r["Overall vs Market"]) and float(r["Overall vs Market"]) > 0
+            and pd.notna(r["Holdout vs Market"]) and float(r["Holdout vs Market"]) > 0
+            and pd.notna(r["Overall vs Full"]) and float(r["Overall vs Full"]) > 0
+            and pd.notna(r["Holdout vs Full"]) and float(r["Holdout vs Full"]) > 0
+            and season_n >= 3
+            and season_wins >= max(2, season_n - 1)
+        )
+
+        verdicts.append("PROMOTION CANDIDATE" if promote else "KEEP IN RESEARCH")
+
+    out["Locked Verdict"] = verdicts
+
+    order = {
+        "A · Market Control": 0,
+        "B · Minimal": 1,
+        "C · Minimal + Power": 2,
+        "D · Full Residual": 3,
+    }
+    out["_order"] = out["Model"].map(order).fillna(99)
+    return out.sort_values(["Market", "_order"]).drop(columns="_order").reset_index(drop=True)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_sparse_bakeoff_cached(test_seasons_tuple, scope, holdout):
+    test_seasons = sorted(set(int(s) for s in test_seasons_tuple))
+    min_history = min(RESIDUAL_TRAIN_START, min(test_seasons) - 4)
+    min_history = max(2014, min_history)
+    max_history = max(test_seasons)
+
+    feat = _feature_audit_history(min_history, max_history, scope)
+
+    sp_seasons, sp_preds = _run_sparse_market_bakeoff(
+        feat, test_seasons, "spread", holdout
+    )
+    tot_seasons, tot_preds = _run_sparse_market_bakeoff(
+        feat, test_seasons, "total", holdout
+    )
+
+    season_df = pd.concat([sp_seasons, tot_seasons], ignore_index=True)
+    pred_df = pd.concat([sp_preds, tot_preds], ignore_index=True)
+    summary_df = _sparse_bakeoff_summary(season_df, holdout)
+
+    return season_df, summary_df, pred_df
+
+
+def _render_sparse_bakeoff_results(season_df, summary_df, pred_df, holdout):
+    st.markdown("#### Sparse Residual Bake-Off Results")
+    st.caption(
+        "A = market only. B = Home Field + Week/Early Season + Confidence. "
+        "C = B plus SP+/SRS/Talent. D = the current full residual feature set."
+    )
+
+    if summary_df is None or summary_df.empty:
+        st.info("Run the sparse bake-off to compare the locked candidate models.")
+        return
+
+    summary_show = summary_df.copy()
+    for c in [
+        "Overall MAE",
+        "Holdout MAE",
+        "Overall vs Market",
+        "Holdout vs Market",
+        "Overall vs Full",
+        "Holdout vs Full",
+    ]:
+        if c in summary_show.columns:
+            if "vs" in c:
+                summary_show[c] = summary_show[c].map(
+                    lambda v: f"{v:+.4f}" if pd.notna(v) else "—"
+                )
+            else:
+                summary_show[c] = summary_show[c].map(
+                    lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+                )
+
+    st.dataframe(summary_show, use_container_width=True, hide_index=True)
+
+    promoted = summary_df[
+        (summary_df["Market"] == "SPREAD") &
+        (summary_df["Locked Verdict"] == "PROMOTION CANDIDATE")
+    ]
+
+    if not promoted.empty:
+        best = promoted.sort_values("Holdout MAE").iloc[0]
+        st.success(
+            f"{best['Model']} passed the locked sparse-model promotion screen. "
+            "This does not yet change the live betting engine; it is eligible for a separate promotion build."
+        )
+    else:
+        st.warning(
+            "No sparse spread candidate passed the locked promotion screen. "
+            "Do not loosen betting thresholds to force action."
+        )
+
+    with st.expander("Season-by-season sparse results", expanded=False):
+        season_show = season_df.copy()
+        season_show["MAE"] = season_show["MAE"].map(lambda v: f"{v:.4f}")
+        st.dataframe(season_show, use_container_width=True, hide_index=True)
+
+    with st.expander("Sparse Bake-Off Downloads", expanded=False):
+        st.download_button(
+            "Download Sparse Summary",
+            data=summary_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_sparse_bakeoff_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_sparse_bakeoff_summary",
+        )
+        st.download_button(
+            "Download Sparse Seasons",
+            data=season_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_sparse_bakeoff_seasons.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_sparse_bakeoff_seasons",
+        )
+        st.download_button(
+            "Download Sparse Predictions",
+            data=pred_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_sparse_bakeoff_predictions.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_sparse_bakeoff_predictions",
+        )
+
 def _format_validation_bets(df):
     if df is None or df.empty:
         return df
@@ -6759,8 +7135,8 @@ def _format_validation_bets(df):
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
-        '<div class="mobile-page-title">Spread + Total + Feature Audit</div>'
-        '<div class="mobile-page-sub">Walk-forward market-baseline validation plus leave-one-feature-group-out testing. Every test season uses only earlier seasons.</div></div>',
+        '<div class="mobile-page-title">Spread + Total + Feature + Sparse Audit</div>'
+        '<div class="mobile-page-sub">Walk-forward market-baseline validation, feature ablation, and a locked sparse-model bake-off. Every test season uses only earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -6925,6 +7301,43 @@ def _render_model_validation_page():
     a_preds = st.session_state.get("cfb_feature_audit_predictions", pd.DataFrame())
     _render_feature_audit_results(
         a_seasons, a_ablation, a_summary, a_preds, holdout
+    )
+
+    st.markdown("### 8. Sparse Residual Bake-Off")
+    st.caption(
+        "Locked comparison: Market Control vs Minimal vs Minimal + Power vs Full Residual. "
+        "This tests simplification before any live-model promotion."
+    )
+    if st.button(
+        "Run Sparse Residual Bake-Off",
+        use_container_width=True,
+        key="run_sparse_residual_bakeoff",
+    ):
+        sparse_progress = st.progress(0, text="Running sparse walk-forward models…")
+        try:
+            sparse_progress.progress(0.25, text="Building point-in-time history…")
+            s_seasons, s_summary, s_preds = _run_sparse_bakeoff_cached(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+            )
+            sparse_progress.progress(1.0, text="Sparse bake-off complete.")
+        except Exception as e:
+            sparse_progress.empty()
+            st.error(f"Sparse bake-off failed: {e}")
+            st.exception(e)
+        else:
+            sparse_progress.empty()
+            st.session_state["cfb_sparse_bakeoff_seasons"] = s_seasons
+            st.session_state["cfb_sparse_bakeoff_summary"] = s_summary
+            st.session_state["cfb_sparse_bakeoff_predictions"] = s_preds
+            st.success("Sparse residual bake-off complete.")
+
+    s_seasons = st.session_state.get("cfb_sparse_bakeoff_seasons", pd.DataFrame())
+    s_summary = st.session_state.get("cfb_sparse_bakeoff_summary", pd.DataFrame())
+    s_preds = st.session_state.get("cfb_sparse_bakeoff_predictions", pd.DataFrame())
+    _render_sparse_bakeoff_results(
+        s_seasons, s_summary, s_preds, holdout
     )
 
     with st.expander("Downloads", expanded=False):
@@ -9703,4 +10116,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v2.6.0 Residual Feature Audit • Market-baseline architecture • Totals research-only.")
+st.caption("CFB Edge • v2.7.0 Sparse Residual Bake-Off • Market-baseline architecture • Totals research-only.")
