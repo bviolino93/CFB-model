@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.0-RESIDUAL-MARKET"
+MODEL_VERSION = "0.4.1-RESIDUAL-FEATURE-AUDIT"
 
 DEFAULT_HFA = 2.5
 
@@ -678,3 +678,10 @@ def apply_market_residual(market_home_spread=None, market_total=None,
     if market_total is not None:
         out["fair_total"] = float(market_total) + total_correction
     return out
+
+
+# v0.4.1 feature-audit note:
+# Production residual corrections remain unchanged in model.py. The app's
+# historical audit tests interpretable football feature groups strictly
+# walk-forward before any future promotion into the live residual layer.
+FEATURE_AUDIT_VERSION = "v2.6.0-feature-audit"

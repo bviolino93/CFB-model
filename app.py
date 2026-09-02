@@ -19,7 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.5.0-RESIDUAL-MARKET"
+MODEL_VERSION = "2.6.0-RESIDUAL-FEATURE-AUDIT"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6045,7 +6045,7 @@ def _validation_gate(projection_df, picks_df, holdout):
 
 
 def _run_current_market_validation(seasons, scope, holdout, progress=None):
-    """Evaluate the exact current v0.3.2 calibrated production spread/total layer."""
+    """Evaluate the exact current v0.4 residual-market spread/total layer."""
     game_rows = []
     candidate_rows = []
     seasons = sorted(set(int(s) for s in seasons))
@@ -6117,6 +6117,66 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
                 "adjusted_model_total": float(adj_total),
                 "market_total": market.get("total"),
                 "confidence": float(p["confidence"]),
+
+                # Core residual-model decomposition
+                "base_power_margin": float(p["components"].get("base_power_margin", 0.0)),
+                "matchup_margin_adjustment": float(p["components"].get("matchup_margin_adjustment", 0.0)),
+                "hfa_adjustment": float(p["components"].get("hfa_adjustment", 0.0)),
+                "sp_total_base": float(p["components"].get("sp_total_base", 0.0)),
+                "efficiency_total_adjustment": float(p["components"].get("efficiency_total_adjustment", 0.0)),
+                "pace_total_adjustment": float(p["components"].get("pace_total_adjustment", 0.0)),
+
+                # Team power / personnel
+                "away_sp_rating": float(p["away_rating"].get("sp_rating") or 0.0),
+                "home_sp_rating": float(p["home_rating"].get("sp_rating") or 0.0),
+                "away_srs_adjustment": float(p["away_rating"].get("srs_adjustment") or 0.0),
+                "home_srs_adjustment": float(p["home_rating"].get("srs_adjustment") or 0.0),
+                "away_talent_adjustment": float(p["away_rating"].get("talent_adjustment") or 0.0),
+                "home_talent_adjustment": float(p["home_rating"].get("talent_adjustment") or 0.0),
+                "away_returning_adjustment": float(p["away_rating"].get("returning_adjustment") or 0.0),
+                "home_returning_adjustment": float(p["home_rating"].get("returning_adjustment") or 0.0),
+                "away_returning_pass": p["away_rating"].get("returning_pass"),
+                "home_returning_pass": p["home_rating"].get("returning_pass"),
+                "away_returning_usage": p["away_rating"].get("returning_usage"),
+                "home_returning_usage": p["home_rating"].get("returning_usage"),
+
+                # Prior-season PPA matchup inputs in leakage-safe validation mode
+                "away_ppa_off_pass": p["away_rating"]["ppa"].get("off_pass"),
+                "home_ppa_off_pass": p["home_rating"]["ppa"].get("off_pass"),
+                "away_ppa_def_pass": p["away_rating"]["ppa"].get("def_pass"),
+                "home_ppa_def_pass": p["home_rating"]["ppa"].get("def_pass"),
+                "away_ppa_off_rush": p["away_rating"]["ppa"].get("off_rush"),
+                "home_ppa_off_rush": p["home_rating"]["ppa"].get("off_rush"),
+                "away_ppa_def_rush": p["away_rating"]["ppa"].get("def_rush"),
+                "home_ppa_def_rush": p["home_rating"]["ppa"].get("def_rush"),
+
+                # Advanced efficiency / explosiveness / finishing / pace
+                "away_adv_off_success": p["away_rating"]["adv"].get("off_success"),
+                "home_adv_off_success": p["home_rating"]["adv"].get("off_success"),
+                "away_adv_def_success": p["away_rating"]["adv"].get("def_success"),
+                "home_adv_def_success": p["home_rating"]["adv"].get("def_success"),
+                "away_adv_off_expl": p["away_rating"]["adv"].get("off_expl"),
+                "home_adv_off_expl": p["home_rating"]["adv"].get("off_expl"),
+                "away_adv_def_expl": p["away_rating"]["adv"].get("def_expl"),
+                "home_adv_def_expl": p["home_rating"]["adv"].get("def_expl"),
+                "away_adv_off_pass_ppa": p["away_rating"]["adv"].get("off_pass_ppa"),
+                "home_adv_off_pass_ppa": p["home_rating"]["adv"].get("off_pass_ppa"),
+                "away_adv_def_pass_ppa": p["away_rating"]["adv"].get("def_pass_ppa"),
+                "home_adv_def_pass_ppa": p["home_rating"]["adv"].get("def_pass_ppa"),
+                "away_adv_off_rush_ppa": p["away_rating"]["adv"].get("off_rush_ppa"),
+                "home_adv_off_rush_ppa": p["home_rating"]["adv"].get("off_rush_ppa"),
+                "away_adv_def_rush_ppa": p["away_rating"]["adv"].get("def_rush_ppa"),
+                "home_adv_def_rush_ppa": p["home_rating"]["adv"].get("def_rush_ppa"),
+                "away_adv_off_ppo": p["away_rating"]["adv"].get("off_ppo"),
+                "home_adv_off_ppo": p["home_rating"]["adv"].get("off_ppo"),
+                "away_adv_def_ppo": p["away_rating"]["adv"].get("def_ppo"),
+                "home_adv_def_ppo": p["home_rating"]["adv"].get("def_ppo"),
+                "away_adv_def_havoc": p["away_rating"]["adv"].get("def_havoc"),
+                "home_adv_def_havoc": p["home_rating"]["adv"].get("def_havoc"),
+                "away_adv_off_plays": p["away_rating"]["adv"].get("off_plays"),
+                "home_adv_off_plays": p["home_rating"]["adv"].get("off_plays"),
+                "away_adv_off_drives": p["away_rating"]["adv"].get("off_drives"),
+                "home_adv_off_drives": p["home_rating"]["adv"].get("off_drives"),
             })
 
             rows = _bt_candidate_rows(g, p, market, season, "v0.4.0")
@@ -6133,9 +6193,12 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
 
     if not picks_df.empty:
         def gap_for_row(r):
+            # v2.6: diagnose the residual correction actually applied to market.
+            # For spread, fair spread - market spread has the same absolute size
+            # as the predicted market-margin residual. For totals it is direct.
             if r["market_type"] == "spread":
-                return abs(float(r["raw_model_home_spread"]) - float(r["market_home_spread"]))
-            return abs(float(r["raw_model_total"]) - float(r["market_total"]))
+                return abs(float(r["adjusted_model_home_spread"]) - float(r["market_home_spread"]))
+            return abs(float(r["adjusted_model_total"]) - float(r["market_total"]))
 
         picks_df["projection_gap_pts"] = picks_df.apply(gap_for_row, axis=1)
         picks_df["gap_bucket"] = picks_df["projection_gap_pts"].apply(
@@ -6150,6 +6213,535 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
 
     return games_df, picks_df, projection_df, gate_df
 
+
+
+# ===== v2.6 residual feature audit =====
+FEATURE_AUDIT_VERSION = "v2.6.0-feature-audit"
+FEATURE_AUDIT_ALPHA = 12.0
+FEATURE_AUDIT_MIN_TRAIN = 300
+
+# Groups are intentionally interpretable. We remove one group at a time from
+# the full model to see whether the group improves unseen-season MAE.
+SPREAD_FEATURE_GROUPS = {
+    "Raw model disagreement": ["spread_model_delta"],
+    "SP+ power": ["sp_rating_diff"],
+    "SRS": ["srs_adjustment_diff"],
+    "Talent": ["talent_adjustment_diff"],
+    "Returning production": [
+        "returning_adjustment_diff",
+        "returning_pass_diff",
+        "returning_usage_diff",
+    ],
+    "Aggregate matchup": ["sp_matchup_adj"],
+    "PPA pass/rush matchup": ["net_pass_matchup", "net_rush_matchup"],
+    "Advanced efficiency": [
+        "net_success_matchup",
+        "net_expl_matchup",
+        "net_adv_pass_matchup",
+        "net_adv_rush_matchup",
+        "net_finishing_matchup",
+        "havoc_diff",
+    ],
+    "Home field": ["sp_hfa"],
+    "Market favorite size": ["market_margin", "abs_market_margin"],
+    "Week / early season": ["week_num", "early_week_flag"],
+    "Model confidence": ["confidence_num"],
+}
+
+TOTAL_FEATURE_GROUPS = {
+    "Raw total disagreement": ["total_model_delta"],
+    "SP+ total base": ["total_base_minus_market"],
+    "Efficiency adjustment": ["total_eff_adj"],
+    "Pace adjustment": ["total_pace_adj"],
+    "PPA pass/rush matchup": ["abs_net_pass_matchup", "abs_net_rush_matchup"],
+    "Advanced efficiency": [
+        "abs_net_success_matchup",
+        "abs_net_expl_matchup",
+        "abs_net_finishing_matchup",
+    ],
+    "Game pace": ["avg_plays_per_drive"],
+    "Market total": ["market_total"],
+    "Week / early season": ["week_num", "early_week_flag"],
+    "Model confidence": ["confidence_num"],
+}
+
+
+def _feature_audit_frame(game_df):
+    """Build leakage-safe, interpretable residual features from validation rows."""
+    if game_df is None or game_df.empty:
+        return pd.DataFrame()
+
+    d = game_df.copy()
+    d = d.sort_values(["season", "game_id"]).drop_duplicates(["season", "game_id"])
+
+    def n(col):
+        if col not in d.columns:
+            d[col] = np.nan
+        return pd.to_numeric(d[col], errors="coerce")
+
+    d["actual_margin"] = n("home_points") - n("away_points")
+    d["actual_total"] = n("home_points") + n("away_points")
+    d["market_margin"] = -n("market_home_spread")
+    d["raw_model_margin"] = -n("raw_model_home_spread")
+
+    d["spread_target_residual"] = d["actual_margin"] - d["market_margin"]
+    d["spread_model_delta"] = d["raw_model_margin"] - d["market_margin"]
+    d["total_target_residual"] = d["actual_total"] - n("market_total")
+    d["total_model_delta"] = n("raw_model_total") - n("market_total")
+
+    d["abs_market_margin"] = d["market_margin"].abs()
+    d["week_num"] = n("week").clip(lower=1, upper=16)
+    d["early_week_flag"] = (d["week_num"] <= 3).astype(float)
+    d["confidence_num"] = n("confidence")
+
+    d["sp_rating_diff"] = n("home_sp_rating") - n("away_sp_rating")
+    d["srs_adjustment_diff"] = n("home_srs_adjustment") - n("away_srs_adjustment")
+    d["talent_adjustment_diff"] = n("home_talent_adjustment") - n("away_talent_adjustment")
+    d["returning_adjustment_diff"] = n("home_returning_adjustment") - n("away_returning_adjustment")
+    d["returning_pass_diff"] = n("home_returning_pass") - n("away_returning_pass")
+    d["returning_usage_diff"] = n("home_returning_usage") - n("away_returning_usage")
+
+    d["sp_matchup_adj"] = n("matchup_margin_adjustment")
+    d["sp_hfa"] = n("hfa_adjustment")
+
+    d["total_base_minus_market"] = n("sp_total_base") - n("market_total")
+    d["total_eff_adj"] = n("efficiency_total_adjustment")
+    d["total_pace_adj"] = n("pace_total_adjustment")
+
+    # PPA matchup: home offense vs away defense minus away offense vs home defense.
+    d["home_pass_matchup"] = n("home_ppa_off_pass") - n("away_ppa_def_pass")
+    d["away_pass_matchup"] = n("away_ppa_off_pass") - n("home_ppa_def_pass")
+    d["net_pass_matchup"] = d["home_pass_matchup"] - d["away_pass_matchup"]
+
+    d["home_rush_matchup"] = n("home_ppa_off_rush") - n("away_ppa_def_rush")
+    d["away_rush_matchup"] = n("away_ppa_off_rush") - n("home_ppa_def_rush")
+    d["net_rush_matchup"] = d["home_rush_matchup"] - d["away_rush_matchup"]
+
+    d["home_success_matchup"] = n("home_adv_off_success") - n("away_adv_def_success")
+    d["away_success_matchup"] = n("away_adv_off_success") - n("home_adv_def_success")
+    d["net_success_matchup"] = d["home_success_matchup"] - d["away_success_matchup"]
+
+    d["home_expl_matchup"] = n("home_adv_off_expl") - n("away_adv_def_expl")
+    d["away_expl_matchup"] = n("away_adv_off_expl") - n("home_adv_def_expl")
+    d["net_expl_matchup"] = d["home_expl_matchup"] - d["away_expl_matchup"]
+
+    d["home_adv_pass_matchup"] = n("home_adv_off_pass_ppa") - n("away_adv_def_pass_ppa")
+    d["away_adv_pass_matchup"] = n("away_adv_off_pass_ppa") - n("home_adv_def_pass_ppa")
+    d["net_adv_pass_matchup"] = d["home_adv_pass_matchup"] - d["away_adv_pass_matchup"]
+
+    d["home_adv_rush_matchup"] = n("home_adv_off_rush_ppa") - n("away_adv_def_rush_ppa")
+    d["away_adv_rush_matchup"] = n("away_adv_off_rush_ppa") - n("home_adv_def_rush_ppa")
+    d["net_adv_rush_matchup"] = d["home_adv_rush_matchup"] - d["away_adv_rush_matchup"]
+
+    d["home_finishing_matchup"] = n("home_adv_off_ppo") - n("away_adv_def_ppo")
+    d["away_finishing_matchup"] = n("away_adv_off_ppo") - n("home_adv_def_ppo")
+    d["net_finishing_matchup"] = d["home_finishing_matchup"] - d["away_finishing_matchup"]
+    d["havoc_diff"] = n("home_adv_def_havoc") - n("away_adv_def_havoc")
+
+    away_ppd = n("away_adv_off_plays") / n("away_adv_off_drives").replace(0, np.nan)
+    home_ppd = n("home_adv_off_plays") / n("home_adv_off_drives").replace(0, np.nan)
+    d["avg_plays_per_drive"] = (away_ppd + home_ppd) / 2.0
+
+    # For total, direction is less important than mismatch magnitude.
+    for c in [
+        "net_pass_matchup",
+        "net_rush_matchup",
+        "net_success_matchup",
+        "net_expl_matchup",
+        "net_finishing_matchup",
+    ]:
+        d["abs_" + c] = d[c].abs()
+
+    return d
+
+
+def _flatten_feature_groups(groups):
+    out = []
+    for cols in groups.values():
+        for c in cols:
+            if c not in out:
+                out.append(c)
+    return out
+
+
+def _audit_fit_predict(train, test, features, target):
+    """Fit fixed-alpha ridge on train only and score unseen test rows."""
+    usable = [f for f in features if f in train.columns and f in test.columns]
+    if not usable:
+        return None
+
+    tr = train.dropna(subset=usable + [target]).copy()
+    te = test.dropna(subset=usable + [target]).copy()
+    if len(tr) < FEATURE_AUDIT_MIN_TRAIN or te.empty:
+        return None
+
+    fit = _ridge_fit_numpy(tr[usable].values, tr[target].values, FEATURE_AUDIT_ALPHA)
+    preds = np.array([
+        _ridge_predict_numpy(fit, row)
+        for row in te[usable].to_numpy(dtype=float)
+    ])
+    actual = te[target].to_numpy(dtype=float)
+
+    return {
+        "n_train": len(tr),
+        "n_test": len(te),
+        "mae": float(np.mean(np.abs(actual - preds))),
+        "market_mae": float(np.mean(np.abs(actual))),
+        "preds": preds,
+        "actual": actual,
+        "index": te.index.to_numpy(),
+    }
+
+
+def _walkforward_feature_audit(feature_df, test_seasons, market_type, holdout):
+    """
+    Full-model and leave-one-group-out audit.
+
+    Each test year is predicted exactly once using only rows from earlier seasons.
+    No feature group is judged on in-sample fit.
+    """
+    if feature_df is None or feature_df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    if market_type == "spread":
+        groups = SPREAD_FEATURE_GROUPS
+        target = "spread_target_residual"
+    else:
+        groups = TOTAL_FEATURE_GROUPS
+        target = "total_target_residual"
+
+    full_features = _flatten_feature_groups(groups)
+    season_rows = []
+    ablation_rows = []
+    prediction_rows = []
+
+    for season in sorted(set(int(s) for s in test_seasons)):
+        train = feature_df[feature_df["season"].astype(int) < season].copy()
+        test = feature_df[feature_df["season"].astype(int) == season].copy()
+
+        full = _audit_fit_predict(train, test, full_features, target)
+        if full is None:
+            continue
+
+        season_rows.append({
+            "Market": market_type.upper(),
+            "Test Season": season,
+            "Games": full["n_test"],
+            "Train Games": full["n_train"],
+            "Market MAE": full["market_mae"],
+            "Full Model MAE": full["mae"],
+            "Improvement vs Market": full["market_mae"] - full["mae"],
+            "Holdout": "YES" if season == int(holdout) else "NO",
+        })
+
+        for idx, y, pred in zip(full["index"], full["actual"], full["preds"]):
+            prediction_rows.append({
+                "market_type": market_type,
+                "season": season,
+                "row_index": int(idx),
+                "actual_market_residual": float(y),
+                "predicted_residual": float(pred),
+                "market_abs_error": abs(float(y)),
+                "model_abs_error": abs(float(y) - float(pred)),
+            })
+
+        # Leave one interpretable group out at a time.
+        for group_name, cols in groups.items():
+            reduced = [f for f in full_features if f not in cols]
+            ab = _audit_fit_predict(train, test, reduced, target)
+            if ab is None:
+                continue
+            # Positive = full model is better, therefore the removed group helped.
+            group_value = ab["mae"] - full["mae"]
+            ablation_rows.append({
+                "Market": market_type.upper(),
+                "Test Season": season,
+                "Feature Group": group_name,
+                "Games": min(full["n_test"], ab["n_test"]),
+                "Full Model MAE": full["mae"],
+                "MAE Without Group": ab["mae"],
+                "Feature Value": group_value,
+                "Helps": "YES" if group_value > 0 else "NO",
+                "Holdout": "YES" if season == int(holdout) else "NO",
+            })
+
+    return pd.DataFrame(season_rows), pd.DataFrame(ablation_rows), pd.DataFrame(prediction_rows)
+
+
+def _feature_group_summary(ablation_df, holdout):
+    if ablation_df is None or ablation_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (market, group), g in ablation_df.groupby(["Market", "Feature Group"]):
+        vals = pd.to_numeric(g["Feature Value"], errors="coerce").dropna()
+        hold = g[g["Test Season"].astype(int) == int(holdout)]
+        hold_val = (
+            float(hold.iloc[0]["Feature Value"])
+            if not hold.empty and pd.notna(hold.iloc[0]["Feature Value"])
+            else np.nan
+        )
+        positive = int((vals > 0).sum())
+        total = int(len(vals))
+        avg = float(vals.mean()) if total else np.nan
+
+        # Conservative audit label. No automatic production promotion.
+        if total >= 3 and positive >= max(2, total - 1) and pd.notna(hold_val) and hold_val > 0 and avg > 0:
+            verdict = "KEEP"
+        elif pd.notna(hold_val) and hold_val < 0 and avg < 0:
+            verdict = "REMOVE CANDIDATE"
+        else:
+            verdict = "MIXED"
+
+        rows.append({
+            "Market": market,
+            "Feature Group": group,
+            "Seasons Helped": f"{positive}/{total}",
+            "Avg MAE Value": avg,
+            f"{holdout} Holdout Value": hold_val,
+            "Audit Verdict": verdict,
+        })
+    return pd.DataFrame(rows).sort_values(
+        ["Market", "Avg MAE Value"],
+        ascending=[True, False],
+    ).reset_index(drop=True)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _feature_audit_history(min_season, max_season, scope):
+    """
+    Build the complete point-in-time-safe historical frame needed for audit.
+    Includes pre-test seasons so each selected test season can train only on past data.
+    """
+    rows = []
+    for season in range(int(min_season), int(max_season) + 1):
+        games = get_backtest_games(season)
+        line_payload = get_backtest_lines(season)
+        data = _bt_prior_only_data(get_backtest_model_data(season))
+
+        line_index = {}
+        for lr in line_payload or []:
+            gid = lr.get("id")
+            if gid is None:
+                continue
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            line_index[key] = normalize_game_lines([lr], game_id=gid)
+
+        for g in games or []:
+            if g.get("completed") is not True:
+                continue
+            if g.get("homePoints") is None or g.get("awayPoints") is None:
+                continue
+            if not _bt_game_scope(g, scope):
+                continue
+
+            gid = g.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            market = _bt_consensus_line(line_index.get(key, []))
+            if not market:
+                continue
+
+            try:
+                p = _bt_project_game(g, data, hfa=DEFAULT_HFA)
+            except Exception:
+                continue
+
+            rows.append({
+                "season": season,
+                "week": p["week"],
+                "game_id": gid,
+                "away_team": p["away"],
+                "home_team": p["home"],
+                "away_points": float(g["awayPoints"]),
+                "home_points": float(g["homePoints"]),
+                "raw_model_home_spread": float(p["model_home_spread"]),
+                "market_home_spread": market.get("home_spread"),
+                "raw_model_total": float(p["model_total"]),
+                "market_total": market.get("total"),
+                "confidence": float(p["confidence"]),
+                "base_power_margin": float(p["components"].get("base_power_margin", 0.0)),
+                "matchup_margin_adjustment": float(p["components"].get("matchup_margin_adjustment", 0.0)),
+                "hfa_adjustment": float(p["components"].get("hfa_adjustment", 0.0)),
+                "sp_total_base": float(p["components"].get("sp_total_base", 0.0)),
+                "efficiency_total_adjustment": float(p["components"].get("efficiency_total_adjustment", 0.0)),
+                "pace_total_adjustment": float(p["components"].get("pace_total_adjustment", 0.0)),
+
+                "away_sp_rating": float(p["away_rating"].get("sp_rating") or 0.0),
+                "home_sp_rating": float(p["home_rating"].get("sp_rating") or 0.0),
+                "away_srs_adjustment": float(p["away_rating"].get("srs_adjustment") or 0.0),
+                "home_srs_adjustment": float(p["home_rating"].get("srs_adjustment") or 0.0),
+                "away_talent_adjustment": float(p["away_rating"].get("talent_adjustment") or 0.0),
+                "home_talent_adjustment": float(p["home_rating"].get("talent_adjustment") or 0.0),
+                "away_returning_adjustment": float(p["away_rating"].get("returning_adjustment") or 0.0),
+                "home_returning_adjustment": float(p["home_rating"].get("returning_adjustment") or 0.0),
+                "away_returning_pass": p["away_rating"].get("returning_pass"),
+                "home_returning_pass": p["home_rating"].get("returning_pass"),
+                "away_returning_usage": p["away_rating"].get("returning_usage"),
+                "home_returning_usage": p["home_rating"].get("returning_usage"),
+
+                "away_ppa_off_pass": p["away_rating"]["ppa"].get("off_pass"),
+                "home_ppa_off_pass": p["home_rating"]["ppa"].get("off_pass"),
+                "away_ppa_def_pass": p["away_rating"]["ppa"].get("def_pass"),
+                "home_ppa_def_pass": p["home_rating"]["ppa"].get("def_pass"),
+                "away_ppa_off_rush": p["away_rating"]["ppa"].get("off_rush"),
+                "home_ppa_off_rush": p["home_rating"]["ppa"].get("off_rush"),
+                "away_ppa_def_rush": p["away_rating"]["ppa"].get("def_rush"),
+                "home_ppa_def_rush": p["home_rating"]["ppa"].get("def_rush"),
+
+                "away_adv_off_success": p["away_rating"]["adv"].get("off_success"),
+                "home_adv_off_success": p["home_rating"]["adv"].get("off_success"),
+                "away_adv_def_success": p["away_rating"]["adv"].get("def_success"),
+                "home_adv_def_success": p["home_rating"]["adv"].get("def_success"),
+                "away_adv_off_expl": p["away_rating"]["adv"].get("off_expl"),
+                "home_adv_off_expl": p["home_rating"]["adv"].get("off_expl"),
+                "away_adv_def_expl": p["away_rating"]["adv"].get("def_expl"),
+                "home_adv_def_expl": p["home_rating"]["adv"].get("def_expl"),
+                "away_adv_off_pass_ppa": p["away_rating"]["adv"].get("off_pass_ppa"),
+                "home_adv_off_pass_ppa": p["home_rating"]["adv"].get("off_pass_ppa"),
+                "away_adv_def_pass_ppa": p["away_rating"]["adv"].get("def_pass_ppa"),
+                "home_adv_def_pass_ppa": p["home_rating"]["adv"].get("def_pass_ppa"),
+                "away_adv_off_rush_ppa": p["away_rating"]["adv"].get("off_rush_ppa"),
+                "home_adv_off_rush_ppa": p["home_rating"]["adv"].get("off_rush_ppa"),
+                "away_adv_def_rush_ppa": p["away_rating"]["adv"].get("def_rush_ppa"),
+                "home_adv_def_rush_ppa": p["home_rating"]["adv"].get("def_rush_ppa"),
+                "away_adv_off_ppo": p["away_rating"]["adv"].get("off_ppo"),
+                "home_adv_off_ppo": p["home_rating"]["adv"].get("off_ppo"),
+                "away_adv_def_ppo": p["away_rating"]["adv"].get("def_ppo"),
+                "home_adv_def_ppo": p["home_rating"]["adv"].get("def_ppo"),
+                "away_adv_def_havoc": p["away_rating"]["adv"].get("def_havoc"),
+                "home_adv_def_havoc": p["home_rating"]["adv"].get("def_havoc"),
+                "away_adv_off_plays": p["away_rating"]["adv"].get("off_plays"),
+                "home_adv_off_plays": p["home_rating"]["adv"].get("off_plays"),
+                "away_adv_off_drives": p["away_rating"]["adv"].get("off_drives"),
+                "home_adv_off_drives": p["home_rating"]["adv"].get("off_drives"),
+            })
+
+    return _feature_audit_frame(pd.DataFrame(rows))
+
+
+def _run_feature_audit(test_seasons, scope, holdout, progress=None):
+    test_seasons = sorted(set(int(s) for s in test_seasons))
+    if not test_seasons:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    # Give the first selected test year a real prior training history.
+    min_history = min(RESIDUAL_TRAIN_START, min(test_seasons) - 4)
+    min_history = max(2014, min_history)
+    max_history = max(test_seasons)
+
+    if progress is not None:
+        progress.progress(0.10, text="Building leakage-safe feature history…")
+    feat = _feature_audit_history(min_history, max_history, scope)
+
+    if progress is not None:
+        progress.progress(0.45, text="Running spread leave-one-feature-group-out tests…")
+    sp_seasons, sp_ablation, sp_preds = _walkforward_feature_audit(
+        feat, test_seasons, "spread", holdout
+    )
+
+    if progress is not None:
+        progress.progress(0.70, text="Running total feature audit (research-only)…")
+    tot_seasons, tot_ablation, tot_preds = _walkforward_feature_audit(
+        feat, test_seasons, "total", holdout
+    )
+
+    season_df = pd.concat([sp_seasons, tot_seasons], ignore_index=True)
+    ablation_df = pd.concat([sp_ablation, tot_ablation], ignore_index=True)
+    preds_df = pd.concat([sp_preds, tot_preds], ignore_index=True)
+    summary_df = _feature_group_summary(ablation_df, holdout)
+
+    if progress is not None:
+        progress.progress(1.0, text="Feature audit complete.")
+
+    return season_df, ablation_df, summary_df, preds_df
+
+
+def _render_feature_audit_results(season_df, ablation_df, summary_df, preds_df, holdout):
+    st.markdown("#### Walk-Forward Audit Results")
+    st.caption(
+        "Positive feature value means MAE got worse when that feature group was removed, "
+        "so the group added out-of-sample value. Negative means removing it improved the model."
+    )
+
+    if season_df is None or season_df.empty:
+        st.info("Run the feature audit to test which signals actually improve unseen-season residual accuracy.")
+        return
+
+    show = season_df.copy()
+    for c in ["Market MAE", "Full Model MAE", "Improvement vs Market"]:
+        show[c] = show[c].map(lambda v: f"{v:+.4f}" if c == "Improvement vs Market" else f"{v:.4f}")
+    st.dataframe(show, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Feature group verdicts")
+    summ = summary_df.copy()
+    for c in ["Avg MAE Value", f"{holdout} Holdout Value"]:
+        if c in summ.columns:
+            summ[c] = summ[c].map(lambda v: f"{v:+.4f}" if pd.notna(v) else "—")
+    st.dataframe(summ, use_container_width=True, hide_index=True)
+
+    spread_keep = summary_df[
+        (summary_df["Market"] == "SPREAD") &
+        (summary_df["Audit Verdict"] == "KEEP")
+    ]["Feature Group"].tolist()
+
+    spread_remove = summary_df[
+        (summary_df["Market"] == "SPREAD") &
+        (summary_df["Audit Verdict"] == "REMOVE CANDIDATE")
+    ]["Feature Group"].tolist()
+
+    if spread_keep:
+        st.success("Spread groups that earned KEEP status: " + ", ".join(spread_keep))
+    else:
+        st.warning("No spread feature group earned automatic KEEP status yet.")
+
+    if spread_remove:
+        st.warning("Spread removal candidates: " + ", ".join(spread_remove))
+
+    with st.expander("Detailed leave-one-group-out results", expanded=False):
+        detail = ablation_df.copy()
+        for c in ["Full Model MAE", "MAE Without Group", "Feature Value"]:
+            detail[c] = detail[c].map(lambda v: f"{v:+.4f}" if c == "Feature Value" else f"{v:.4f}")
+        st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    with st.expander("Feature Audit Downloads", expanded=False):
+        st.download_button(
+            "Download Feature Summary",
+            data=summary_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_feature_audit_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_feature_audit_summary",
+        )
+        st.download_button(
+            "Download Season Results",
+            data=season_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_feature_audit_seasons.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_feature_audit_seasons",
+        )
+        st.download_button(
+            "Download Detailed Ablations",
+            data=ablation_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_feature_audit_ablation.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_feature_audit_ablation",
+        )
+        st.download_button(
+            "Download Walk-Forward Predictions",
+            data=preds_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_feature_audit_predictions.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_feature_audit_predictions",
+        )
 
 def _format_validation_bets(df):
     if df is None or df.empty:
@@ -6167,8 +6759,8 @@ def _format_validation_bets(df):
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
-        '<div class="mobile-page-title">Spread + Total Audit</div>'
-        '<div class="mobile-page-sub">Walk-forward test of the new market-baseline residual model. Every season is fit only on earlier seasons.</div></div>',
+        '<div class="mobile-page-title">Spread + Total + Feature Audit</div>'
+        '<div class="mobile-page-sub">Walk-forward market-baseline validation plus leave-one-feature-group-out testing. Every test season uses only earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -6299,6 +6891,40 @@ def _render_model_validation_page():
     st.caption(
         "A PASS does not automatically alter the live grader. It means the market is eligible for a separate locked promotion review. "
         "A FAIL means we improve the projection/calibration before changing recommendation thresholds."
+    )
+
+    st.markdown("### 7. Feature Audit")
+    st.caption(
+        "This keeps the market-baseline architecture fixed and asks which football signals actually improve unseen-season residual MAE."
+    )
+    if st.button(
+        "Run Residual Feature Audit",
+        use_container_width=True,
+        key="run_residual_feature_audit",
+    ):
+        audit_progress = st.progress(0, text="Starting feature audit…")
+        try:
+            a_seasons, a_ablation, a_summary, a_preds = _run_feature_audit(
+                seasons, scope, holdout, progress=audit_progress
+            )
+        except Exception as e:
+            audit_progress.empty()
+            st.error(f"Feature audit failed: {e}")
+            st.exception(e)
+        else:
+            audit_progress.empty()
+            st.session_state["cfb_feature_audit_seasons"] = a_seasons
+            st.session_state["cfb_feature_audit_ablation"] = a_ablation
+            st.session_state["cfb_feature_audit_summary"] = a_summary
+            st.session_state["cfb_feature_audit_predictions"] = a_preds
+            st.success("Feature audit complete.")
+
+    a_seasons = st.session_state.get("cfb_feature_audit_seasons", pd.DataFrame())
+    a_ablation = st.session_state.get("cfb_feature_audit_ablation", pd.DataFrame())
+    a_summary = st.session_state.get("cfb_feature_audit_summary", pd.DataFrame())
+    a_preds = st.session_state.get("cfb_feature_audit_predictions", pd.DataFrame())
+    _render_feature_audit_results(
+        a_seasons, a_ablation, a_summary, a_preds, holdout
     )
 
     with st.expander("Downloads", expanded=False):
@@ -9077,4 +9703,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v2.5.0 Residual Market • Spread market-baseline model • Totals research-only.")
+st.caption("CFB Edge • v2.6.0 Residual Feature Audit • Market-baseline architecture • Totals research-only.")
