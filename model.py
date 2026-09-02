@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.3.0-GAMEDAY-SELECTOR"
+MODEL_VERSION = "1.4.0-SLATE-AWARE-FINALIST"
 
 DEFAULT_HFA = 2.5
 
@@ -730,3 +730,10 @@ SIGNAL_STABILITY_ENSEMBLE_VERSION = "v3.2.0-signal-stability-ensemble"
 # top-N/top-percentile betting workflows with ROI, drawdown, streaks,
 # season stability and a locked holdout gate.
 GAMEDAY_SELECTOR_VERSION = "v3.3.0-gameday-selector"
+
+
+# v1.4.0 slate-aware finalist note:
+# v3.4 simulates Early / Midday / Late game-day slates, compares a small fixed
+# set of ranking architectures using 2022-2024 only, locks the development
+# winner, and then evaluates that locked winner on the holdout.
+SLATE_AWARE_FINALIST_VERSION = "v3.4.0-slate-aware-finalist"

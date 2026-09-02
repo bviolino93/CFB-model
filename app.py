@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.3.0-GAMEDAY-SELECTOR"
+MODEL_VERSION = "3.4.0-SLATE-AWARE-FINALIST"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6203,10 +6203,41 @@ def _v3_game_feature_row(game, market, preseason, current_adv):
     neutral = 1.0 if bool(game.get("neutralSite")) else 0.0
     hfa = 0.0 if neutral else DEFAULT_HFA
 
+    # Preserve historical kickoff so downstream validation can reproduce
+    # the exact early / midday / late slate the user would have seen.
+    _kick_raw = game.get("startDate") or game.get("start_date") or game.get("startTime")
+    _kick_et = pd.NaT
+    try:
+        if _kick_raw:
+            _kick_et = pd.to_datetime(_kick_raw, utc=True).tz_convert("America/New_York")
+    except Exception:
+        _kick_et = pd.NaT
+
+    _kick_hour = np.nan
+    _kick_label = "Unknown"
+    _kick_date = ""
+    if pd.notna(_kick_et):
+        _kick_hour = float(_kick_et.hour) + float(_kick_et.minute) / 60.0
+        _kick_date = _kick_et.strftime("%Y-%m-%d")
+        # Practical Saturday windows:
+        # Early: before 2:30 PM ET
+        # Midday: 2:30 PM through 6:29 PM ET
+        # Late: 6:30 PM ET and later
+        if _kick_hour < 14.5:
+            _kick_label = "Early"
+        elif _kick_hour < 18.5:
+            _kick_label = "Midday"
+        else:
+            _kick_label = "Late"
+
     row = {
         "season": int(game.get("season") or 0),
         "week": week,
         "game_id": game.get("id"),
+        "kickoff_et": "" if pd.isna(_kick_et) else _kick_et.strftime("%Y-%m-%d %I:%M %p"),
+        "game_date_et": _kick_date,
+        "kickoff_hour_et": _kick_hour,
+        "slate_window": _kick_label,
         "home_team": home,
         "away_team": away,
         "home_points": _v3_num(game.get("homePoints")),
@@ -8596,6 +8627,647 @@ def _render_v33_gameday_selector(
         )
         st.caption("Upload this single ZIP back to ChatGPT for review.")
 
+# ===== v3.4 slate-aware finalist =====
+V34_VERSION = "v3.4.0-slate-aware-finalist"
+V34_DEV_SEASONS = (2022, 2023, 2024)
+V34_DEFAULT_HOLDOUT = 2025
+V34_BREAKEVEN = 110.0 / 210.0
+V34_MIN_SLATE_GAMES = 3
+
+# Fixed ranking architectures.  These are selected ONLY on development seasons.
+# The holdout season is evaluated after the architecture + card rule are locked.
+V34_ARCHITECTURES = {
+    "Consensus First": {
+        "confidence": 0.55,
+        "agreement": 0.25,
+        "regression": 0.10,
+        "direction": 0.05,
+        "maturity": 0.05,
+    },
+    "Balanced Ensemble": {
+        "confidence": 0.40,
+        "agreement": 0.20,
+        "regression": 0.20,
+        "direction": 0.10,
+        "maturity": 0.10,
+    },
+    "Agreement Heavy": {
+        "confidence": 0.35,
+        "agreement": 0.35,
+        "regression": 0.10,
+        "direction": 0.10,
+        "maturity": 0.10,
+    },
+    "Football Context": {
+        "confidence": 0.35,
+        "agreement": 0.20,
+        "regression": 0.15,
+        "direction": 0.10,
+        "maturity": 0.20,
+    },
+}
+
+V34_CARD_RULES = (
+    "Top 1 / Slate",
+    "Top 2 / Slate",
+    "Top 3 / Slate",
+    "Dynamic 1–3 / Slate",
+)
+
+
+def _v34_ensure_slate_columns(history):
+    """
+    v3.4 normally gets slate_window from the rebuilt v3 history frame.
+    Fallbacks keep the app robust when an older cached history object is present.
+    """
+    h = history.copy()
+    if "slate_window" not in h.columns:
+        h["slate_window"] = "Unknown"
+    if "game_date_et" not in h.columns:
+        h["game_date_et"] = ""
+    if "kickoff_hour_et" not in h.columns:
+        h["kickoff_hour_et"] = np.nan
+    return h
+
+
+def _v34_base_game_frame(history, preds):
+    history = _v34_ensure_slate_columns(history)
+    if history is None or history.empty or preds is None or preds.empty:
+        return pd.DataFrame()
+
+    p = preds[
+        (preds["market_type"] == "spread") &
+        (preds["task"] == "classification") &
+        (preds["model"].isin(["Gradient Boosting", "Extra Trees", "Logistic"]))
+    ].copy()
+    if p.empty:
+        return pd.DataFrame()
+
+    h = history.reset_index().rename(columns={"index": "row_index"}).copy()
+    keep = [
+        "row_index","season","week","game_id","home_team","away_team",
+        "market_margin","actual_margin","kickoff_et","game_date_et",
+        "kickoff_hour_et","slate_window","conference_game","elo_diff",
+        "talent_diff","returning_ppa_diff","cur_ppa_match",
+    ]
+    keep = [c for c in keep if c in h.columns]
+    h = h[keep]
+
+    x = p.merge(h, on=["row_index","season"], how="left")
+    residual = (
+        pd.to_numeric(x["actual_margin"], errors="coerce")
+        - pd.to_numeric(x["market_margin"], errors="coerce")
+    )
+    x["home_cover"] = np.where(
+        residual > 0, 1.0,
+        np.where(residual < 0, 0.0, np.nan)
+    )
+    x["side"] = np.where(
+        pd.to_numeric(x["probability"], errors="coerce") >= 0.5,
+        "HOME","AWAY"
+    )
+    x["side_confidence"] = np.maximum(
+        pd.to_numeric(x["probability"], errors="coerce"),
+        1.0 - pd.to_numeric(x["probability"], errors="coerce"),
+    )
+
+    reg = _v33_regression_consensus(preds)
+
+    rows = []
+    for (season, row_index), g in x.groupby(["season","row_index"]):
+        valid = g.dropna(subset=["probability"])
+        if len(valid) < 2:
+            continue
+
+        home_votes = int((valid["side"] == "HOME").sum())
+        away_votes = int((valid["side"] == "AWAY").sum())
+        if home_votes == away_votes:
+            continue
+
+        pick_side = "HOME" if home_votes > away_votes else "AWAY"
+        agreeing = valid[valid["side"] == pick_side]
+        if agreeing.empty:
+            continue
+
+        r0 = valid.iloc[0]
+        y = _v3_num(r0.get("home_cover"))
+        if not np.isfinite(y):
+            continue
+
+        won = int(y == 1) if pick_side == "HOME" else int(y == 0)
+        rows.append({
+            "season": int(season),
+            "week": int(_v3_num(r0.get("week"), 1)),
+            "row_index": int(row_index),
+            "game_id": r0.get("game_id"),
+            "home_team": r0.get("home_team"),
+            "away_team": r0.get("away_team"),
+            "market_margin": _v3_num(r0.get("market_margin")),
+            "kickoff_et": r0.get("kickoff_et", ""),
+            "game_date_et": r0.get("game_date_et", ""),
+            "kickoff_hour_et": _v3_num(r0.get("kickoff_hour_et")),
+            "slate_window": r0.get("slate_window", "Unknown"),
+            "pick_side": pick_side,
+            "won": won,
+            "classifier_models": int(len(valid)),
+            "classifier_agreement": int(len(agreeing)),
+            "classifier_confidence": float(
+                pd.to_numeric(agreeing["side_confidence"], errors="coerce").mean()
+            ),
+            "elo_abs": abs(_v3_num(r0.get("elo_diff"))),
+            "talent_abs": abs(_v3_num(r0.get("talent_diff"))),
+            "returning_abs": abs(_v3_num(r0.get("returning_ppa_diff"))),
+            "current_data": 1.0 if np.isfinite(_v3_num(r0.get("cur_ppa_match"))) else 0.0,
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    if reg is not None and not reg.empty:
+        out = out.merge(reg, on=["season","row_index"], how="left")
+    else:
+        out["reg_side"] = None
+        out["reg_agreement"] = 0.0
+        out["reg_strength"] = 0.0
+
+    out["reg_strength"] = pd.to_numeric(
+        out["reg_strength"], errors="coerce"
+    ).fillna(0.0)
+    out["direction_agreement"] = (
+        out["pick_side"].astype(str) == out["reg_side"].astype(str)
+    ).astype(float)
+
+    out["agreement_rate"] = (
+        pd.to_numeric(out["classifier_agreement"], errors="coerce")
+        / pd.to_numeric(out["classifier_models"], errors="coerce").clip(lower=1)
+    )
+
+    out["data_maturity"] = np.where(
+        pd.to_numeric(out["week"], errors="coerce") >= 4,
+        1.0,
+        0.35 + 0.25 * pd.to_numeric(out["current_data"], errors="coerce").fillna(0.0),
+    )
+
+    # If historical kickoff is unavailable, preserve the game for architecture
+    # work but do not allow it into slate-aware validation.
+    out["slate_valid"] = out["slate_window"].isin(["Early","Midday","Late"])
+    return out
+
+
+def _v34_score_architecture(base, architecture_name):
+    if base is None or base.empty:
+        return pd.DataFrame()
+
+    weights = V34_ARCHITECTURES[architecture_name]
+    scored = []
+
+    # Rankings are cross-sectional WITHIN each slate, not across the whole day.
+    group_cols = ["season","week","slate_window"]
+    for keys, g in base[base["slate_valid"]].groupby(group_cols):
+        if len(g) < V34_MIN_SLATE_GAMES:
+            continue
+
+        z = g.copy()
+        z["confidence_pct"] = z["classifier_confidence"].rank(
+            method="average", pct=True
+        )
+        z["regression_pct"] = z["reg_strength"].rank(
+            method="average", pct=True
+        )
+
+        z["selector_score"] = (
+            weights["confidence"] * z["confidence_pct"]
+            + weights["agreement"] * z["agreement_rate"]
+            + weights["regression"] * z["regression_pct"]
+            + weights["direction"] * z["direction_agreement"]
+            + weights["maturity"] * z["data_maturity"]
+        )
+
+        z["architecture"] = architecture_name
+        z["slate_rank"] = z["selector_score"].rank(
+            method="first", ascending=False
+        ).astype(int)
+        z["slate_size"] = int(len(z))
+
+        leader = float(z["selector_score"].max())
+        z["leader_gap"] = leader - z["selector_score"]
+        scored.append(z)
+
+    return pd.concat(scored, ignore_index=True) if scored else pd.DataFrame()
+
+
+def _v34_card_mask(scored, card_rule):
+    if scored is None or scored.empty:
+        return pd.Series(False, index=scored.index if scored is not None else [])
+
+    if card_rule == "Top 1 / Slate":
+        return scored["slate_rank"] <= 1
+    if card_rule == "Top 2 / Slate":
+        return scored["slate_rank"] <= 2
+    if card_rule == "Top 3 / Slate":
+        return scored["slate_rank"] <= 3
+
+    # Dynamic rule: always allow #1; #2 and #3 only when close enough to the
+    # slate leader AND model agreement is at least 2/3.
+    # These thresholds are fixed before holdout evaluation.
+    return (
+        (scored["slate_rank"] == 1)
+        |
+        (
+            (scored["slate_rank"] == 2)
+            & (pd.to_numeric(scored["leader_gap"], errors="coerce") <= 0.075)
+            & (pd.to_numeric(scored["agreement_rate"], errors="coerce") >= (2/3))
+        )
+        |
+        (
+            (scored["slate_rank"] == 3)
+            & (pd.to_numeric(scored["leader_gap"], errors="coerce") <= 0.040)
+            & (pd.to_numeric(scored["agreement_rate"], errors="coerce") >= 1.0)
+        )
+    )
+
+
+def _v34_flat_units(g):
+    if g is None or g.empty:
+        return np.nan
+    wins = int(pd.to_numeric(g["won"], errors="coerce").sum())
+    losses = int(len(g)) - wins
+    return wins * (100.0 / 110.0) - losses
+
+
+def _v34_roi(g):
+    if g is None or g.empty:
+        return np.nan
+    return _v34_flat_units(g) / len(g)
+
+
+def _v34_drawdown(g):
+    if g is None or g.empty:
+        return np.nan
+    x = g.sort_values(
+        ["season","week","slate_window","slate_rank"],
+        ascending=[True,True,True,True]
+    ).copy()
+    x["u"] = np.where(
+        pd.to_numeric(x["won"], errors="coerce") == 1,
+        100.0/110.0,
+        -1.0
+    )
+    eq = x["u"].cumsum()
+    peak = eq.cummax()
+    return float((eq - peak).min())
+
+
+def _v34_metrics(g):
+    if g is None or g.empty:
+        return {
+            "Bets":0,"Wins":0,"Losses":0,"Win Rate":np.nan,
+            "ROI":np.nan,"Units":0.0,"Max Drawdown":np.nan,
+        }
+    wins = int(pd.to_numeric(g["won"], errors="coerce").sum())
+    n = int(len(g))
+    return {
+        "Bets": n,
+        "Wins": wins,
+        "Losses": n - wins,
+        "Win Rate": wins / n if n else np.nan,
+        "ROI": _v34_roi(g),
+        "Units": _v34_flat_units(g),
+        "Max Drawdown": _v34_drawdown(g),
+    }
+
+
+def _v34_candidate_table(base, holdout):
+    """
+    Select architecture + card rule on development seasons only.
+    The holdout result is attached only after the development score is frozen.
+    """
+    rows = []
+    bet_rows = []
+
+    for arch in V34_ARCHITECTURES:
+        scored = _v34_score_architecture(base, arch)
+        if scored.empty:
+            continue
+
+        for rule in V34_CARD_RULES:
+            chosen = scored[_v34_card_mask(scored, rule)].copy()
+            if chosen.empty:
+                continue
+
+            chosen["card_rule"] = rule
+            bet_rows.append(chosen)
+
+            dev = chosen[chosen["season"].astype(int).isin(V34_DEV_SEASONS)].copy()
+            hld = chosen[chosen["season"].astype(int) == int(holdout)].copy()
+
+            dev_m = _v34_metrics(dev)
+            hold_m = _v34_metrics(hld)
+
+            season_rois = []
+            for season in V34_DEV_SEASONS:
+                sg = dev[dev["season"].astype(int) == int(season)]
+                if len(sg):
+                    season_rois.append(_v34_roi(sg))
+
+            pos_dev = sum(1 for r in season_rois if np.isfinite(r) and r > 0)
+            min_dev_roi = min(season_rois) if season_rois else np.nan
+
+            # Development selection score. The objective rewards edge, stability,
+            # useful volume and manageable drawdown without looking at holdout.
+            volume_factor = min(dev_m["Bets"] / 250.0, 1.0)
+            stability_factor = pos_dev / max(len(season_rois), 1)
+            dd_penalty = min(abs(dev_m["Max Drawdown"]) / 25.0, 1.0) if np.isfinite(dev_m["Max Drawdown"]) else 1.0
+
+            selection_score = (
+                0.45 * (dev_m["ROI"] if np.isfinite(dev_m["ROI"]) else -1.0)
+                + 0.20 * ((dev_m["Win Rate"] - V34_BREAKEVEN) if np.isfinite(dev_m["Win Rate"]) else -1.0)
+                + 0.15 * stability_factor
+                + 0.10 * volume_factor
+                - 0.10 * dd_penalty
+            )
+
+            rows.append({
+                "Architecture": arch,
+                "Card Rule": rule,
+                "Development Bets": dev_m["Bets"],
+                "Development Win Rate": dev_m["Win Rate"],
+                "Development ROI": dev_m["ROI"],
+                "Development Units": dev_m["Units"],
+                "Positive Dev Seasons": f"{pos_dev}/{len(season_rois)}",
+                "Worst Dev Season ROI": min_dev_roi,
+                "Development Max Drawdown": dev_m["Max Drawdown"],
+                "Selection Score": selection_score,
+                "Holdout Bets": hold_m["Bets"],
+                "Holdout Win Rate": hold_m["Win Rate"],
+                "Holdout ROI": hold_m["ROI"],
+                "Holdout Units": hold_m["Units"],
+                "Holdout Max Drawdown": hold_m["Max Drawdown"],
+            })
+
+    table = pd.DataFrame(rows)
+    bets = pd.concat(bet_rows, ignore_index=True) if bet_rows else pd.DataFrame()
+
+    if table.empty:
+        return table, bets
+
+    table = table.sort_values(
+        ["Selection Score","Development ROI","Development Bets"],
+        ascending=[False,False,False]
+    ).reset_index(drop=True)
+    table["Development Rank"] = np.arange(1, len(table)+1)
+    table["Locked Winner"] = table["Development Rank"] == 1
+    return table, bets
+
+
+def _v34_locked_winner_detail(candidates, all_bets, holdout):
+    if candidates is None or candidates.empty or all_bets is None or all_bets.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    winner = candidates.iloc[0]
+    arch = winner["Architecture"]
+    rule = winner["Card Rule"]
+
+    x = all_bets[
+        (all_bets["architecture"] == arch) &
+        (all_bets["card_rule"] == rule)
+    ].copy()
+    if x.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    season_rows = []
+    for season, g in x.groupby("season"):
+        m = _v34_metrics(g)
+        season_rows.append({
+            "Season": int(season),
+            **m,
+        })
+
+    slate_rows = []
+    for (season, slate), g in x.groupby(["season","slate_window"]):
+        m = _v34_metrics(g)
+        slate_rows.append({
+            "Season": int(season),
+            "Slate": slate,
+            **m,
+        })
+
+    week_rows = []
+    for (season, week), g in x.groupby(["season","week"]):
+        m = _v34_metrics(g)
+        week_rows.append({
+            "Season": int(season),
+            "Week": int(week),
+            **m,
+        })
+
+    return (
+        pd.DataFrame(season_rows),
+        pd.DataFrame(slate_rows),
+        pd.DataFrame(week_rows),
+    )
+
+
+def _v34_final_gate(candidates, holdout):
+    if candidates is None or candidates.empty:
+        return pd.DataFrame()
+
+    w = candidates.iloc[0]
+    dev_bets = int(w["Development Bets"])
+    dev_roi = _v3_num(w["Development ROI"])
+    dev_wr = _v3_num(w["Development Win Rate"])
+    hold_bets = int(w["Holdout Bets"])
+    hold_roi = _v3_num(w["Holdout ROI"])
+    hold_wr = _v3_num(w["Holdout Win Rate"])
+
+    try:
+        pos_dev = int(str(w["Positive Dev Seasons"]).split("/")[0])
+        n_dev = int(str(w["Positive Dev Seasons"]).split("/")[1])
+    except Exception:
+        pos_dev, n_dev = 0, 0
+
+    dev_pass = (
+        dev_bets >= 150
+        and np.isfinite(dev_roi) and dev_roi > 0
+        and np.isfinite(dev_wr) and dev_wr > V34_BREAKEVEN
+        and n_dev >= 3 and pos_dev >= 2
+    )
+    hold_pass = (
+        hold_bets >= 35
+        and np.isfinite(hold_roi) and hold_roi > 0
+        and np.isfinite(hold_wr) and hold_wr > V34_BREAKEVEN
+    )
+    drawdown_ok = (
+        np.isfinite(_v3_num(w["Development Max Drawdown"]))
+        and abs(_v3_num(w["Development Max Drawdown"])) <= 20.0
+    )
+
+    if dev_pass and hold_pass and drawdown_ok:
+        verdict = "FINALIST — FORWARD TRACK 2026"
+    elif dev_pass:
+        verdict = "DEVELOPMENT PASS / HOLDOUT FAIL"
+    else:
+        verdict = "KEEP IN RESEARCH"
+
+    return pd.DataFrame([{
+        "Locked Architecture": w["Architecture"],
+        "Locked Card Rule": w["Card Rule"],
+        "Development Pass": bool(dev_pass),
+        f"{holdout} Holdout Pass": bool(hold_pass),
+        "Drawdown Guardrail Pass": bool(drawdown_ok),
+        "Verdict": verdict,
+    }])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v34_slate_finalist(test_seasons_tuple, scope, holdout, train_start):
+    (
+        history, reg, reg_summary, cls, cls_summary,
+        bets_raw, bet_summary, preds, fixed_gate,
+    ) = _run_v31_ml_bakeoff(
+        tuple(sorted(set(int(s) for s in test_seasons_tuple))),
+        scope,
+        int(holdout),
+        int(train_start),
+    )
+
+    base = _v34_base_game_frame(history, preds)
+    candidates, all_bets = _v34_candidate_table(base, holdout)
+    season_detail, slate_detail, week_detail = _v34_locked_winner_detail(
+        candidates, all_bets, holdout
+    )
+    gate = _v34_final_gate(candidates, holdout)
+
+    winner_bets = pd.DataFrame()
+    winner_ranked = pd.DataFrame()
+    if candidates is not None and not candidates.empty:
+        winner = candidates.iloc[0]
+        winner_ranked = _v34_score_architecture(base, winner["Architecture"])
+        if winner_ranked is not None and not winner_ranked.empty:
+            winner_bets = winner_ranked[
+                _v34_card_mask(winner_ranked, winner["Card Rule"])
+            ].copy()
+
+    return (
+        base, candidates, gate, winner_ranked, winner_bets,
+        season_detail, slate_detail, week_detail,
+    )
+
+
+def _render_v34_slate_finalist(
+    base, candidates, gate, winner_ranked, winner_bets,
+    season_detail, slate_detail, week_detail, holdout
+):
+    st.markdown("#### v3.4 Slate-Aware Finalist")
+    st.caption(
+        "This is the closest historical simulation to the intended Saturday workflow: "
+        "rank Early, Midday and Late separately, select the best ranking architecture on "
+        "2022–2024 only, lock it, then reveal the selected architecture's 2025 result."
+    )
+
+    if candidates is None or candidates.empty:
+        st.info("Run v3.4 to compare locked slate-aware ranking architectures.")
+        return
+
+    winner = candidates.iloc[0]
+    st.markdown("##### Locked development winner")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Architecture", str(winner["Architecture"]))
+    c2.metric("Card Rule", str(winner["Card Rule"]))
+    c3.metric(
+        "Development ROI",
+        "—" if pd.isna(winner["Development ROI"])
+        else f"{100*float(winner['Development ROI']):+.1f}%"
+    )
+
+    st.markdown("##### Final gate")
+    st.dataframe(gate, use_container_width=True, hide_index=True)
+
+    verdict = str(gate.iloc[0]["Verdict"]) if gate is not None and not gate.empty else ""
+    if verdict.startswith("FINALIST"):
+        st.success(
+            "The locked slate-aware selector cleared the historical screen. "
+            "Do not re-optimize it on 2025; the next step is to freeze this exact rule "
+            "and track every 2026 recommendation forward."
+        )
+    elif "HOLDOUT FAIL" in verdict:
+        st.warning(
+            "The development winner did not survive the holdout. "
+            "Do not promote it just because another candidate happened to look better in 2025."
+        )
+    else:
+        st.warning(
+            "No architecture currently meets the required development evidence. "
+            "The model should remain selective/research-only."
+        )
+
+    st.markdown("##### Architecture + card-rule comparison")
+    show = candidates.copy()
+    pct_cols = [
+        "Development Win Rate","Development ROI","Worst Dev Season ROI",
+        "Holdout Win Rate","Holdout ROI",
+    ]
+    for c in pct_cols:
+        if c in show.columns:
+            show[c] = show[c].map(
+                lambda v: "—" if pd.isna(v) else f"{100*float(v):+.1f}%"
+                if "ROI" in c else f"{100*float(v):.1f}%"
+            )
+    for c in ["Development Max Drawdown","Holdout Max Drawdown"]:
+        if c in show.columns:
+            show[c] = show[c].map(
+                lambda v: "—" if pd.isna(v) else f"{float(v):.1f}u"
+            )
+    st.dataframe(
+        show.head(16),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("##### Locked winner by slate")
+    sd = slate_detail.copy()
+    if not sd.empty:
+        sd["Win Rate"] = sd["Win Rate"].map(lambda v: f"{100*float(v):.1f}%")
+        sd["ROI"] = sd["ROI"].map(lambda v: f"{100*float(v):+.1f}%")
+        sd["Max Drawdown"] = sd["Max Drawdown"].map(lambda v: f"{float(v):.1f}u")
+        st.dataframe(sd, use_container_width=True, hide_index=True)
+
+    with st.expander("Locked winner by season", expanded=False):
+        s = season_detail.copy()
+        if not s.empty:
+            s["Win Rate"] = s["Win Rate"].map(lambda v: f"{100*float(v):.1f}%")
+            s["ROI"] = s["ROI"].map(lambda v: f"{100*float(v):+.1f}%")
+        st.dataframe(s, use_container_width=True, hide_index=True)
+
+    with st.expander("Locked winner week-by-week", expanded=False):
+        w = week_detail.copy()
+        if not w.empty:
+            w["Win Rate"] = w["Win Rate"].map(lambda v: f"{100*float(v):.1f}%")
+            w["ROI"] = w["ROI"].map(lambda v: f"{100*float(v):+.1f}%")
+        st.dataframe(w, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.4 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v340_candidate_architectures.csv": candidates,
+            "cfb_v340_final_gate.csv": gate,
+            "cfb_v340_locked_ranked_games.csv": winner_ranked,
+            "cfb_v340_locked_bets.csv": winner_bets,
+            "cfb_v340_locked_seasons.csv": season_detail,
+            "cfb_v340_locked_slates.csv": slate_detail,
+            "cfb_v340_locked_weeks.csv": week_detail,
+            "cfb_v340_base_games.csv": base,
+        })
+        st.download_button(
+            "Download All v3.4 Files",
+            data=bundle,
+            file_name="cfb_v340_slate_aware_finalist_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v340_all",
+        )
+        st.caption("Upload this ZIP back to ChatGPT for the final model review.")
+
 # ===== v2.4 current-production spread / total validation =====
 
 VALIDATION_GAP_BUCKETS = [
@@ -10920,6 +11592,63 @@ def _render_model_validation_page():
         st.session_state.get("cfb_v330_weeks", pd.DataFrame()),
         st.session_state.get("cfb_v330_phases", pd.DataFrame()),
         st.session_state.get("cfb_v330_gate", pd.DataFrame()),
+        holdout,
+    )
+
+    st.markdown("### 14. v3.4 Slate-Aware Finalist")
+    st.caption(
+        "Ranks Early / Midday / Late independently and selects the final ranking architecture "
+        "using development seasons only. This is the closest backtest to the intended live workflow."
+    )
+
+    if st.button(
+        "Run v3.4 Slate-Aware Finalist",
+        use_container_width=True,
+        key="run_v340_finalist",
+    ):
+        v34prog = st.progress(0, text="Building historical slate windows…")
+        try:
+            (
+                v34_base,
+                v34_candidates,
+                v34_gate,
+                v34_winner_ranked,
+                v34_winner_bets,
+                v34_seasons,
+                v34_slates,
+                v34_weeks,
+            ) = _run_v34_slate_finalist(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v34prog.progress(1.0, text="v3.4 slate-aware finalist complete.")
+        except Exception as e:
+            v34prog.empty()
+            st.error(f"v3.4 finalist failed: {e}")
+            st.exception(e)
+        else:
+            v34prog.empty()
+            st.session_state["cfb_v340_base"] = v34_base
+            st.session_state["cfb_v340_candidates"] = v34_candidates
+            st.session_state["cfb_v340_gate"] = v34_gate
+            st.session_state["cfb_v340_winner_ranked"] = v34_winner_ranked
+            st.session_state["cfb_v340_winner_bets"] = v34_winner_bets
+            st.session_state["cfb_v340_seasons"] = v34_seasons
+            st.session_state["cfb_v340_slates"] = v34_slates
+            st.session_state["cfb_v340_weeks"] = v34_weeks
+            st.success("v3.4 slate-aware finalist complete.")
+
+    _render_v34_slate_finalist(
+        st.session_state.get("cfb_v340_base", pd.DataFrame()),
+        st.session_state.get("cfb_v340_candidates", pd.DataFrame()),
+        st.session_state.get("cfb_v340_gate", pd.DataFrame()),
+        st.session_state.get("cfb_v340_winner_ranked", pd.DataFrame()),
+        st.session_state.get("cfb_v340_winner_bets", pd.DataFrame()),
+        st.session_state.get("cfb_v340_seasons", pd.DataFrame()),
+        st.session_state.get("cfb_v340_slates", pd.DataFrame()),
+        st.session_state.get("cfb_v340_weeks", pd.DataFrame()),
         holdout,
     )
 
@@ -13699,4 +14428,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.3.0 Game-Day Selector • Weekly slate ranking • Live logic unchanged pending confirmation.")
+st.caption("CFB Edge • v3.4.0 Slate-Aware Finalist • Early / Midday / Late ranking • Live logic unchanged pending final confirmation.")
