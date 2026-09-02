@@ -19,7 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.2.1-TRACKER-REGEX-HOTFIX"
+MODEL_VERSION = "2.4.0-SPREAD-TOTAL-VALIDATION"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -5521,7 +5521,509 @@ def get_backtest_lines(year):
 def get_backtest_model_data(year):
     return load_model_data(API_KEY, int(year))
 
+
+# ===== v2.4 current-production spread / total validation =====
+
+VALIDATION_GAP_BUCKETS = [
+    (0.0, 2.0, "0–1.9 pts"),
+    (2.0, 3.0, "2–2.9 pts"),
+    (3.0, 4.0, "3–3.9 pts"),
+    (4.0, 6.0, "4–5.9 pts"),
+    (6.0, 999.0, "6+ pts"),
+]
+
+VALIDATION_EDGE_BUCKETS = [
+    (-999.0, 0.025, "<2.5%"),
+    (0.025, 0.050, "2.5–4.9%"),
+    (0.050, 0.075, "5.0–7.4%"),
+    (0.075, 0.100, "7.5–9.9%"),
+    (0.100, 999.0, "10%+"),
+]
+
+
+def _validation_bucket(value, buckets):
+    try:
+        x = float(value)
+    except Exception:
+        return "Unknown"
+    for lo, hi, label in buckets:
+        if lo <= x < hi:
+            return label
+    return buckets[-1][2]
+
+
+def _validation_best_per_game_market(rows_df):
+    """One strongest side per game per market, preserving spread + total separately."""
+    if rows_df is None or rows_df.empty:
+        return pd.DataFrame()
+    d = rows_df.copy()
+    d = d[d["market_type"].isin(["spread", "total"])].copy()
+    if d.empty:
+        return d
+
+    rank = {"STRONG BET": 4, "BET": 3, "LEAN": 2, "PASS": 1}
+    d["_rank"] = d["verdict"].map(rank).fillna(0)
+    d = d.sort_values(
+        ["season", "game_id", "market_type", "_rank", "edge", "ev"],
+        ascending=[True, True, True, False, False, False],
+    )
+    return (
+        d.groupby(["season", "game_id", "market_type"], as_index=False)
+        .head(1)
+        .drop(columns=["_rank"])
+        .reset_index(drop=True)
+    )
+
+
+def _validation_projection_rows(game_df):
+    if game_df is None or game_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for season in sorted(game_df["season"].dropna().astype(int).unique()):
+        d = game_df[game_df["season"] == season].copy()
+
+        # Spread
+        s = d.dropna(
+            subset=["home_points", "away_points", "market_home_spread", "adjusted_model_home_spread"]
+        ).copy()
+        if not s.empty:
+            actual = s["home_points"].astype(float) - s["away_points"].astype(float)
+            market = -s["market_home_spread"].astype(float)
+            model = -s["adjusted_model_home_spread"].astype(float)
+            raw = -s["raw_model_home_spread"].astype(float)
+            rows.append({
+                "Market": "SPREAD",
+                "Season": season,
+                "Games": len(s),
+                "Market MAE": float((actual-market).abs().mean()),
+                "Adjusted Model MAE": float((actual-model).abs().mean()),
+                "Raw Model MAE": float((actual-raw).abs().mean()),
+                "Improvement vs Market": float((actual-market).abs().mean() - (actual-model).abs().mean()),
+            })
+
+        # Total
+        t = d.dropna(
+            subset=["home_points", "away_points", "market_total", "adjusted_model_total"]
+        ).copy()
+        if not t.empty:
+            actual = t["home_points"].astype(float) + t["away_points"].astype(float)
+            market = t["market_total"].astype(float)
+            model = t["adjusted_model_total"].astype(float)
+            raw = t["raw_model_total"].astype(float)
+            rows.append({
+                "Market": "TOTAL",
+                "Season": season,
+                "Games": len(t),
+                "Market MAE": float((actual-market).abs().mean()),
+                "Adjusted Model MAE": float((actual-model).abs().mean()),
+                "Raw Model MAE": float((actual-raw).abs().mean()),
+                "Improvement vs Market": float((actual-market).abs().mean() - (actual-model).abs().mean()),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def _validation_betting_summary(df, group_cols):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    grouper = group_cols[0] if len(group_cols) == 1 else group_cols
+    for keys, g in df.groupby(grouper, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        w = int((g["result"] == "WIN").sum())
+        l = int((g["result"] == "LOSS").sum())
+        p = int((g["result"] == "PUSH").sum())
+        decisions = w + l
+        units = float(g["profit_units"].sum())
+        bets = len(g)
+        row = {c:k for c,k in zip(group_cols, keys)}
+        row.update({
+            "Bets": int(bets),
+            "Record": f"{w}-{l}" + (f"-{p}P" if p else ""),
+            "Win %": (w / decisions) if decisions else None,
+            "Units": units,
+            "ROI": (units / bets) if bets else None,
+        })
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _validation_gate(projection_df, picks_df, holdout):
+    rows = []
+    for market in ["SPREAD", "TOTAL"]:
+        mkey = market.lower()
+        proj = projection_df[projection_df["Market"] == market].copy()
+        proj = proj.sort_values("Season")
+        hold = proj[proj["Season"] == int(holdout)]
+
+        season_wins = int((proj["Improvement vs Market"] > 0).sum()) if not proj.empty else 0
+        season_count = len(proj)
+        recent = proj.tail(min(3, season_count))
+        recent_wins = int((recent["Improvement vs Market"] > 0).sum()) if not recent.empty else 0
+
+        hold_mae_pass = bool(
+            not hold.empty and float(hold.iloc[0]["Improvement vs Market"]) > 0
+        )
+        projection_pass = bool(
+            hold_mae_pass
+            and season_count >= 3
+            and recent_wins >= 2
+        )
+
+        official = picks_df[
+            (picks_df["market_type"] == mkey)
+            & (picks_df["verdict"].isin(["BET", "STRONG BET"]))
+        ].copy()
+
+        all_s = _validation_betting_summary(official, ["market_type"])
+        hold_s = _validation_betting_summary(
+            official[official["season"] == int(holdout)],
+            ["market_type"],
+        )
+        season_s = _validation_betting_summary(official, ["season"])
+
+        all_bets = int(all_s.iloc[0]["Bets"]) if not all_s.empty else 0
+        all_roi = float(all_s.iloc[0]["ROI"]) if not all_s.empty and pd.notna(all_s.iloc[0]["ROI"]) else 0.0
+        hold_bets = int(hold_s.iloc[0]["Bets"]) if not hold_s.empty else 0
+        hold_roi = float(hold_s.iloc[0]["ROI"]) if not hold_s.empty and pd.notna(hold_s.iloc[0]["ROI"]) else 0.0
+        positive_seasons = int((season_s["ROI"] > 0).sum()) if not season_s.empty else 0
+        tested_bet_seasons = len(season_s)
+
+        # Fixed before seeing results; deliberately conservative.
+        betting_pass = bool(
+            all_bets >= 100
+            and all_roi > 0
+            and hold_bets >= 25
+            and hold_roi >= 0
+            and tested_bet_seasons >= 3
+            and positive_seasons >= 2
+        )
+
+        if projection_pass and betting_pass:
+            status = "PASS TO PROMOTION REVIEW"
+        elif projection_pass:
+            status = "PROJECTION PASS / BETTING FAIL"
+        elif betting_pass:
+            status = "BETTING PASS / PROJECTION FAIL"
+        else:
+            status = "KEEP IN RESEARCH"
+
+        rows.append({
+            "Market": market,
+            "MAE Seasons Won": f"{season_wins}/{season_count}",
+            "Recent MAE Wins": f"{recent_wins}/{len(recent)}",
+            f"{holdout} MAE Beats Market": "YES" if hold_mae_pass else "NO",
+            "Official Bets": all_bets,
+            "Official ROI": all_roi,
+            f"{holdout} Bets": hold_bets,
+            f"{holdout} ROI": hold_roi,
+            "Positive ROI Seasons": f"{positive_seasons}/{tested_bet_seasons}",
+            "Projection Gate": "PASS" if projection_pass else "FAIL",
+            "Betting Gate": "PASS" if betting_pass else "FAIL",
+            "Status": status,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _run_current_market_validation(seasons, scope, holdout, progress=None):
+    """Evaluate the exact current v0.3.2 calibrated production spread/total layer."""
+    game_rows = []
+    candidate_rows = []
+    seasons = sorted(set(int(s) for s in seasons))
+
+    for si, season in enumerate(seasons):
+        if progress is not None:
+            progress.progress(
+                si / max(1, len(seasons)),
+                text=f"Loading {season} games, consensus lines and preseason-safe inputs…",
+            )
+
+        games = get_backtest_games(season)
+        line_payload = get_backtest_lines(season)
+        data_full = get_backtest_model_data(season)
+        data = _bt_prior_only_data(data_full)
+
+        line_index = {}
+        for lr in line_payload or []:
+            gid = lr.get("id")
+            if gid is None:
+                continue
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            line_index[key] = normalize_game_lines([lr], game_id=gid)
+
+        season_games = [
+            g for g in games or []
+            if g.get("completed") is True
+            and g.get("homePoints") is not None
+            and g.get("awayPoints") is not None
+            and _bt_game_scope(g, scope)
+        ]
+
+        for g in season_games:
+            gid = g.get("id")
+            try:
+                lookup_gid = int(gid)
+            except Exception:
+                lookup_gid = gid
+
+            market = _bt_consensus_line(line_index.get(lookup_gid, []))
+            if not market:
+                continue
+
+            try:
+                p = _bt_project_game(g, data, hfa=DEFAULT_HFA)
+            except Exception:
+                continue
+
+            adj_spread, _, _ = calibrated_market_projection(
+                p["model_home_spread"], market.get("home_spread"), p["week"], "side"
+            )
+            adj_total, _, _ = calibrated_market_projection(
+                p["model_total"], market.get("total"), p["week"], "total"
+            )
+
+            game_rows.append({
+                "season": season,
+                "week": p["week"],
+                "game_id": gid,
+                "away_team": p["away"],
+                "home_team": p["home"],
+                "away_points": float(g["awayPoints"]),
+                "home_points": float(g["homePoints"]),
+                "raw_model_home_spread": float(p["model_home_spread"]),
+                "adjusted_model_home_spread": float(adj_spread),
+                "market_home_spread": market.get("home_spread"),
+                "raw_model_total": float(p["model_total"]),
+                "adjusted_model_total": float(adj_total),
+                "market_total": market.get("total"),
+                "confidence": float(p["confidence"]),
+            })
+
+            rows = _bt_candidate_rows(g, p, market, season, "v0.3.2")
+            candidate_rows.extend(
+                r for r in rows if r.get("market_type") in ("spread", "total")
+            )
+
+    if progress is not None:
+        progress.progress(1.0, text="Validation complete.")
+
+    games_df = pd.DataFrame(game_rows)
+    raw_candidates = pd.DataFrame(candidate_rows)
+    picks_df = _validation_best_per_game_market(raw_candidates)
+
+    if not picks_df.empty:
+        def gap_for_row(r):
+            if r["market_type"] == "spread":
+                return abs(float(r["raw_model_home_spread"]) - float(r["market_home_spread"]))
+            return abs(float(r["raw_model_total"]) - float(r["market_total"]))
+
+        picks_df["projection_gap_pts"] = picks_df.apply(gap_for_row, axis=1)
+        picks_df["gap_bucket"] = picks_df["projection_gap_pts"].apply(
+            lambda x: _validation_bucket(x, VALIDATION_GAP_BUCKETS)
+        )
+        picks_df["edge_bucket"] = picks_df["edge"].apply(
+            lambda x: _validation_bucket(x, VALIDATION_EDGE_BUCKETS)
+        )
+
+    projection_df = _validation_projection_rows(games_df)
+    gate_df = _validation_gate(projection_df, picks_df, holdout)
+
+    return games_df, picks_df, projection_df, gate_df
+
+
+def _format_validation_bets(df):
+    if df is None or df.empty:
+        return df
+    x = df.copy()
+    if "Win %" in x.columns:
+        x["Win %"] = x["Win %"].map(lambda v: f"{100*v:.1f}%" if pd.notna(v) else "—")
+    if "ROI" in x.columns:
+        x["ROI"] = x["ROI"].map(lambda v: f"{100*v:+.1f}%" if pd.notna(v) else "—")
+    if "Units" in x.columns:
+        x["Units"] = x["Units"].map(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+    return x
+
+
+def _render_model_validation_page():
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
+        '<div class="mobile-page-title">Spread + Total Audit</div>'
+        '<div class="mobile-page-sub">Evaluate the exact current calibrated production layer before changing the model.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.warning(
+        "This runner is diagnostic, not a threshold optimizer. The buckets and promotion gates are fixed "
+        "before the results are displayed. Default mode uses leakage-safe preseason priors."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        seasons = st.multiselect(
+            "Seasons",
+            [2018,2019,2020,2021,2022,2023,2024,2025],
+            default=[2022,2023,2024,2025],
+            key="validation_seasons",
+        )
+        scope = st.selectbox(
+            "Game universe",
+            ["Major FBS", "All FBS", "All college games"],
+            index=0,
+            key="validation_scope",
+        )
+    with c2:
+        holdout_options = seasons if seasons else [2025]
+        holdout = st.selectbox(
+            "Untouched holdout",
+            holdout_options,
+            index=max(0, len(holdout_options)-1),
+            key="validation_holdout",
+        )
+        st.caption("Recommended: latest selected season as holdout.")
+
+    if st.button(
+        "Run Spread + Total Validation",
+        type="primary",
+        use_container_width=True,
+        key="run_spread_total_validation",
+    ):
+        if len(seasons) < 3:
+            st.error("Select at least three seasons.")
+            st.stop()
+
+        progress = st.progress(0, text="Starting validation…")
+        try:
+            games_df, picks_df, projection_df, gate_df = _run_current_market_validation(
+                seasons, scope, holdout, progress=progress
+            )
+        except Exception as e:
+            progress.empty()
+            st.error(f"Validation failed: {e}")
+            st.exception(e)
+            st.stop()
+        progress.empty()
+
+        st.session_state["cfb_validation_games"] = games_df
+        st.session_state["cfb_validation_picks"] = picks_df
+        st.session_state["cfb_validation_projection"] = projection_df
+        st.session_state["cfb_validation_gate"] = gate_df
+        st.session_state["cfb_validation_holdout"] = int(holdout)
+        st.success("Validation complete.")
+
+    games_df = st.session_state.get("cfb_validation_games", pd.DataFrame())
+    picks_df = st.session_state.get("cfb_validation_picks", pd.DataFrame())
+    projection_df = st.session_state.get("cfb_validation_projection", pd.DataFrame())
+    gate_df = st.session_state.get("cfb_validation_gate", pd.DataFrame())
+    holdout = int(st.session_state.get("cfb_validation_holdout", holdout))
+
+    if not isinstance(projection_df, pd.DataFrame) or projection_df.empty:
+        st.info("Run the validation to generate the spread and total diagnostics.")
+        return
+
+    st.markdown("### 1. Projection accuracy vs market")
+    proj_show = projection_df.copy()
+    for c in ["Market MAE", "Adjusted Model MAE", "Raw Model MAE", "Improvement vs Market"]:
+        proj_show[c] = proj_show[c].map(lambda v: f"{v:+.3f}" if c == "Improvement vs Market" else f"{v:.3f}")
+    st.dataframe(proj_show, use_container_width=True, hide_index=True)
+
+    st.markdown("### 2. Official BET / BEST BET performance by season")
+    official = picks_df[picks_df["verdict"].isin(["BET", "STRONG BET"])].copy()
+    season_bets = _validation_betting_summary(official, ["market_type", "season"])
+    if not season_bets.empty:
+        st.dataframe(_format_validation_bets(season_bets), use_container_width=True, hide_index=True)
+    else:
+        st.info("No official BET / BEST BET rows under the current production grader.")
+
+    st.markdown("### 3. Performance by projection disagreement")
+    gap_perf = _validation_betting_summary(picks_df, ["market_type", "gap_bucket"])
+    if not gap_perf.empty:
+        st.dataframe(_format_validation_bets(gap_perf), use_container_width=True, hide_index=True)
+    st.caption(
+        "These are fixed point-gap buckets. Use them to see whether larger model/market disagreements actually improve results."
+    )
+
+    st.markdown("### 4. Performance by model edge")
+    edge_perf = _validation_betting_summary(picks_df, ["market_type", "edge_bucket"])
+    if not edge_perf.empty:
+        st.dataframe(_format_validation_bets(edge_perf), use_container_width=True, hide_index=True)
+
+    st.markdown("### 5. Early-season vs later-season stability")
+    tmp = picks_df.copy()
+    if not tmp.empty:
+        tmp["week_group"] = tmp["week"].apply(lambda w: "Weeks 1–3" if int(w) <= 3 else "Week 4+")
+        week_perf = _validation_betting_summary(tmp, ["market_type", "week_group"])
+        st.dataframe(_format_validation_bets(week_perf), use_container_width=True, hide_index=True)
+
+    st.markdown("### 6. Promotion gate")
+    gate_show = gate_df.copy()
+    for c in ["Official ROI", f"{holdout} ROI"]:
+        if c in gate_show.columns:
+            gate_show[c] = gate_show[c].map(lambda v: f"{100*v:+.1f}%")
+    st.dataframe(gate_show, use_container_width=True, hide_index=True)
+
+    spread_status = gate_df.loc[gate_df["Market"]=="SPREAD", "Status"]
+    total_status = gate_df.loc[gate_df["Market"]=="TOTAL", "Status"]
+    spread_status = spread_status.iloc[0] if not spread_status.empty else "NO RESULT"
+    total_status = total_status.iloc[0] if not total_status.empty else "NO RESULT"
+
+    if spread_status == "PASS TO PROMOTION REVIEW":
+        st.success(f"Spread: {spread_status}")
+    else:
+        st.warning(f"Spread: {spread_status}")
+
+    if total_status == "PASS TO PROMOTION REVIEW":
+        st.success(f"Total: {total_status}")
+    else:
+        st.warning(f"Total: {total_status}")
+
+    st.caption(
+        "A PASS does not automatically alter the live grader. It means the market is eligible for a separate locked promotion review. "
+        "A FAIL means we improve the projection/calibration before changing recommendation thresholds."
+    )
+
+    with st.expander("Downloads", expanded=False):
+        st.download_button(
+            "Download Projection Errors",
+            data=projection_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_validation_projection.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_validation_projection",
+        )
+        st.download_button(
+            "Download Game Picks",
+            data=picks_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_validation_picks.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_validation_picks",
+        )
+        st.download_button(
+            "Download Promotion Gate",
+            data=gate_df.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_validation_gate.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_validation_gate",
+        )
+
+
 app_section = "Research Lab" if st.session_state.get("cfb_research_mode", False) else "Betting Board"
+
+if st.session_state.get("cfb_validation_mode", False):
+    if st.button("Back to More", use_container_width=True, key="cfb_exit_validation"):
+        st.session_state["cfb_validation_mode"] = False
+        st.session_state["cfb_page"] = "More"
+        st.rerun()
+    _render_model_validation_page()
+    st.stop()
 
 if app_section == "Research Lab":
     if st.button("Back to App", use_container_width=True, key="cfb_exit_research"):
@@ -7247,6 +7749,10 @@ def _render_more_page():
         units = playable_stake(verdict, edge, cg_conf)
         st.metric("Recommendation", display_grade(verdict))
         st.caption(f"Edge {edge*100:+.1f}% • EV {ev*100:+.1f}% • Unit guide {units:.2f}u")
+
+    if st.button("Open Model Validation", type="primary", use_container_width=True, key="cfb_open_validation"):
+        st.session_state["cfb_validation_mode"] = True
+        st.rerun()
 
     if st.button("Open Research Lab", use_container_width=True, key="cfb_open_research"):
         st.session_state["cfb_research_mode"] = True
