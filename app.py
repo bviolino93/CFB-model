@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.1.0-NONLINEAR-ML-BAKEOFF"
+MODEL_VERSION = "3.1.1-DEPENDENCY-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -12414,4 +12414,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.1.0 Nonlinear ML Bake-Off • Residual regression + ATS classification • Live logic unchanged pending validation.")
+st.caption("CFB Edge • v3.1.1 Dependency Hotfix • Nonlinear ML Bake-Off • Live logic unchanged pending validation.")

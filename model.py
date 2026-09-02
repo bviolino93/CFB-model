@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.1.0-NONLINEAR-ML-BAKEOFF"
+MODEL_VERSION = "1.1.1-DEPENDENCY-HOTFIX"
 
 DEFAULT_HFA = 2.5
 
