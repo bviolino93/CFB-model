@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.2.0-SIGNAL-STABILITY-ENSEMBLE"
+MODEL_VERSION = "3.3.0-GAMEDAY-SELECTOR"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -8048,6 +8048,554 @@ def _render_v32_signal_stability(
         )
         st.caption("Upload this single ZIP back to ChatGPT for review.")
 
+# ===== v3.3 game-day selector / weekly ranking =====
+V33_VERSION = "v3.3.0-gameday-selector"
+V33_MIN_MODELS = 2
+V33_TOP_N_CHOICES = (1, 3, 5)
+V33_TOP_PCT_CHOICES = (0.10, 0.20)
+V33_STANDARD_JUICE = -110
+
+
+def _v33_model_probability_frame(history, preds):
+    """
+    Combine the exact walk-forward v3.1 classifier probabilities with the
+    historical point-in-time game frame.
+    """
+    if history is None or history.empty or preds is None or preds.empty:
+        return pd.DataFrame()
+
+    p = preds[
+        (preds["market_type"] == "spread") &
+        (preds["task"] == "classification")
+    ].copy()
+    if p.empty:
+        return pd.DataFrame()
+
+    h = history.reset_index().rename(columns={"index": "row_index"}).copy()
+    keep = [
+        "row_index","season","week","game_id","home_team","away_team",
+        "market_margin","actual_margin","conference_game","elo_diff",
+        "talent_diff","returning_ppa_diff","cur_ppa_match","cur_success_match",
+        "cur_line_match",
+    ]
+    keep = [c for c in keep if c in h.columns]
+    h = h[keep].copy()
+
+    x = p.merge(h, on=["row_index","season"], how="left")
+    actual_resid = (
+        pd.to_numeric(x["actual_margin"], errors="coerce")
+        - pd.to_numeric(x["market_margin"], errors="coerce")
+    )
+    x["home_cover"] = np.where(
+        actual_resid > 0, 1.0,
+        np.where(actual_resid < 0, 0.0, np.nan)
+    )
+    x["model_side"] = np.where(
+        pd.to_numeric(x["probability"], errors="coerce") >= 0.5,
+        "HOME","AWAY"
+    )
+    x["model_conf"] = np.maximum(
+        pd.to_numeric(x["probability"], errors="coerce"),
+        1.0 - pd.to_numeric(x["probability"], errors="coerce"),
+    )
+    return x
+
+
+def _v33_regression_consensus(preds):
+    """
+    Build a directional market-residual consensus from nonlinear regression
+    models only. This is used as a ranking input, never as a standalone bet.
+    """
+    if preds is None or preds.empty:
+        return pd.DataFrame()
+
+    rp = preds[
+        (preds["market_type"] == "spread") &
+        (preds["task"] == "regression") &
+        (preds["model"].isin(["Gradient Boosting","Extra Trees","Random Forest"]))
+    ].copy()
+    if rp.empty:
+        return pd.DataFrame()
+
+    rp["correction"] = pd.to_numeric(rp["correction"], errors="coerce")
+    rp["reg_side"] = np.where(rp["correction"] >= 0, "HOME", "AWAY")
+    rp["reg_strength"] = rp["correction"].abs()
+
+    rows = []
+    for (season, row_index), g in rp.groupby(["season","row_index"]):
+        valid = g.dropna(subset=["correction"])
+        if valid.empty:
+            continue
+        home_n = int((valid["reg_side"] == "HOME").sum())
+        away_n = int((valid["reg_side"] == "AWAY").sum())
+        side = "HOME" if home_n >= away_n else "AWAY"
+        agree = max(home_n, away_n)
+        strengths = valid.loc[valid["reg_side"] == side, "reg_strength"]
+        rows.append({
+            "season": int(season),
+            "row_index": int(row_index),
+            "reg_side": side,
+            "reg_agreement": int(agree),
+            "reg_strength": float(strengths.mean()) if len(strengths) else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def _v33_rank_frame(history, preds):
+    """
+    Create one row per game with a predeclared ranking score.
+
+    The selector intentionally avoids trusting absolute probabilities.
+    It ranks games RELATIVE TO THAT WEEK'S SLATE using:
+      1) classifier consensus confidence percentile,
+      2) classifier agreement,
+      3) nonlinear residual-regression strength percentile,
+      4) classifier/regression directional agreement,
+      5) data maturity.
+
+    No weight is optimized on the holdout.
+    """
+    x = _v33_model_probability_frame(history, preds)
+    if x.empty:
+        return pd.DataFrame()
+
+    core = x[x["model"].isin(["Gradient Boosting","Extra Trees","Logistic"])].copy()
+    if core.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (season, row_index), g in core.groupby(["season","row_index"]):
+        valid = g.dropna(subset=["probability"])
+        if len(valid) < V33_MIN_MODELS:
+            continue
+
+        home_votes = int((valid["model_side"] == "HOME").sum())
+        away_votes = int((valid["model_side"] == "AWAY").sum())
+        if home_votes == away_votes:
+            continue
+
+        side = "HOME" if home_votes > away_votes else "AWAY"
+        agreeing = valid[valid["model_side"] == side].copy()
+        if agreeing.empty:
+            continue
+
+        first = valid.iloc[0]
+        y = _v3_num(first.get("home_cover"))
+        if not np.isfinite(y):
+            continue
+        won = int(y == 1) if side == "HOME" else int(y == 0)
+
+        rows.append({
+            "season": int(season),
+            "week": int(_v3_num(first.get("week"), 1)),
+            "row_index": int(row_index),
+            "game_id": first.get("game_id"),
+            "home_team": first.get("home_team"),
+            "away_team": first.get("away_team"),
+            "market_margin": _v3_num(first.get("market_margin")),
+            "pick_side": side,
+            "won": won,
+            "classifier_models": int(len(valid)),
+            "classifier_agreement": int(len(agreeing)),
+            "classifier_confidence": float(
+                pd.to_numeric(agreeing["model_conf"], errors="coerce").mean()
+            ),
+            "conference_game": _v3_num(first.get("conference_game"), 0.0),
+            "elo_diff": _v3_num(first.get("elo_diff")),
+            "talent_diff": _v3_num(first.get("talent_diff")),
+            "returning_ppa_diff": _v3_num(first.get("returning_ppa_diff")),
+            "cur_ppa_match": _v3_num(first.get("cur_ppa_match")),
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    reg = _v33_regression_consensus(preds)
+    if not reg.empty:
+        out = out.merge(reg, on=["season","row_index"], how="left")
+    else:
+        out["reg_side"] = None
+        out["reg_agreement"] = 0
+        out["reg_strength"] = 0.0
+
+    out["reg_agreement"] = pd.to_numeric(
+        out["reg_agreement"], errors="coerce"
+    ).fillna(0.0)
+    out["reg_strength"] = pd.to_numeric(
+        out["reg_strength"], errors="coerce"
+    ).fillna(0.0)
+
+    out["direction_agreement"] = (
+        out["pick_side"].astype(str) == out["reg_side"].astype(str)
+    ).astype(float)
+
+    # Week-by-week cross-sectional ranks.
+    ranked = []
+    for (season, week), g in out.groupby(["season","week"]):
+        z = g.copy()
+        z["conf_pct"] = z["classifier_confidence"].rank(
+            method="average", pct=True
+        )
+        z["reg_pct"] = z["reg_strength"].rank(
+            method="average", pct=True
+        )
+
+        # Data maturity is intentionally coarse and deterministic.
+        maturity = 1.0 if int(week) >= 4 else 0.0
+        z["data_maturity"] = maturity
+
+        # Fixed score; no optimization on holdout.
+        z["selector_score"] = (
+            0.40 * z["conf_pct"]
+            + 0.20 * (z["classifier_agreement"] / z["classifier_models"].clip(lower=1))
+            + 0.20 * z["reg_pct"]
+            + 0.10 * z["direction_agreement"]
+            + 0.10 * z["data_maturity"]
+        )
+        z["slate_rank"] = z["selector_score"].rank(
+            method="first", ascending=False
+        ).astype(int)
+        z["slate_size"] = int(len(z))
+        z["slate_percentile"] = z["slate_rank"] / max(int(len(z)), 1)
+        ranked.append(z)
+
+    return pd.concat(ranked, ignore_index=True) if ranked else pd.DataFrame()
+
+
+def _v33_selection_masks(df):
+    masks = {}
+    if df is None or df.empty:
+        return masks
+
+    for n in V33_TOP_N_CHOICES:
+        masks[f"Top {n}"] = df["slate_rank"] <= int(n)
+
+    for pct in V33_TOP_PCT_CHOICES:
+        label = f"Top {int(100*pct)}%"
+        cutoff = np.maximum(
+            1,
+            np.ceil(pd.to_numeric(df["slate_size"], errors="coerce") * pct)
+        )
+        masks[label] = pd.to_numeric(df["slate_rank"], errors="coerce") <= cutoff
+    return masks
+
+
+def _v33_strategy_detail(rank_frame):
+    if rank_frame is None or rank_frame.empty:
+        return pd.DataFrame()
+
+    masks = _v33_selection_masks(rank_frame)
+    rows = []
+    for strategy, mask in masks.items():
+        x = rank_frame[mask].copy()
+        for _, r in x.iterrows():
+            rows.append({
+                "Strategy": strategy,
+                "season": int(r["season"]),
+                "week": int(r["week"]),
+                "game_id": r.get("game_id"),
+                "away_team": r.get("away_team"),
+                "home_team": r.get("home_team"),
+                "market_margin": _v3_num(r.get("market_margin")),
+                "pick_side": r.get("pick_side"),
+                "selector_score": _v3_num(r.get("selector_score")),
+                "slate_rank": int(r.get("slate_rank")),
+                "slate_size": int(r.get("slate_size")),
+                "won": int(r.get("won")),
+            })
+    return pd.DataFrame(rows)
+
+
+def _v33_roi_from_rows(x):
+    if x is None or x.empty:
+        return np.nan
+    wins = int(pd.to_numeric(x["won"], errors="coerce").sum())
+    n = int(len(x))
+    return _v31_roi_from_wins(wins, n - wins, 0, V33_STANDARD_JUICE)
+
+
+def _v33_max_drawdown(detail):
+    """
+    Flat 1-unit stakes at -110. Each win earns 0.9091u, each loss -1u.
+    """
+    if detail is None or detail.empty:
+        return np.nan
+    d = detail.sort_values(
+        ["season","week","selector_score"],
+        ascending=[True,True,False]
+    ).copy()
+    d["unit_result"] = np.where(
+        pd.to_numeric(d["won"], errors="coerce") == 1,
+        100.0/110.0, -1.0
+    )
+    equity = d["unit_result"].cumsum()
+    peak = equity.cummax()
+    dd = equity - peak
+    return float(dd.min()) if len(dd) else np.nan
+
+
+def _v33_longest_losing_streak(detail):
+    if detail is None or detail.empty:
+        return 0
+    d = detail.sort_values(
+        ["season","week","selector_score"],
+        ascending=[True,True,False]
+    )
+    longest = current = 0
+    for w in pd.to_numeric(d["won"], errors="coerce").fillna(0).astype(int):
+        if w == 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return int(longest)
+
+
+def _v33_strategy_summary(detail, holdout):
+    if detail is None or detail.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    season_rows = []
+    weekly_rows = []
+    summary_rows = []
+
+    for strategy, g in detail.groupby("Strategy"):
+        for season, sg in g.groupby("season"):
+            wins = int(pd.to_numeric(sg["won"], errors="coerce").sum())
+            n = int(len(sg))
+            season_rows.append({
+                "Strategy": strategy,
+                "Season": int(season),
+                "Bets": n,
+                "Wins": wins,
+                "Losses": n - wins,
+                "Win Rate": wins / n if n else np.nan,
+                "ROI": _v33_roi_from_rows(sg),
+            })
+
+        for (season, week), wg in g.groupby(["season","week"]):
+            wins = int(pd.to_numeric(wg["won"], errors="coerce").sum())
+            n = int(len(wg))
+            weekly_rows.append({
+                "Strategy": strategy,
+                "Season": int(season),
+                "Week": int(week),
+                "Bets": n,
+                "Wins": wins,
+                "Losses": n - wins,
+                "Win Rate": wins / n if n else np.nan,
+                "ROI": _v33_roi_from_rows(wg),
+            })
+
+        wins = int(pd.to_numeric(g["won"], errors="coerce").sum())
+        n = int(len(g))
+        season_df = pd.DataFrame([r for r in season_rows if r["Strategy"] == strategy])
+        positive_seasons = int((pd.to_numeric(season_df["ROI"], errors="coerce") > 0).sum())
+
+        hb = g[g["season"].astype(int) == int(holdout)]
+        h_wins = int(pd.to_numeric(hb["won"], errors="coerce").sum()) if not hb.empty else 0
+        h_n = int(len(hb))
+
+        summary_rows.append({
+            "Strategy": strategy,
+            "Bets": n,
+            "Wins": wins,
+            "Losses": n - wins,
+            "Win Rate": wins / n if n else np.nan,
+            "ROI": _v33_roi_from_rows(g),
+            "Positive Seasons": f"{positive_seasons}/{len(season_df)}",
+            "Holdout Bets": h_n,
+            "Holdout Win Rate": h_wins / h_n if h_n else np.nan,
+            "Holdout ROI": _v33_roi_from_rows(hb) if h_n else np.nan,
+            "Max Drawdown (u)": _v33_max_drawdown(g),
+            "Longest Losing Streak": _v33_longest_losing_streak(g),
+        })
+
+    return (
+        pd.DataFrame(summary_rows),
+        pd.DataFrame(season_rows),
+        pd.DataFrame(weekly_rows),
+    )
+
+
+def _v33_phase_summary(detail):
+    if detail is None or detail.empty:
+        return pd.DataFrame()
+    rows = []
+    x = detail.copy()
+    x["Phase"] = np.where(
+        pd.to_numeric(x["week"], errors="coerce") <= 3,
+        "Weeks 0–3", "Weeks 4+"
+    )
+    for (strategy, phase), g in x.groupby(["Strategy","Phase"]):
+        wins = int(pd.to_numeric(g["won"], errors="coerce").sum())
+        n = int(len(g))
+        rows.append({
+            "Strategy": strategy,
+            "Phase": phase,
+            "Bets": n,
+            "Wins": wins,
+            "Losses": n - wins,
+            "Win Rate": wins / n if n else np.nan,
+            "ROI": _v33_roi_from_rows(g),
+        })
+    return pd.DataFrame(rows)
+
+
+def _v33_locked_gate(summary, seasons, holdout):
+    if summary is None or summary.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in summary.iterrows():
+        pos_txt = str(r["Positive Seasons"])
+        try:
+            pos = int(pos_txt.split("/")[0])
+            total_s = int(pos_txt.split("/")[1])
+        except Exception:
+            pos, total_s = 0, 0
+
+        overall_pass = (
+            int(r["Bets"]) >= 200
+            and float(r["ROI"]) > 0
+            and float(r["Win Rate"]) > (110/210)
+        )
+        season_pass = total_s >= 3 and pos >= max(2, total_s - 1)
+        hold_pass = (
+            int(r["Holdout Bets"]) >= 25
+            and pd.notna(r["Holdout ROI"])
+            and float(r["Holdout ROI"]) > 0
+            and float(r["Holdout Win Rate"]) > (110/210)
+        )
+
+        if overall_pass and season_pass and hold_pass:
+            verdict = "LOCKED CONFIRMATION CANDIDATE"
+        elif overall_pass and season_pass:
+            verdict = "DISCOVERY POSITIVE / HOLDOUT FAIL"
+        else:
+            verdict = "KEEP IN RESEARCH"
+
+        rows.append({
+            "Strategy": r["Strategy"],
+            "Overall Pass": bool(overall_pass),
+            "Season Stability Pass": bool(season_pass),
+            f"{holdout} Holdout Pass": bool(hold_pass),
+            "Verdict": verdict,
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v33_gameday_selector(test_seasons_tuple, scope, holdout, train_start):
+    (
+        history, reg, reg_summary, cls, cls_summary,
+        bets_raw, bet_summary, preds, fixed_gate,
+    ) = _run_v31_ml_bakeoff(
+        tuple(sorted(set(int(s) for s in test_seasons_tuple))),
+        scope,
+        int(holdout),
+        int(train_start),
+    )
+
+    rank_frame = _v33_rank_frame(history, preds)
+    detail = _v33_strategy_detail(rank_frame)
+    summary, seasons, weeks = _v33_strategy_summary(detail, holdout)
+    phases = _v33_phase_summary(detail)
+    gate = _v33_locked_gate(summary, test_seasons_tuple, holdout)
+
+    return (
+        rank_frame, detail, summary, seasons, weeks, phases, gate
+    )
+
+
+def _render_v33_gameday_selector(
+    rank_frame, detail, summary, seasons, weeks, phases, gate, holdout
+):
+    st.markdown("#### v3.3 Game-Day Selector")
+    st.caption(
+        "This is the workflow-oriented model: rank the slate, take only the strongest few games, "
+        "and evaluate the exact historical game-day process rather than trying to forecast every game perfectly."
+    )
+
+    if summary is None or summary.empty:
+        st.info("Run v3.3 to test top-N and top-percentile weekly selection.")
+        return
+
+    st.markdown("##### Historical game-day strategies")
+    s = summary.copy()
+    for c in ["Win Rate","ROI","Holdout Win Rate","Holdout ROI"]:
+        if c in s.columns:
+            s[c] = s[c].map(
+                lambda v: "—" if pd.isna(v) else f"{100*v:.1f}%"
+                if "Win Rate" in c else f"{100*v:+.1f}%"
+            )
+    if "Max Drawdown (u)" in s.columns:
+        s["Max Drawdown (u)"] = s["Max Drawdown (u)"].map(
+            lambda v: "—" if pd.isna(v) else f"{v:.1f}u"
+        )
+    st.dataframe(s, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Locked confirmation gate")
+    st.dataframe(gate, use_container_width=True, hide_index=True)
+
+    passed = gate[
+        gate["Verdict"] == "LOCKED CONFIRMATION CANDIDATE"
+    ] if gate is not None and not gate.empty else pd.DataFrame()
+
+    if not passed.empty:
+        names = ", ".join(passed["Strategy"].astype(str).tolist())
+        st.success(
+            f"Selector strategy passed the locked historical screen: {names}. "
+            "The next step is a forward 2026 tracker before increasing live confidence."
+        )
+    else:
+        st.warning(
+            "No selector strategy cleared the full locked screen. "
+            "Do not force more bets; the selector stays research-only."
+        )
+
+    st.markdown("##### Early season vs mature season")
+    p = phases.copy()
+    if not p.empty:
+        p["Win Rate"] = p["Win Rate"].map(lambda v: f"{100*v:.1f}%")
+        p["ROI"] = p["ROI"].map(lambda v: f"{100*v:+.1f}%")
+        st.dataframe(p, use_container_width=True, hide_index=True)
+
+    with st.expander("Season-by-season selector results", expanded=False):
+        x = seasons.copy()
+        if not x.empty:
+            x["Win Rate"] = x["Win Rate"].map(lambda v: f"{100*v:.1f}%")
+            x["ROI"] = x["ROI"].map(lambda v: f"{100*v:+.1f}%")
+        st.dataframe(x, use_container_width=True, hide_index=True)
+
+    with st.expander("Week-by-week selector results", expanded=False):
+        x = weeks.copy()
+        if not x.empty:
+            x["Win Rate"] = x["Win Rate"].map(lambda v: f"{100*v:.1f}%")
+            x["ROI"] = x["ROI"].map(lambda v: f"{100*v:+.1f}%")
+        st.dataframe(x, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.3 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v330_selector_summary.csv": summary,
+            "cfb_v330_selector_gate.csv": gate,
+            "cfb_v330_selector_seasons.csv": seasons,
+            "cfb_v330_selector_weeks.csv": weeks,
+            "cfb_v330_selector_phases.csv": phases,
+            "cfb_v330_selector_bets.csv": detail,
+            "cfb_v330_ranked_games.csv": rank_frame,
+        })
+        st.download_button(
+            "Download All v3.3 Files",
+            data=bundle,
+            file_name="cfb_v330_gameday_selector_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v330_all",
+        )
+        st.caption("Upload this single ZIP back to ChatGPT for review.")
+
 # ===== v2.4 current-production spread / total validation =====
 
 VALIDATION_GAP_BUCKETS = [
@@ -10318,6 +10866,60 @@ def _render_model_validation_page():
         st.session_state.get("cfb_v320_ensemble_detail", pd.DataFrame()),
         st.session_state.get("cfb_v320_ensemble_summary", pd.DataFrame()),
         st.session_state.get("cfb_v320_football_signals", pd.DataFrame()),
+        holdout,
+    )
+
+    st.markdown("### 13. v3.3 Game-Day Selector")
+    st.caption(
+        "Ranks every weekly slate and tests the exact workflow you want to use on Saturdays: "
+        "take only the strongest 1, 3, 5, top 10%, or top 20% of games."
+    )
+
+    if st.button(
+        "Run v3.3 Game-Day Selector",
+        use_container_width=True,
+        key="run_v330_selector",
+    ):
+        v33prog = st.progress(0, text="Rebuilding walk-forward slate ranks…")
+        try:
+            (
+                v33_rank_frame,
+                v33_detail,
+                v33_summary,
+                v33_seasons,
+                v33_weeks,
+                v33_phases,
+                v33_gate,
+            ) = _run_v33_gameday_selector(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v33prog.progress(1.0, text="v3.3 game-day selector complete.")
+        except Exception as e:
+            v33prog.empty()
+            st.error(f"v3.3 selector failed: {e}")
+            st.exception(e)
+        else:
+            v33prog.empty()
+            st.session_state["cfb_v330_rank_frame"] = v33_rank_frame
+            st.session_state["cfb_v330_detail"] = v33_detail
+            st.session_state["cfb_v330_summary"] = v33_summary
+            st.session_state["cfb_v330_seasons"] = v33_seasons
+            st.session_state["cfb_v330_weeks"] = v33_weeks
+            st.session_state["cfb_v330_phases"] = v33_phases
+            st.session_state["cfb_v330_gate"] = v33_gate
+            st.success("v3.3 game-day selector complete.")
+
+    _render_v33_gameday_selector(
+        st.session_state.get("cfb_v330_rank_frame", pd.DataFrame()),
+        st.session_state.get("cfb_v330_detail", pd.DataFrame()),
+        st.session_state.get("cfb_v330_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v330_seasons", pd.DataFrame()),
+        st.session_state.get("cfb_v330_weeks", pd.DataFrame()),
+        st.session_state.get("cfb_v330_phases", pd.DataFrame()),
+        st.session_state.get("cfb_v330_gate", pd.DataFrame()),
         holdout,
     )
 
@@ -13097,4 +13699,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.2.0 Signal Stability + Ensemble • Locked holdout audit • Live logic unchanged pending confirmation.")
+st.caption("CFB Edge • v3.3.0 Game-Day Selector • Weekly slate ranking • Live logic unchanged pending confirmation.")

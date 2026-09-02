@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.2.0-SIGNAL-STABILITY-ENSEMBLE"
+MODEL_VERSION = "1.3.0-GAMEDAY-SELECTOR"
 
 DEFAULT_HFA = 2.5
 
@@ -723,3 +723,10 @@ NONLINEAR_ML_BAKEOFF_VERSION = "v3.1.0-nonlinear-ml-bakeoff"
 # monotonic calibration, situational stability and cross-model agreement.
 # No live production promotion occurs automatically.
 SIGNAL_STABILITY_ENSEMBLE_VERSION = "v3.2.0-signal-stability-ensemble"
+
+
+# v1.3.0 game-day selector note:
+# v3.3 ranks each weekly slate cross-sectionally and evaluates selective
+# top-N/top-percentile betting workflows with ROI, drawdown, streaks,
+# season stability and a locked holdout gate.
+GAMEDAY_SELECTOR_VERSION = "v3.3.0-gameday-selector"
