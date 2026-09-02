@@ -7,6 +7,27 @@ import html
 import json
 import io
 import zipfile
+from sklearn.ensemble import (
+    RandomForestRegressor, RandomForestClassifier,
+    ExtraTreesRegressor, ExtraTreesClassifier,
+    GradientBoostingRegressor, GradientBoostingClassifier,
+    HistGradientBoostingRegressor, HistGradientBoostingClassifier,
+)
+from sklearn.linear_model import Ridge, LogisticRegression
+from sklearn.metrics import (
+    mean_absolute_error, mean_squared_error,
+    brier_score_loss, log_loss, roc_auc_score,
+)
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+try:
+    from xgboost import XGBRegressor, XGBClassifier
+    XGBOOST_AVAILABLE = True
+except Exception:
+    XGBRegressor = None
+    XGBClassifier = None
+    XGBOOST_AVAILABLE = False
 import re
 import streamlit.components.v1 as components
 from datetime import date
@@ -21,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.0.0-POINT-IN-TIME-REBUILD"
+MODEL_VERSION = "3.1.0-NONLINEAR-ML-BAKEOFF"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6699,6 +6720,713 @@ def _render_v3_lab(history, results, summary, preds, readiness, holdout):
         )
         st.caption("One ZIP contains every file needed for review.")
 
+# ===== v3.1 nonlinear ML bake-off + ATS classification =====
+V31_VERSION = "v3.1.0-nonlinear-ml-bakeoff"
+V31_MIN_TRAIN_ROWS = 500
+V31_RANDOM_STATE = 41
+V31_SPREAD_CORRECTION_CAP = 6.0
+V31_TOTAL_CORRECTION_CAP = 5.0
+V31_BET_PROB_THRESHOLDS = (0.54, 0.56, 0.58)
+V31_STANDARD_JUICE = -110
+
+
+def _v31_feature_groups():
+    spread = {
+        "Market context": ["market_margin", "week_num", "early_week", "hfa", "neutral", "conference_game"],
+        "Pregame strength": [
+            "elo_diff", "sp_rating_diff", "core_overall_diff", "fpi_fpi_diff",
+        ],
+        "Offense / defense priors": [
+            "sp_off_rating_diff", "sp_def_rating_diff", "sp_st_rating_diff",
+            "core_offense_diff", "core_defense_diff",
+            "fpi_offense_diff", "fpi_defense_diff", "fpi_special_diff",
+        ],
+        "Personnel": [
+            "talent_diff", "returning_ppa_diff", "returning_pass_diff",
+            "returning_rush_diff", "returning_usage_diff",
+            "recruit_points_diff", "recruit_rank_diff",
+            "portal_net_count_diff", "portal_net_rating_diff", "portal_net_stars_diff",
+        ],
+        "Prior matchup": [
+            "prior_ppa_match", "prior_pass_ppa_match", "prior_rush_ppa_match",
+            "prior_success_match", "prior_expl_match", "prior_std_match",
+            "prior_passdown_match", "prior_line_match", "prior_stuff_match",
+            "prior_ppo_match", "prior_havoc_diff",
+        ],
+        "Current matchup": [
+            "cur_ppa_match", "cur_pass_ppa_match", "cur_rush_ppa_match",
+            "cur_success_match", "cur_pass_success_match", "cur_rush_success_match",
+            "cur_expl_match", "cur_std_match", "cur_passdown_match",
+            "cur_line_match", "cur_stuff_match", "cur_ppo_match",
+            "cur_havoc_diff", "cur_field_pos_diff",
+        ],
+    }
+    total = {
+        "Market context": ["market_total", "week_num", "early_week", "neutral"],
+        "Personnel": [
+            "talent_diff", "returning_ppa_diff", "recruit_points_diff",
+            "portal_net_rating_diff",
+        ],
+        "Prior efficiency / pace": [
+            "prior_total_ppa", "prior_total_success", "prior_total_expl",
+            "prior_total_ppo", "prior_total_pass", "prior_total_rush",
+            "prior_total_pace", "prior_total_havoc",
+        ],
+        "Current efficiency / pace": [
+            "cur_total_ppa", "cur_total_success", "cur_total_expl",
+            "cur_total_ppo", "cur_total_pass", "cur_total_rush",
+            "cur_total_pace", "cur_total_havoc",
+        ],
+    }
+    return spread, total
+
+
+def _v31_flatten(groups):
+    out = []
+    for vals in groups.values():
+        for v in vals:
+            if v not in out:
+                out.append(v)
+    return out
+
+
+def _v31_prepare_xy(train_df, test_df, features, target, min_coverage=0.35):
+    tr = train_df.copy()
+    te = test_df.copy()
+    usable, medians = [], {}
+    for f in features:
+        if f not in tr.columns or f not in te.columns:
+            continue
+        s = pd.to_numeric(tr[f], errors="coerce")
+        if float(s.notna().mean()) < min_coverage:
+            continue
+        med = float(s.median()) if s.notna().any() else 0.0
+        usable.append(f)
+        medians[f] = med
+
+    tr_y = pd.to_numeric(tr[target], errors="coerce")
+    te_y = pd.to_numeric(te[target], errors="coerce")
+    tr_mask = tr_y.notna()
+    te_mask = te_y.notna()
+    tr = tr.loc[tr_mask].copy()
+    te = te.loc[te_mask].copy()
+    tr_y = tr_y.loc[tr_mask].to_numpy(dtype=float)
+    te_y = te_y.loc[te_mask].to_numpy(dtype=float)
+
+    if len(tr) < V31_MIN_TRAIN_ROWS or len(te) == 0 or len(usable) < 5:
+        return None
+
+    Xtr = np.column_stack([
+        pd.to_numeric(tr[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    Xte = np.column_stack([
+        pd.to_numeric(te[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    return {
+        "Xtr": Xtr,
+        "Xte": Xte,
+        "ytr": tr_y,
+        "yte": te_y,
+        "train_index": tr.index.to_numpy(),
+        "test_index": te.index.to_numpy(),
+        "features": usable,
+    }
+
+
+def _v31_regressors():
+    models = {
+        "Ridge": Pipeline([
+            ("scale", StandardScaler()),
+            ("model", Ridge(alpha=20.0)),
+        ]),
+        "Gradient Boosting": GradientBoostingRegressor(
+            n_estimators=180, learning_rate=0.025, max_depth=2,
+            min_samples_leaf=20, loss="huber", random_state=V31_RANDOM_STATE,
+        ),
+        "Hist Gradient Boosting": HistGradientBoostingRegressor(
+            learning_rate=0.05, max_iter=180, max_leaf_nodes=15,
+            min_samples_leaf=25, l2_regularization=2.0,
+            random_state=V31_RANDOM_STATE,
+        ),
+        "Extra Trees": ExtraTreesRegressor(
+            n_estimators=300, max_depth=8, min_samples_leaf=12,
+            max_features=0.70, n_jobs=-1, random_state=V31_RANDOM_STATE,
+        ),
+        "Random Forest": RandomForestRegressor(
+            n_estimators=300, max_depth=9, min_samples_leaf=12,
+            max_features=0.70, n_jobs=-1, random_state=V31_RANDOM_STATE,
+        ),
+    }
+    if XGBOOST_AVAILABLE:
+        models["XGBoost"] = XGBRegressor(
+            n_estimators=350, max_depth=3, learning_rate=0.025,
+            subsample=0.80, colsample_bytree=0.75,
+            reg_alpha=1.0, reg_lambda=6.0,
+            objective="reg:squarederror", n_jobs=2,
+            random_state=V31_RANDOM_STATE,
+        )
+    return models
+
+
+def _v31_classifiers():
+    models = {
+        "Logistic": Pipeline([
+            ("scale", StandardScaler()),
+            ("model", LogisticRegression(
+                C=0.35, max_iter=2000, solver="lbfgs",
+                random_state=V31_RANDOM_STATE,
+            )),
+        ]),
+        "Gradient Boosting": GradientBoostingClassifier(
+            n_estimators=160, learning_rate=0.025, max_depth=2,
+            min_samples_leaf=25, random_state=V31_RANDOM_STATE,
+        ),
+        "Hist Gradient Boosting": HistGradientBoostingClassifier(
+            learning_rate=0.045, max_iter=170, max_leaf_nodes=15,
+            min_samples_leaf=30, l2_regularization=3.0,
+            random_state=V31_RANDOM_STATE,
+        ),
+        "Extra Trees": ExtraTreesClassifier(
+            n_estimators=300, max_depth=8, min_samples_leaf=15,
+            max_features=0.70, class_weight="balanced",
+            n_jobs=-1, random_state=V31_RANDOM_STATE,
+        ),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=300, max_depth=9, min_samples_leaf=15,
+            max_features=0.70, class_weight="balanced",
+            n_jobs=-1, random_state=V31_RANDOM_STATE,
+        ),
+    }
+    if XGBOOST_AVAILABLE:
+        models["XGBoost"] = XGBClassifier(
+            n_estimators=350, max_depth=3, learning_rate=0.025,
+            subsample=0.80, colsample_bytree=0.75,
+            reg_alpha=1.0, reg_lambda=6.0,
+            objective="binary:logistic", eval_metric="logloss",
+            n_jobs=2, random_state=V31_RANDOM_STATE,
+        )
+    return models
+
+
+def _v31_platt_fit(raw_prob, y):
+    p = np.clip(np.asarray(raw_prob, dtype=float), 1e-5, 1 - 1e-5)
+    x = np.log(p / (1 - p)).reshape(-1, 1)
+    yy = np.asarray(y, dtype=int)
+    if len(np.unique(yy)) < 2 or len(yy) < 100:
+        return None
+    cal = LogisticRegression(C=100.0, solver="lbfgs", max_iter=1000)
+    cal.fit(x, yy)
+    return cal
+
+
+def _v31_platt_apply(cal, raw_prob):
+    p = np.clip(np.asarray(raw_prob, dtype=float), 1e-5, 1 - 1e-5)
+    if cal is None:
+        return p
+    x = np.log(p / (1 - p)).reshape(-1, 1)
+    return cal.predict_proba(x)[:, 1]
+
+
+def _v31_inner_calibration(train_df, features, target, model_factory_name):
+    """
+    Point-in-time Platt calibration:
+    use the latest season inside the training set as calibration only,
+    train the base classifier on earlier training seasons, then fit a
+    one-variable logistic calibrator on that season's probabilities.
+    """
+    seasons = sorted(set(pd.to_numeric(train_df["season"], errors="coerce").dropna().astype(int)))
+    if len(seasons) < 3:
+        return None
+    cal_season = seasons[-1]
+    base = train_df[train_df["season"].astype(int) < cal_season].copy()
+    cal_df = train_df[train_df["season"].astype(int) == cal_season].copy()
+    prep = _v31_prepare_xy(base, cal_df, features, target)
+    if prep is None:
+        return None
+    model = _v31_classifiers().get(model_factory_name)
+    if model is None:
+        return None
+    try:
+        model.fit(prep["Xtr"], prep["ytr"].astype(int))
+        raw = model.predict_proba(prep["Xte"])[:, 1]
+        return _v31_platt_fit(raw, prep["yte"].astype(int))
+    except Exception:
+        return None
+
+
+def _v31_roi_from_wins(wins, losses, pushes=0, odds=-110):
+    if wins + losses <= 0:
+        return np.nan
+    if odds < 0:
+        win_profit = 100.0 / abs(float(odds))
+    else:
+        win_profit = float(odds) / 100.0
+    units = wins * win_profit - losses
+    return units / float(wins + losses)
+
+
+def _v31_classification_metrics(y, p):
+    y = np.asarray(y, dtype=int)
+    p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+    out = {
+        "Brier": float(brier_score_loss(y, p)),
+        "LogLoss": float(log_loss(y, p, labels=[0, 1])),
+        "AUC": np.nan,
+    }
+    if len(np.unique(y)) == 2:
+        try:
+            out["AUC"] = float(roc_auc_score(y, p))
+        except Exception:
+            pass
+    return out
+
+
+def _v31_bet_rows(test_rows, market_type, model_name, season, probs):
+    """
+    Convert calibrated home-cover / over probabilities into symmetric betting
+    opportunities. Thresholds are predeclared; no threshold is selected on
+    the holdout.
+    """
+    rows = []
+    probs = np.asarray(probs, dtype=float)
+    if market_type == "spread":
+        y_home = np.asarray(test_rows["home_cover_target"], dtype=float)
+    else:
+        y_home = np.asarray(test_rows["over_target"], dtype=float)
+
+    for threshold in V31_BET_PROB_THRESHOLDS:
+        for i, p in enumerate(probs):
+            if not np.isfinite(y_home[i]):
+                continue
+            pick = None
+            won = None
+            pick_prob = None
+            if p >= threshold:
+                pick = "HOME" if market_type == "spread" else "OVER"
+                won = int(y_home[i] == 1)
+                pick_prob = p
+            elif p <= 1.0 - threshold:
+                pick = "AWAY" if market_type == "spread" else "UNDER"
+                won = int(y_home[i] == 0)
+                pick_prob = 1.0 - p
+            if pick is None:
+                continue
+            rows.append({
+                "market_type": market_type,
+                "model": model_name,
+                "season": int(season),
+                "threshold": float(threshold),
+                "pick": pick,
+                "pick_probability": float(pick_prob),
+                "won": int(won),
+                "game_id": test_rows.iloc[i].get("game_id"),
+                "home_team": test_rows.iloc[i].get("home_team"),
+                "away_team": test_rows.iloc[i].get("away_team"),
+            })
+    return rows
+
+
+def _v31_run_one_market(history, test_seasons, market_type):
+    spread_groups, total_groups = _v31_feature_groups()
+    if market_type == "spread":
+        groups = spread_groups
+        features = _v31_flatten(groups)
+        market_col = "market_margin"
+        actual_col = "actual_margin"
+        residual_target = "spread_residual_target"
+        class_target = "home_cover_target"
+        cap = V31_SPREAD_CORRECTION_CAP
+    else:
+        groups = total_groups
+        features = _v31_flatten(groups)
+        market_col = "market_total"
+        actual_col = "actual_total"
+        residual_target = "total_residual_target"
+        class_target = "over_target"
+        cap = V31_TOTAL_CORRECTION_CAP
+
+    h = history.copy()
+    h[residual_target] = (
+        pd.to_numeric(h[actual_col], errors="coerce")
+        - pd.to_numeric(h[market_col], errors="coerce")
+    )
+    if market_type == "spread":
+        diff = h[residual_target]
+    else:
+        diff = h[residual_target]
+    h[class_target] = np.where(diff > 0, 1.0, np.where(diff < 0, 0.0, np.nan))
+
+    reg_results, class_results, pred_rows, bet_rows = [], [], [], []
+
+    for season in sorted(set(int(s) for s in test_seasons)):
+        train = h[h["season"].astype(int) < season].copy()
+        test = h[h["season"].astype(int) == season].copy()
+        if train.empty or test.empty:
+            continue
+
+        # Market control MAE on rows with a market and outcome.
+        ctrl = test.dropna(subset=[actual_col, market_col]).copy()
+        if not ctrl.empty:
+            y = pd.to_numeric(ctrl[actual_col], errors="coerce").to_numpy(dtype=float)
+            m = pd.to_numeric(ctrl[market_col], errors="coerce").to_numpy(dtype=float)
+            reg_results.append({
+                "Market": market_type.upper(),
+                "Task": "Regression",
+                "Model": "Market Control",
+                "Season": season,
+                "Games": len(ctrl),
+                "MAE": float(mean_absolute_error(y, m)),
+                "RMSE": float(np.sqrt(mean_squared_error(y, m))),
+                "Improvement vs Market": 0.0,
+            })
+
+        # Residual regression.
+        reg_features = features + [market_col]
+        prep = _v31_prepare_xy(train, test, reg_features, residual_target)
+        if prep is not None:
+            test_rows = test.loc[prep["test_index"]].copy()
+            actual = pd.to_numeric(test_rows[actual_col], errors="coerce").to_numpy(dtype=float)
+            market = pd.to_numeric(test_rows[market_col], errors="coerce").to_numpy(dtype=float)
+            market_mae = float(mean_absolute_error(actual, market))
+            for name, estimator in _v31_regressors().items():
+                try:
+                    estimator.fit(prep["Xtr"], prep["ytr"])
+                    corr = np.asarray(estimator.predict(prep["Xte"]), dtype=float)
+                    corr = np.clip(corr, -cap, cap)
+                    pred = market + corr
+                    mae = float(mean_absolute_error(actual, pred))
+                    rmse = float(np.sqrt(mean_squared_error(actual, pred)))
+                except Exception:
+                    continue
+                reg_results.append({
+                    "Market": market_type.upper(),
+                    "Task": "Regression",
+                    "Model": name,
+                    "Season": season,
+                    "Games": len(test_rows),
+                    "MAE": mae,
+                    "RMSE": rmse,
+                    "Improvement vs Market": market_mae - mae,
+                })
+                for idx, yy, mm, cc, pp in zip(
+                    test_rows.index, actual, market, corr, pred
+                ):
+                    pred_rows.append({
+                        "market_type": market_type,
+                        "task": "regression",
+                        "model": name,
+                        "season": season,
+                        "row_index": int(idx),
+                        "actual": float(yy),
+                        "market": float(mm),
+                        "correction": float(cc),
+                        "prediction": float(pp),
+                    })
+
+        # ATS / O-U classification. Pushes excluded.
+        class_train = train.dropna(subset=[class_target]).copy()
+        class_test = test.dropna(subset=[class_target]).copy()
+        prep_c = _v31_prepare_xy(class_train, class_test, features + [market_col], class_target)
+        if prep_c is not None:
+            test_rows = class_test.loc[prep_c["test_index"]].copy()
+            y = prep_c["yte"].astype(int)
+
+            # Naive 50% control.
+            ctrl_metrics = _v31_classification_metrics(y, np.full(len(y), 0.5))
+            class_results.append({
+                "Market": market_type.upper(),
+                "Task": "Classification",
+                "Model": "50% Control",
+                "Season": season,
+                "Games": len(y),
+                **ctrl_metrics,
+            })
+
+            for name, estimator in _v31_classifiers().items():
+                try:
+                    calibrator = _v31_inner_calibration(
+                        class_train, features + [market_col], class_target, name
+                    )
+                    estimator.fit(prep_c["Xtr"], prep_c["ytr"].astype(int))
+                    raw = estimator.predict_proba(prep_c["Xte"])[:, 1]
+                    p = _v31_platt_apply(calibrator, raw)
+                    metrics = _v31_classification_metrics(y, p)
+                except Exception:
+                    continue
+
+                class_results.append({
+                    "Market": market_type.upper(),
+                    "Task": "Classification",
+                    "Model": name,
+                    "Season": season,
+                    "Games": len(y),
+                    **metrics,
+                })
+                for idx, yy, pp in zip(test_rows.index, y, p):
+                    pred_rows.append({
+                        "market_type": market_type,
+                        "task": "classification",
+                        "model": name,
+                        "season": season,
+                        "row_index": int(idx),
+                        "actual_class": int(yy),
+                        "probability": float(pp),
+                    })
+                bet_rows.extend(_v31_bet_rows(
+                    test_rows, market_type, name, season, p
+                ))
+
+    return (
+        pd.DataFrame(reg_results),
+        pd.DataFrame(class_results),
+        pd.DataFrame(pred_rows),
+        pd.DataFrame(bet_rows),
+    )
+
+
+def _v31_regression_summary(reg):
+    if reg is None or reg.empty:
+        return pd.DataFrame()
+    rows = []
+    for (market, model), g in reg.groupby(["Market", "Model"]):
+        games = pd.to_numeric(g["Games"], errors="coerce").to_numpy(dtype=float)
+        mae = pd.to_numeric(g["MAE"], errors="coerce").to_numpy(dtype=float)
+        impr = pd.to_numeric(g["Improvement vs Market"], errors="coerce").to_numpy(dtype=float)
+        rows.append({
+            "Market": market,
+            "Model": model,
+            "Games": int(np.sum(games)),
+            "Weighted MAE": float(np.average(mae, weights=games)),
+            "Weighted Improvement vs Market": float(np.average(impr, weights=games)),
+            "Seasons Beat Market": f"{int(np.sum(impr > 0))}/{len(g)}",
+        })
+    return pd.DataFrame(rows)
+
+
+def _v31_classification_summary(cls):
+    if cls is None or cls.empty:
+        return pd.DataFrame()
+    rows = []
+    for (market, model), g in cls.groupby(["Market", "Model"]):
+        w = pd.to_numeric(g["Games"], errors="coerce").to_numpy(dtype=float)
+        rows.append({
+            "Market": market,
+            "Model": model,
+            "Games": int(np.sum(w)),
+            "Weighted Brier": float(np.average(pd.to_numeric(g["Brier"], errors="coerce"), weights=w)),
+            "Weighted LogLoss": float(np.average(pd.to_numeric(g["LogLoss"], errors="coerce"), weights=w)),
+            "Weighted AUC": float(np.average(
+                pd.to_numeric(g["AUC"], errors="coerce").fillna(0.5), weights=w
+            )),
+        })
+    return pd.DataFrame(rows)
+
+
+def _v31_betting_summary(bets):
+    if bets is None or bets.empty:
+        return pd.DataFrame()
+    rows = []
+    for (market, model, threshold), g in bets.groupby(
+        ["market_type", "model", "threshold"]
+    ):
+        wins = int(pd.to_numeric(g["won"], errors="coerce").fillna(0).sum())
+        n = int(len(g))
+        losses = n - wins
+        roi = _v31_roi_from_wins(wins, losses, 0, V31_STANDARD_JUICE)
+        season_rois = []
+        positive = 0
+        for season, sg in g.groupby("season"):
+            sw = int(pd.to_numeric(sg["won"], errors="coerce").fillna(0).sum())
+            sl = int(len(sg) - sw)
+            sr = _v31_roi_from_wins(sw, sl, 0, V31_STANDARD_JUICE)
+            if np.isfinite(sr):
+                season_rois.append(sr)
+                if sr > 0:
+                    positive += 1
+        rows.append({
+            "Market": market.upper(),
+            "Model": model,
+            "Threshold": float(threshold),
+            "Bets": n,
+            "Wins": wins,
+            "Losses": losses,
+            "Win Rate": wins / n if n else np.nan,
+            "ROI": roi,
+            "Avg Pick Probability": float(pd.to_numeric(g["pick_probability"], errors="coerce").mean()),
+            "Positive ROI Seasons": f"{positive}/{len(season_rois)}",
+        })
+    return pd.DataFrame(rows)
+
+
+def _v31_holdout_gate(reg, cls, bets, holdout):
+    rows = []
+    for market in ["SPREAD", "TOTAL"]:
+        rr = reg[(reg["Market"] == market) & (reg["Season"].astype(int) == int(holdout))].copy()
+        cc = cls[(cls["Market"] == market) & (cls["Season"].astype(int) == int(holdout))].copy()
+        bb = bets[(bets["Market"] == market)] if bets is not None and not bets.empty else pd.DataFrame()
+
+        best_reg = None
+        if not rr.empty:
+            r2 = rr[rr["Model"] != "Market Control"].sort_values("MAE")
+            if not r2.empty:
+                best_reg = r2.iloc[0]
+
+        best_cls = None
+        if not cc.empty:
+            c2 = cc[cc["Model"] != "50% Control"].sort_values("Brier")
+            if not c2.empty:
+                best_cls = c2.iloc[0]
+
+        best_bet = None
+        if not bb.empty:
+            b2 = bb[(bb["Bets"] >= 100)].sort_values(["ROI", "Bets"], ascending=[False, False])
+            if not b2.empty:
+                best_bet = b2.iloc[0]
+
+        reg_pass = bool(best_reg is not None and float(best_reg["Improvement vs Market"]) > 0)
+        cls_pass = bool(best_cls is not None and float(best_cls["Brier"]) < 0.25)
+        bet_pass = bool(
+            market == "SPREAD"
+            and best_bet is not None
+            and int(best_bet["Bets"]) >= 100
+            and float(best_bet["ROI"]) > 0
+        )
+
+        if market == "SPREAD" and reg_pass and cls_pass and bet_pass:
+            verdict = "CONFIRMATION CANDIDATE"
+        elif reg_pass or cls_pass or bet_pass:
+            verdict = "RESEARCH POSITIVE"
+        else:
+            verdict = "KEEP IN RESEARCH"
+
+        rows.append({
+            "Market": market,
+            "Best Holdout Regression": None if best_reg is None else best_reg["Model"],
+            "Holdout Regression Improvement": np.nan if best_reg is None else float(best_reg["Improvement vs Market"]),
+            "Best Holdout Classifier": None if best_cls is None else best_cls["Model"],
+            "Holdout Brier": np.nan if best_cls is None else float(best_cls["Brier"]),
+            "Best Betting Model": None if best_bet is None else best_bet["Model"],
+            "Best Betting Threshold": np.nan if best_bet is None else float(best_bet["Threshold"]),
+            "Best Betting ROI": np.nan if best_bet is None else float(best_bet["ROI"]),
+            "Best Betting N": 0 if best_bet is None else int(best_bet["Bets"]),
+            "Verdict": verdict,
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v31_ml_bakeoff(test_seasons_tuple, scope, holdout, train_start):
+    test_seasons = sorted(set(int(s) for s in test_seasons_tuple))
+    history = _v3_history_frame(
+        min(int(train_start), min(test_seasons) - 1),
+        max(test_seasons),
+        scope,
+    )
+
+    sr, sc, sp, sb = _v31_run_one_market(history, test_seasons, "spread")
+    tr, tc, tp, tb = _v31_run_one_market(history, test_seasons, "total")
+
+    reg = pd.concat([sr, tr], ignore_index=True) if not sr.empty or not tr.empty else pd.DataFrame()
+    cls = pd.concat([sc, tc], ignore_index=True) if not sc.empty or not tc.empty else pd.DataFrame()
+    preds = pd.concat([sp, tp], ignore_index=True) if not sp.empty or not tp.empty else pd.DataFrame()
+    bets_raw = pd.concat([sb, tb], ignore_index=True) if not sb.empty or not tb.empty else pd.DataFrame()
+
+    reg_summary = _v31_regression_summary(reg)
+    cls_summary = _v31_classification_summary(cls)
+    bet_summary = _v31_betting_summary(bets_raw)
+    gate = _v31_holdout_gate(reg, cls, bet_summary, holdout)
+    return history, reg, reg_summary, cls, cls_summary, bets_raw, bet_summary, preds, gate
+
+
+def _render_v31_ml_bakeoff(
+    history, reg, reg_summary, cls, cls_summary,
+    bets_raw, bet_summary, preds, gate, holdout
+):
+    st.markdown("#### v3.1 Nonlinear ML Bake-Off + ATS Classification")
+    st.caption(
+        "Regression predicts market residual error. Classification predicts HOME cover / OVER directly. "
+        "All test seasons are walk-forward; classifier probabilities are Platt-calibrated using only an earlier training season."
+    )
+
+    if reg_summary is None or reg_summary.empty:
+        st.info("Run the v3.1 ML bake-off to compare linear and nonlinear models.")
+        return
+
+    st.markdown("##### Residual regression")
+    r = reg_summary.copy()
+    r["Weighted MAE"] = r["Weighted MAE"].map(lambda v: f"{v:.4f}")
+    r["Weighted Improvement vs Market"] = r["Weighted Improvement vs Market"].map(lambda v: f"{v:+.4f}")
+    st.dataframe(r, use_container_width=True, hide_index=True)
+
+    st.markdown("##### ATS / O-U classification")
+    c = cls_summary.copy()
+    c["Weighted Brier"] = c["Weighted Brier"].map(lambda v: f"{v:.4f}")
+    c["Weighted LogLoss"] = c["Weighted LogLoss"].map(lambda v: f"{v:.4f}")
+    c["Weighted AUC"] = c["Weighted AUC"].map(lambda v: f"{v:.4f}")
+    st.dataframe(c, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Predeclared betting thresholds")
+    if bet_summary is None or bet_summary.empty:
+        st.info("No classified opportunities met the fixed 54%, 56%, or 58% probability thresholds.")
+    else:
+        b = bet_summary.copy()
+        b["Threshold"] = b["Threshold"].map(lambda v: f"{100*v:.0f}%")
+        b["Win Rate"] = b["Win Rate"].map(lambda v: f"{100*v:.1f}%")
+        b["ROI"] = b["ROI"].map(lambda v: f"{100*v:+.1f}%")
+        b["Avg Pick Probability"] = b["Avg Pick Probability"].map(lambda v: f"{100*v:.1f}%")
+        st.dataframe(b, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Locked holdout gate")
+    g = gate.copy()
+    if not g.empty:
+        for col in ["Holdout Regression Improvement", "Holdout Brier", "Best Betting ROI"]:
+            if col in g.columns:
+                if col == "Best Betting ROI":
+                    g[col] = g[col].map(lambda v: "—" if pd.isna(v) else f"{100*v:+.1f}%")
+                else:
+                    g[col] = g[col].map(lambda v: "—" if pd.isna(v) else f"{v:+.4f}")
+        st.dataframe(g, use_container_width=True, hide_index=True)
+
+    spread_gate = gate[gate["Market"] == "SPREAD"] if gate is not None and not gate.empty else pd.DataFrame()
+    if not spread_gate.empty and spread_gate.iloc[0]["Verdict"] == "CONFIRMATION CANDIDATE":
+        st.success(
+            "A spread architecture cleared the v3.1 research gate. This still does not change live betting automatically; "
+            "the next step is a locked confirmation/forward test."
+        )
+    else:
+        st.warning(
+            "No automatic live promotion. We keep the market as the benchmark until a model clears regression, calibration, and betting evidence together."
+        )
+
+    with st.expander("v3.1 season detail", expanded=False):
+        st.markdown("**Regression**")
+        st.dataframe(reg, use_container_width=True, hide_index=True)
+        st.markdown("**Classification**")
+        st.dataframe(cls, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.1 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v310_regression_summary.csv": reg_summary,
+            "cfb_v310_regression_seasons.csv": reg,
+            "cfb_v310_classification_summary.csv": cls_summary,
+            "cfb_v310_classification_seasons.csv": cls,
+            "cfb_v310_betting_summary.csv": bet_summary,
+            "cfb_v310_bets.csv": bets_raw,
+            "cfb_v310_predictions.csv": preds,
+            "cfb_v310_gate.csv": gate,
+        })
+        st.download_button(
+            "Download All v3.1 Files",
+            data=bundle,
+            file_name="cfb_v310_ml_bakeoff_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v310_all",
+        )
+        st.caption("Upload this single ZIP back to ChatGPT for review.")
+
 # ===== v2.4 current-production spread / total validation =====
 
 VALIDATION_GAP_BUCKETS = [
@@ -8523,7 +9251,7 @@ def _format_validation_bets(df):
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
-        '<div class="mobile-page-title">Spread + Total + Feature + Sparse + Situational + v3 Point-in-Time</div>'
+        '<div class="mobile-page-title">Spread + Total + Feature + Sparse + Situational + v3.1 ML</div>'
         '<div class="mobile-page-sub">Walk-forward validation now includes a v3 point-in-time rebuild using weekly pregame advanced stats, pregame Elo and richer preseason roster priors. Every test season uses only earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
@@ -8842,6 +9570,71 @@ def _render_model_validation_page():
         v3_summary,
         v3_preds,
         v3_readiness,
+        holdout,
+    )
+
+    st.markdown("### 11. v3.1 Nonlinear ML Bake-Off")
+    st.caption(
+        "Tests Ridge, Gradient Boosting, HistGradientBoosting, Extra Trees, Random Forest, "
+        "and XGBoost when installed. It also runs direct ATS / O-U classification with point-in-time probability calibration."
+    )
+    st.caption(
+        "Use 2022–2025 with 2025 holdout and 2018 training start. Betting thresholds are fixed at 54%, 56%, and 58%; "
+        "they are not tuned after seeing the holdout."
+    )
+
+    if st.button(
+        "Run v3.1 ML Bake-Off",
+        use_container_width=True,
+        key="run_v310_ml_bakeoff",
+    ):
+        v31prog = st.progress(0, text="Preparing point-in-time feature matrix…")
+        try:
+            v31prog.progress(0.15, text="Loading cached v3 history…")
+            (
+                v31_history,
+                v31_reg,
+                v31_reg_summary,
+                v31_cls,
+                v31_cls_summary,
+                v31_bets_raw,
+                v31_bet_summary,
+                v31_preds,
+                v31_gate,
+            ) = _run_v31_ml_bakeoff(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v31prog.progress(1.0, text="v3.1 ML bake-off complete.")
+        except Exception as e:
+            v31prog.empty()
+            st.error(f"v3.1 bake-off failed: {e}")
+            st.exception(e)
+        else:
+            v31prog.empty()
+            st.session_state["cfb_v310_history"] = v31_history
+            st.session_state["cfb_v310_reg"] = v31_reg
+            st.session_state["cfb_v310_reg_summary"] = v31_reg_summary
+            st.session_state["cfb_v310_cls"] = v31_cls
+            st.session_state["cfb_v310_cls_summary"] = v31_cls_summary
+            st.session_state["cfb_v310_bets_raw"] = v31_bets_raw
+            st.session_state["cfb_v310_bet_summary"] = v31_bet_summary
+            st.session_state["cfb_v310_preds"] = v31_preds
+            st.session_state["cfb_v310_gate"] = v31_gate
+            st.success("v3.1 nonlinear ML bake-off complete.")
+
+    _render_v31_ml_bakeoff(
+        st.session_state.get("cfb_v310_history", pd.DataFrame()),
+        st.session_state.get("cfb_v310_reg", pd.DataFrame()),
+        st.session_state.get("cfb_v310_reg_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v310_cls", pd.DataFrame()),
+        st.session_state.get("cfb_v310_cls_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v310_bets_raw", pd.DataFrame()),
+        st.session_state.get("cfb_v310_bet_summary", pd.DataFrame()),
+        st.session_state.get("cfb_v310_preds", pd.DataFrame()),
+        st.session_state.get("cfb_v310_gate", pd.DataFrame()),
         holdout,
     )
 
@@ -11621,4 +12414,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.0.0 Point-in-Time Rebuild • Weekly pregame features • Live logic unchanged pending validation.")
+st.caption("CFB Edge • v3.1.0 Nonlinear ML Bake-Off • Residual regression + ATS classification • Live logic unchanged pending validation.")

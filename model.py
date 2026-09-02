@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.0.0-POINT-IN-TIME-REBUILD"
+MODEL_VERSION = "1.1.0-NONLINEAR-ML-BAKEOFF"
 
 DEFAULT_HFA = 2.5
 
@@ -709,3 +709,10 @@ DOWNLOAD_BUNDLE_VERSION = "v2.8.1-download-bundle"
 # only through the prior week, pregame Elo, and richer preseason priors.
 # Live production promotion remains gated on out-of-sample validation.
 POINT_IN_TIME_REBUILD_VERSION = "v3.0.0-point-in-time"
+
+
+# v1.1.0 nonlinear ML bake-off note:
+# app.py now compares regularized linear models with tree/boosting models
+# for market-residual regression and direct ATS / O-U classification.
+# Live production logic remains unchanged pending out-of-sample confirmation.
+NONLINEAR_ML_BAKEOFF_VERSION = "v3.1.0-nonlinear-ml-bakeoff"
