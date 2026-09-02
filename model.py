@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "0.4.2-SPARSE-RESIDUAL-BAKEOFF"
+MODEL_VERSION = "0.4.3-DOWNLOAD-BUNDLE"
 
 DEFAULT_HFA = 2.5
 
@@ -691,3 +691,14 @@ FEATURE_AUDIT_VERSION = "v2.6.0-feature-audit"
 # The live model remains on the prior market-baseline residual architecture.
 # app.py compares locked sparse candidates out-of-sample before any promotion.
 SPARSE_BAKEOFF_VERSION = "v2.7.0-sparse-bakeoff"
+
+
+# v0.4.3 situational-discovery research note:
+# Live logic remains unchanged. app.py tests predeclared spread situations and
+# same-game matched samples before any future promotion.
+SITUATIONAL_DISCOVERY_VERSION = "v2.8.0-situational-discovery"
+
+
+# v2.8.1 UX note:
+# Validation output can now be downloaded as a single ZIP bundle from app.py.
+DOWNLOAD_BUNDLE_VERSION = "v2.8.1-download-bundle"

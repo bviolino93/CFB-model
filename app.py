@@ -5,6 +5,8 @@ import numpy as np
 import base64
 import html
 import json
+import io
+import zipfile
 import re
 import streamlit.components.v1 as components
 from datetime import date
@@ -19,7 +21,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "2.7.0-SPARSE-RESIDUAL-BAKEOFF"
+MODEL_VERSION = "2.8.1-DOWNLOAD-BUNDLE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6108,6 +6110,8 @@ def _run_current_market_validation(seasons, scope, holdout, progress=None):
                 "game_id": gid,
                 "away_team": p["away"],
                 "home_team": p["home"],
+                "away_conference": g.get("awayConference"),
+                "home_conference": g.get("homeConference"),
                 "away_points": float(g["awayPoints"]),
                 "home_points": float(g["homePoints"]),
                 "raw_model_home_spread": float(p["model_home_spread"]),
@@ -6710,6 +6714,20 @@ def _render_feature_audit_results(season_df, ablation_df, summary_df, preds_df, 
         st.dataframe(detail, use_container_width=True, hide_index=True)
 
     with st.expander("Feature Audit Downloads", expanded=False):
+        feature_zip = _csv_download_bundle({
+            "cfb_feature_audit_summary.csv": summary_df,
+            "cfb_feature_audit_seasons.csv": season_df,
+            "cfb_feature_audit_ablation.csv": ablation_df,
+            "cfb_feature_audit_predictions.csv": preds_df,
+        })
+        st.download_button(
+            "Download All 4 Feature Audit Files",
+            data=feature_zip,
+            file_name="cfb_feature_audit_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_feature_audit_all_zip",
+        )
         st.download_button(
             "Download Feature Summary",
             data=summary_df.to_csv(index=False).encode("utf-8"),
@@ -7094,6 +7112,19 @@ def _render_sparse_bakeoff_results(season_df, summary_df, pred_df, holdout):
         st.dataframe(season_show, use_container_width=True, hide_index=True)
 
     with st.expander("Sparse Bake-Off Downloads", expanded=False):
+        sparse_zip = _csv_download_bundle({
+            "cfb_sparse_bakeoff_summary.csv": summary_df,
+            "cfb_sparse_bakeoff_seasons.csv": season_df,
+            "cfb_sparse_bakeoff_predictions.csv": pred_df,
+        })
+        st.download_button(
+            "Download All 3 Sparse Files",
+            data=sparse_zip,
+            file_name="cfb_sparse_bakeoff_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_sparse_bakeoff_all_zip",
+        )
         st.download_button(
             "Download Sparse Summary",
             data=summary_df.to_csv(index=False).encode("utf-8"),
@@ -7119,6 +7150,503 @@ def _render_sparse_bakeoff_results(season_df, summary_df, pred_df, holdout):
             key="download_sparse_bakeoff_predictions",
         )
 
+
+
+def _csv_download_bundle(files):
+    """
+    Build an in-memory ZIP from {filename: dataframe_or_bytes}.
+    Keeps mobile users from having to leave/re-enter the page for each CSV.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for filename, obj in files.items():
+            if obj is None:
+                continue
+            if isinstance(obj, pd.DataFrame):
+                payload = obj.to_csv(index=False).encode("utf-8")
+            elif isinstance(obj, str):
+                payload = obj.encode("utf-8")
+            else:
+                payload = bytes(obj)
+            zf.writestr(filename, payload)
+    return buf.getvalue()
+
+# ===== v2.8 situational residual discovery =====
+SITUATIONAL_DISCOVERY_VERSION = "v2.8.0-situational-discovery"
+
+# Predeclared segments. These are diagnostic only and are not allowed to
+# automatically create betting rules.
+SITUATIONAL_SEGMENTS = [
+    ("All Games", lambda d: pd.Series(True, index=d.index)),
+    ("Weeks 0–3", lambda d: d["week_num"] <= 3),
+    ("Weeks 4+", lambda d: d["week_num"] >= 4),
+    ("Home Favorite", lambda d: d["market_margin"] > 0),
+    ("Home Dog", lambda d: d["market_margin"] < 0),
+    ("PK to 3", lambda d: d["abs_market_margin"] <= 3),
+    ("3 to 7", lambda d: (d["abs_market_margin"] > 3) & (d["abs_market_margin"] <= 7)),
+    ("7 to 14", lambda d: (d["abs_market_margin"] > 7) & (d["abs_market_margin"] <= 14)),
+    ("14+", lambda d: d["abs_market_margin"] > 14),
+    ("Confidence <70", lambda d: d["confidence_num"] < 70),
+    ("Confidence 70–79", lambda d: (d["confidence_num"] >= 70) & (d["confidence_num"] < 80)),
+    ("Confidence 80+", lambda d: d["confidence_num"] >= 80),
+]
+
+
+def _season_conference_flag(row):
+    """
+    Returns conference/non-conference when game rows include conference columns.
+    Historical backtest payloads may not always expose them, so this is optional.
+    """
+    hc = row.get("home_conference")
+    ac = row.get("away_conference")
+    if hc is None or ac is None or pd.isna(hc) or pd.isna(ac):
+        return None
+    return "Conference" if str(hc) == str(ac) else "Non-Conference"
+
+
+def _add_situational_columns(feature_df):
+    d = feature_df.copy()
+
+    if "week_num" not in d.columns:
+        d["week_num"] = pd.to_numeric(d.get("week"), errors="coerce")
+    if "market_margin" not in d.columns:
+        d["market_margin"] = -pd.to_numeric(d.get("market_home_spread"), errors="coerce")
+    if "abs_market_margin" not in d.columns:
+        d["abs_market_margin"] = d["market_margin"].abs()
+    if "confidence_num" not in d.columns:
+        d["confidence_num"] = pd.to_numeric(d.get("confidence"), errors="coerce")
+
+    if "conference_flag" not in d.columns:
+        if "home_conference" in d.columns and "away_conference" in d.columns:
+            d["conference_flag"] = d.apply(_season_conference_flag, axis=1)
+        else:
+            d["conference_flag"] = None
+    return d
+
+
+def _model_prediction_lookup(pred_df, market_type="spread"):
+    if pred_df is None or pred_df.empty:
+        return pd.DataFrame()
+    d = pred_df[pred_df["market_type"] == market_type].copy()
+    if d.empty:
+        return d
+    return d[["model", "season", "row_index", "predicted_residual", "actual_market_residual", "abs_error"]]
+
+
+def _situational_segment_rows(feature_df, sparse_pred_df, holdout):
+    """
+    Evaluate Market Control, Minimal, Minimal+Power and Full Residual inside
+    predeclared situations. Each model prediction is already walk-forward.
+    """
+    feat = _add_situational_columns(feature_df)
+    preds = _model_prediction_lookup(sparse_pred_df, "spread")
+    if feat.empty or preds.empty:
+        return pd.DataFrame()
+
+    rows = []
+    model_names = [
+        "A · Market Control",
+        "B · Minimal",
+        "C · Minimal + Power",
+        "D · Full Residual",
+    ]
+
+    for model_name in model_names:
+        p = preds[preds["model"] == model_name].copy()
+        if p.empty:
+            continue
+
+        merged = feat.merge(
+            p,
+            left_index=True,
+            right_on="row_index",
+            how="inner",
+            suffixes=("", "_pred"),
+        )
+        if merged.empty:
+            continue
+
+        for seg_name, seg_fn in SITUATIONAL_SEGMENTS:
+            try:
+                mask = seg_fn(merged).fillna(False)
+            except Exception:
+                continue
+
+            sg = merged[mask].copy()
+            if sg.empty:
+                continue
+
+            for season, ss in sg.groupby("season"):
+                season = int(season)
+                mae = float(np.mean(np.abs(
+                    pd.to_numeric(ss["actual_market_residual"], errors="coerce")
+                    - pd.to_numeric(ss["predicted_residual"], errors="coerce")
+                )))
+                market_mae = float(np.mean(np.abs(
+                    pd.to_numeric(ss["actual_market_residual"], errors="coerce")
+                )))
+                rows.append({
+                    "Model": model_name,
+                    "Segment": seg_name,
+                    "Season": season,
+                    "Games": int(len(ss)),
+                    "Model MAE": mae,
+                    "Market MAE": market_mae,
+                    "Improvement vs Market": market_mae - mae,
+                    "Holdout": "YES" if season == int(holdout) else "NO",
+                })
+
+        # Optional conference split when supported.
+        if merged["conference_flag"].notna().any():
+            for cf in ["Conference", "Non-Conference"]:
+                sg = merged[merged["conference_flag"] == cf].copy()
+                if sg.empty:
+                    continue
+                for season, ss in sg.groupby("season"):
+                    season = int(season)
+                    mae = float(np.mean(np.abs(
+                        pd.to_numeric(ss["actual_market_residual"], errors="coerce")
+                        - pd.to_numeric(ss["predicted_residual"], errors="coerce")
+                    )))
+                    market_mae = float(np.mean(np.abs(
+                        pd.to_numeric(ss["actual_market_residual"], errors="coerce")
+                    )))
+                    rows.append({
+                        "Model": model_name,
+                        "Segment": cf,
+                        "Season": season,
+                        "Games": int(len(ss)),
+                        "Model MAE": mae,
+                        "Market MAE": market_mae,
+                        "Improvement vs Market": market_mae - mae,
+                        "Holdout": "YES" if season == int(holdout) else "NO",
+                    })
+
+    return pd.DataFrame(rows)
+
+
+def _summarize_situational_segments(segment_df, holdout):
+    if segment_df is None or segment_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for (model_name, segment), g in segment_df.groupby(["Model", "Segment"]):
+        vals = pd.to_numeric(g["Improvement vs Market"], errors="coerce").dropna()
+        total_games = int(pd.to_numeric(g["Games"], errors="coerce").sum())
+        seasons = int(len(vals))
+        seasons_won = int((vals > 0).sum())
+        avg_impr = float(np.average(
+            pd.to_numeric(g["Improvement vs Market"], errors="coerce"),
+            weights=pd.to_numeric(g["Games"], errors="coerce"),
+        )) if total_games else np.nan
+
+        hold = g[g["Season"].astype(int) == int(holdout)]
+        hold_games = int(hold.iloc[0]["Games"]) if not hold.empty else 0
+        hold_impr = float(hold.iloc[0]["Improvement vs Market"]) if not hold.empty else np.nan
+
+        # Conservative discovery labels; not automatic betting rules.
+        if (
+            total_games >= 250
+            and seasons >= 3
+            and seasons_won >= max(2, seasons - 1)
+            and pd.notna(avg_impr) and avg_impr > 0
+            and pd.notna(hold_impr) and hold_impr > 0
+            and hold_games >= 50
+        ):
+            label = "STABLE SIGNAL"
+        elif (
+            total_games >= 150
+            and seasons >= 3
+            and seasons_won >= 2
+            and pd.notna(avg_impr) and avg_impr > 0
+        ):
+            label = "WATCH"
+        else:
+            label = "NO SIGNAL"
+
+        rows.append({
+            "Model": model_name,
+            "Segment": segment,
+            "Games": total_games,
+            "Seasons Helped": f"{seasons_won}/{seasons}",
+            "Weighted Avg Improvement": avg_impr,
+            f"{holdout} Holdout Improvement": hold_impr,
+            f"{holdout} Holdout Games": hold_games,
+            "Discovery Label": label,
+        })
+
+    order = {
+        "A · Market Control": 0,
+        "B · Minimal": 1,
+        "C · Minimal + Power": 2,
+        "D · Full Residual": 3,
+    }
+    out = pd.DataFrame(rows)
+    out["_order"] = out["Model"].map(order).fillna(99)
+    return out.sort_values(
+        ["_order", "Discovery Label", "Weighted Avg Improvement"],
+        ascending=[True, True, False],
+    ).drop(columns="_order").reset_index(drop=True)
+
+
+def _matched_sample_comparison(feature_df, sparse_pred_df, holdout):
+    """
+    Compare models only on games for which ALL four models have predictions.
+    This removes the advanced-feature missingness advantage/disadvantage from
+    the Full Residual benchmark.
+    """
+    if feature_df is None or feature_df.empty or sparse_pred_df is None or sparse_pred_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    p = sparse_pred_df[sparse_pred_df["market_type"] == "spread"].copy()
+    if p.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    pivot_pred = p.pivot_table(
+        index=["season", "row_index", "actual_market_residual"],
+        columns="model",
+        values="predicted_residual",
+        aggfunc="first",
+    ).reset_index()
+
+    required = [
+        "A · Market Control",
+        "B · Minimal",
+        "C · Minimal + Power",
+        "D · Full Residual",
+    ]
+    for c in required:
+        if c not in pivot_pred.columns:
+            return pd.DataFrame(), pd.DataFrame()
+
+    matched = pivot_pred.dropna(subset=required).copy()
+    if matched.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    detail_rows = []
+    season_rows = []
+
+    for season, g in matched.groupby("season"):
+        season = int(season)
+        actual = pd.to_numeric(g["actual_market_residual"], errors="coerce").to_numpy(dtype=float)
+
+        for model_name in required:
+            pred = pd.to_numeric(g[model_name], errors="coerce").to_numpy(dtype=float)
+            mae = float(np.mean(np.abs(actual - pred)))
+            market_mae = float(np.mean(np.abs(actual)))
+
+            season_rows.append({
+                "Model": model_name,
+                "Season": season,
+                "Matched Games": int(len(g)),
+                "MAE": mae,
+                "Matched Market MAE": market_mae,
+                "Improvement vs Matched Market": market_mae - mae,
+                "Holdout": "YES" if season == int(holdout) else "NO",
+            })
+
+        for _, r in g.iterrows():
+            rec = {
+                "season": int(r["season"]),
+                "row_index": int(r["row_index"]),
+                "actual_market_residual": float(r["actual_market_residual"]),
+            }
+            for model_name in required:
+                rec[model_name] = float(r[model_name])
+            detail_rows.append(rec)
+
+    return pd.DataFrame(season_rows), pd.DataFrame(detail_rows)
+
+
+def _matched_sample_summary(matched_season_df, holdout):
+    if matched_season_df is None or matched_season_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for model_name, g in matched_season_df.groupby("Model"):
+        overall = float(np.average(
+            pd.to_numeric(g["MAE"], errors="coerce"),
+            weights=pd.to_numeric(g["Matched Games"], errors="coerce"),
+        ))
+        market_overall = float(np.average(
+            pd.to_numeric(g["Matched Market MAE"], errors="coerce"),
+            weights=pd.to_numeric(g["Matched Games"], errors="coerce"),
+        ))
+        hold = g[g["Season"].astype(int) == int(holdout)]
+        hold_mae = float(hold.iloc[0]["MAE"]) if not hold.empty else np.nan
+        hold_market = float(hold.iloc[0]["Matched Market MAE"]) if not hold.empty else np.nan
+
+        rows.append({
+            "Model": model_name,
+            "Matched Overall MAE": overall,
+            "Matched Market MAE": market_overall,
+            "Overall Improvement": market_overall - overall,
+            f"{holdout} Holdout MAE": hold_mae,
+            f"{holdout} Holdout Market MAE": hold_market,
+            f"{holdout} Holdout Improvement": hold_market - hold_mae if pd.notna(hold_market) and pd.notna(hold_mae) else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_situational_discovery_cached(test_seasons_tuple, scope, holdout):
+    test_seasons = sorted(set(int(s) for s in test_seasons_tuple))
+    min_history = min(RESIDUAL_TRAIN_START, min(test_seasons) - 4)
+    min_history = max(2014, min_history)
+    max_history = max(test_seasons)
+
+    feat = _feature_audit_history(min_history, max_history, scope)
+    sparse_seasons, sparse_summary, sparse_preds = _run_sparse_bakeoff_cached(
+        tuple(test_seasons), scope, int(holdout)
+    )
+
+    seg_season = _situational_segment_rows(feat, sparse_preds, holdout)
+    seg_summary = _summarize_situational_segments(seg_season, holdout)
+
+    matched_seasons, matched_detail = _matched_sample_comparison(
+        feat, sparse_preds, holdout
+    )
+    matched_summary = _matched_sample_summary(matched_seasons, holdout)
+
+    return (
+        seg_season,
+        seg_summary,
+        matched_seasons,
+        matched_summary,
+        matched_detail,
+    )
+
+
+def _render_situational_discovery_results(
+    seg_season,
+    seg_summary,
+    matched_seasons,
+    matched_summary,
+    matched_detail,
+    holdout,
+):
+    st.markdown("#### Situational Residual Discovery Results")
+    st.caption(
+        "Segments are predeclared diagnostics. A STABLE SIGNAL is not automatically a betting rule; "
+        "it identifies a segment eligible for a separate locked confirmation test."
+    )
+
+    if seg_summary is None or seg_summary.empty:
+        st.info("Run situational discovery to test where the residual model may add value.")
+        return
+
+    focus = seg_summary[seg_summary["Model"].isin([
+        "B · Minimal", "C · Minimal + Power"
+    ])].copy()
+
+    stable = focus[focus["Discovery Label"] == "STABLE SIGNAL"]
+    watch = focus[focus["Discovery Label"] == "WATCH"]
+
+    if not stable.empty:
+        names = ", ".join(
+            stable.apply(lambda r: f"{r['Model']} / {r['Segment']}", axis=1).tolist()
+        )
+        st.success("Stable situational candidates: " + names)
+    elif not watch.empty:
+        names = ", ".join(
+            watch.head(6).apply(lambda r: f"{r['Model']} / {r['Segment']}", axis=1).tolist()
+        )
+        st.warning("No stable signal yet. Segments worth watching: " + names)
+    else:
+        st.warning("No stable situational spread signal found under the locked screen.")
+
+    show = focus.copy()
+    for c in ["Weighted Avg Improvement", f"{holdout} Holdout Improvement"]:
+        show[c] = show[c].map(lambda v: f"{v:+.4f}" if pd.notna(v) else "—")
+    st.dataframe(show, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Matched-Sample Comparison")
+    st.caption(
+        "All models below are scored on exactly the same games, so missing advanced-feature data cannot distort the Full Residual comparison."
+    )
+    if matched_summary is not None and not matched_summary.empty:
+        mshow = matched_summary.copy()
+        for c in mshow.columns:
+            if c != "Model":
+                mshow[c] = mshow[c].map(lambda v: f"{v:+.4f}" if "Improvement" in c else (f"{v:.4f}" if pd.notna(v) else "—"))
+        st.dataframe(mshow, use_container_width=True, hide_index=True)
+
+    with st.expander("Situational season detail", expanded=False):
+        detail = seg_season.copy()
+        for c in ["Model MAE", "Market MAE", "Improvement vs Market"]:
+            detail[c] = detail[c].map(
+                lambda v: f"{v:+.4f}" if c == "Improvement vs Market" else f"{v:.4f}"
+            )
+        st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    with st.expander("Matched season detail", expanded=False):
+        md = matched_seasons.copy()
+        for c in ["MAE", "Matched Market MAE", "Improvement vs Matched Market"]:
+            md[c] = md[c].map(
+                lambda v: f"{v:+.4f}" if c == "Improvement vs Matched Market" else f"{v:.4f}"
+            )
+        st.dataframe(md, use_container_width=True, hide_index=True)
+
+    with st.expander("Situational Discovery Downloads", expanded=True):
+        all_needed_zip = _csv_download_bundle({
+            "cfb_situational_summary.csv": seg_summary,
+            "cfb_situational_seasons.csv": seg_season,
+            "cfb_matched_sample_summary.csv": matched_summary,
+            "cfb_matched_sample_seasons.csv": matched_seasons,
+            "cfb_matched_sample_predictions.csv": matched_detail,
+        })
+
+        st.download_button(
+            "Download All 5 Files",
+            data=all_needed_zip,
+            file_name="cfb_v281_situational_validation_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_cfb_situational_all_zip",
+        )
+        st.caption("Recommended on mobile: one ZIP containing every file needed for review.")
+
+        st.download_button(
+            "Download Situational Summary",
+            data=seg_summary.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_situational_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_cfb_situational_summary",
+        )
+        st.download_button(
+            "Download Situational Seasons",
+            data=seg_season.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_situational_seasons.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_cfb_situational_seasons",
+        )
+        st.download_button(
+            "Download Matched Summary",
+            data=matched_summary.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_matched_sample_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_cfb_matched_sample_summary",
+        )
+        st.download_button(
+            "Download Matched Seasons",
+            data=matched_seasons.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_matched_sample_seasons.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_cfb_matched_sample_seasons",
+        )
+        st.download_button(
+            "Download Matched Predictions",
+            data=matched_detail.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_matched_sample_predictions.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_cfb_matched_sample_predictions",
+        )
+
 def _format_validation_bets(df):
     if df is None or df.empty:
         return df
@@ -7135,8 +7663,8 @@ def _format_validation_bets(df):
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
-        '<div class="mobile-page-title">Spread + Total + Feature + Sparse Audit</div>'
-        '<div class="mobile-page-sub">Walk-forward market-baseline validation, feature ablation, and a locked sparse-model bake-off. Every test season uses only earlier seasons.</div></div>',
+        '<div class="mobile-page-title">Spread + Total + Feature + Sparse + Situational Audit</div>'
+        '<div class="mobile-page-sub">Walk-forward market-baseline validation, feature ablation, sparse-model bake-off, situational discovery, and same-game matched comparisons. Every test season uses only earlier seasons.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -7338,6 +7866,59 @@ def _render_model_validation_page():
     s_preds = st.session_state.get("cfb_sparse_bakeoff_predictions", pd.DataFrame())
     _render_sparse_bakeoff_results(
         s_seasons, s_summary, s_preds, holdout
+    )
+
+    st.markdown("### 9. Situational Residual Discovery")
+    st.caption(
+        "Test the sparse residual models inside predeclared game situations and compare every model on a same-game matched sample."
+    )
+
+    if st.button(
+        "Run Situational Residual Discovery",
+        use_container_width=True,
+        key="run_situational_residual_discovery",
+    ):
+        sit_progress = st.progress(0, text="Building situational discovery…")
+        try:
+            sit_progress.progress(0.25, text="Loading walk-forward sparse predictions…")
+            (
+                sit_seasons,
+                sit_summary,
+                matched_seasons,
+                matched_summary,
+                matched_detail,
+            ) = _run_situational_discovery_cached(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+            )
+            sit_progress.progress(1.0, text="Situational discovery complete.")
+        except Exception as e:
+            sit_progress.empty()
+            st.error(f"Situational discovery failed: {e}")
+            st.exception(e)
+        else:
+            sit_progress.empty()
+            st.session_state["cfb_situational_seasons"] = sit_seasons
+            st.session_state["cfb_situational_summary"] = sit_summary
+            st.session_state["cfb_matched_sample_seasons"] = matched_seasons
+            st.session_state["cfb_matched_sample_summary"] = matched_summary
+            st.session_state["cfb_matched_sample_predictions"] = matched_detail
+            st.success("Situational residual discovery complete.")
+
+    sit_seasons = st.session_state.get("cfb_situational_seasons", pd.DataFrame())
+    sit_summary = st.session_state.get("cfb_situational_summary", pd.DataFrame())
+    matched_seasons = st.session_state.get("cfb_matched_sample_seasons", pd.DataFrame())
+    matched_summary = st.session_state.get("cfb_matched_sample_summary", pd.DataFrame())
+    matched_detail = st.session_state.get("cfb_matched_sample_predictions", pd.DataFrame())
+
+    _render_situational_discovery_results(
+        sit_seasons,
+        sit_summary,
+        matched_seasons,
+        matched_summary,
+        matched_detail,
+        holdout,
     )
 
     with st.expander("Downloads", expanded=False):
@@ -10116,4 +10697,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v2.7.0 Sparse Residual Bake-Off • Market-baseline architecture • Totals research-only.")
+st.caption("CFB Edge • v2.8.1 Download Bundle • One-tap validation exports • Totals research-only.")
