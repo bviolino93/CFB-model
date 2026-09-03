@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.4.0-SLATE-AWARE-FINALIST"
+MODEL_VERSION = "3.5.0-ADAPTIVE-DAILY-CARD"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -9268,6 +9268,489 @@ def _render_v34_slate_finalist(
         )
         st.caption("Upload this ZIP back to ChatGPT for the final model review.")
 
+# ===== v3.5 adaptive daily card / no forced bets =====
+V35_VERSION = "v3.5.0-adaptive-daily-card"
+
+# Fixed quality floors. These do NOT change based on how many games are available.
+# The day size only affects presentation/grouping, never qualification.
+V35_BEST_BET_SCORE = 0.84
+V35_BET_SCORE = 0.78
+V35_LEAN_SCORE = 0.72
+
+# Additional quality guardrails.
+V35_MIN_AGREEMENT_BEST = 2.0 / 3.0
+V35_MIN_AGREEMENT_BET = 2.0 / 3.0
+V35_MIN_AGREEMENT_LEAN = 2.0 / 3.0
+
+# Daily grouping is presentation only.
+V35_SMALL_DAY_MAX = 8
+V35_MEDIUM_DAY_MAX = 20
+
+
+def _v35_daily_group_label(game_count, kickoff_hour):
+    """
+    Day-size-aware display grouping.
+    Qualification thresholds are never changed by this function.
+    """
+    try:
+        n = int(game_count)
+    except Exception:
+        n = 0
+    h = _v3_num(kickoff_hour)
+
+    if n <= V35_SMALL_DAY_MAX:
+        return "Daily Slate"
+
+    if n <= V35_MEDIUM_DAY_MAX:
+        if not np.isfinite(h):
+            return "Daily Slate"
+        return "Early" if h < 17.0 else "Late"
+
+    if not np.isfinite(h):
+        return "Daily Slate"
+    if h < 14.5:
+        return "Early"
+    if h < 18.5:
+        return "Midday"
+    return "Late"
+
+
+def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ensemble"):
+    """
+    Rank all games on a calendar day globally.
+    Time windows are added only for display on larger days.
+    """
+    base = _v34_base_game_frame(history, preds)
+    if base is None or base.empty:
+        return pd.DataFrame()
+
+    weights = V34_ARCHITECTURES.get(
+        architecture_name, V34_ARCHITECTURES["Balanced Ensemble"]
+    )
+
+    # Need a real calendar date to reproduce "what was available today".
+    x = base.copy()
+    if "game_date_et" not in x.columns:
+        x["game_date_et"] = ""
+    x = x[x["game_date_et"].astype(str).str.len() > 0].copy()
+    if x.empty:
+        return x
+
+    ranked_days = []
+    for (season, game_date), g in x.groupby(["season", "game_date_et"]):
+        z = g.copy()
+        if len(z) == 0:
+            continue
+
+        z["confidence_pct"] = z["classifier_confidence"].rank(
+            method="average", pct=True
+        )
+        z["regression_pct"] = z["reg_strength"].rank(
+            method="average", pct=True
+        )
+
+        z["selector_score"] = (
+            weights["confidence"] * z["confidence_pct"]
+            + weights["agreement"] * z["agreement_rate"]
+            + weights["regression"] * z["regression_pct"]
+            + weights["direction"] * z["direction_agreement"]
+            + weights["maturity"] * z["data_maturity"]
+        )
+
+        z["day_rank"] = z["selector_score"].rank(
+            method="first", ascending=False
+        ).astype(int)
+        z["day_size"] = int(len(z))
+        z["day_percentile"] = z["day_rank"] / max(int(len(z)), 1)
+
+        z["display_group"] = [
+            _v35_daily_group_label(len(z), h)
+            for h in pd.to_numeric(z["kickoff_hour_et"], errors="coerce")
+        ]
+        z["architecture"] = architecture_name
+        ranked_days.append(z)
+
+    return pd.concat(ranked_days, ignore_index=True) if ranked_days else pd.DataFrame()
+
+
+def _v35_quality_tier(row):
+    score = _v3_num(row.get("selector_score"))
+    agree = _v3_num(row.get("agreement_rate"))
+    direction = _v3_num(row.get("direction_agreement"))
+
+    # Hard no-bet if model direction is fragmented.
+    if agree < V35_MIN_AGREEMENT_LEAN:
+        return "PASS"
+
+    if (
+        score >= V35_BEST_BET_SCORE
+        and agree >= V35_MIN_AGREEMENT_BEST
+        and direction >= 1.0
+    ):
+        return "BEST BET"
+
+    if score >= V35_BET_SCORE and agree >= V35_MIN_AGREEMENT_BET:
+        return "BET"
+
+    if score >= V35_LEAN_SCORE and agree >= V35_MIN_AGREEMENT_LEAN:
+        return "LEAN"
+
+    return "PASS"
+
+
+def _v35_apply_quality_tiers(rank_frame):
+    if rank_frame is None or rank_frame.empty:
+        return pd.DataFrame()
+    x = rank_frame.copy()
+    x["verdict"] = x.apply(_v35_quality_tier, axis=1)
+
+    # Conservative unit suggestions; no forced scaling with slate size.
+    x["suggested_units"] = np.select(
+        [
+            x["verdict"] == "BEST BET",
+            x["verdict"] == "BET",
+            x["verdict"] == "LEAN",
+        ],
+        [1.0, 0.75, 0.0],
+        default=0.0,
+    )
+
+    # User-facing matchup label.
+    x["selection"] = np.where(
+        x["pick_side"] == "HOME",
+        x["home_team"].astype(str),
+        x["away_team"].astype(str),
+    )
+    return x
+
+
+def _v35_daily_card_backtest(tiered, holdout):
+    if tiered is None or tiered.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    official = tiered[tiered["verdict"].isin(["BEST BET", "BET"])].copy()
+    leans = tiered[tiered["verdict"] == "LEAN"].copy()
+
+    daily_rows = []
+    if not official.empty:
+        for (season, day), g in official.groupby(["season", "game_date_et"]):
+            m = _v34_metrics(g)
+            daily_rows.append({
+                "Season": int(season),
+                "Date": day,
+                "Available Games": int(g["day_size"].max()) if "day_size" in g else np.nan,
+                "Official Bets": int(len(g)),
+                "Best Bets": int((g["verdict"] == "BEST BET").sum()),
+                "Bets": int((g["verdict"] == "BET").sum()),
+                **m,
+            })
+
+    season_rows = []
+    for season in sorted(tiered["season"].dropna().astype(int).unique()):
+        sg = official[official["season"].astype(int) == int(season)]
+        m = _v34_metrics(sg)
+        total_days = tiered[tiered["season"].astype(int) == int(season)]["game_date_et"].nunique()
+        bet_days = sg["game_date_et"].nunique() if not sg.empty else 0
+        season_rows.append({
+            "Season": int(season),
+            "Official Bets": m["Bets"],
+            "Wins": m["Wins"],
+            "Losses": m["Losses"],
+            "Win Rate": m["Win Rate"],
+            "ROI": m["ROI"],
+            "Units": m["Units"],
+            "Max Drawdown": m["Max Drawdown"],
+            "Days With Games": int(total_days),
+            "Days With Official Bet": int(bet_days),
+            "No-Bet Days": int(max(total_days - bet_days, 0)),
+        })
+
+    group_rows = []
+    for group_name, g in official.groupby("display_group"):
+        m = _v34_metrics(g)
+        group_rows.append({
+            "Display Group": group_name,
+            **m,
+        })
+
+    holdout_rows = []
+    h = official[official["season"].astype(int) == int(holdout)]
+    for verdict, g in h.groupby("verdict"):
+        m = _v34_metrics(g)
+        holdout_rows.append({
+            "Verdict": verdict,
+            **m,
+        })
+
+    return (
+        pd.DataFrame(daily_rows),
+        pd.DataFrame(season_rows),
+        pd.DataFrame(group_rows),
+        pd.DataFrame(holdout_rows),
+    )
+
+
+def _v35_threshold_audit(rank_frame, holdout):
+    """
+    Diagnostic only: show fixed-score buckets. This does not optimize thresholds.
+    """
+    if rank_frame is None or rank_frame.empty:
+        return pd.DataFrame()
+
+    bins = [
+        (-np.inf, 0.72, "<0.72"),
+        (0.72, 0.78, "0.72–0.779"),
+        (0.78, 0.84, "0.78–0.839"),
+        (0.84, np.inf, "0.84+"),
+    ]
+    rows = []
+    for lo, hi, label in bins:
+        g = rank_frame[
+            (pd.to_numeric(rank_frame["selector_score"], errors="coerce") >= lo)
+            & (pd.to_numeric(rank_frame["selector_score"], errors="coerce") < hi)
+        ].copy()
+        if g.empty:
+            continue
+
+        all_m = _v34_metrics(g)
+        h = g[g["season"].astype(int) == int(holdout)]
+        hm = _v34_metrics(h)
+        rows.append({
+            "Score Bucket": label,
+            "Games": all_m["Bets"],
+            "Win Rate": all_m["Win Rate"],
+            "ROI": all_m["ROI"],
+            "Holdout Games": hm["Bets"],
+            "Holdout Win Rate": hm["Win Rate"],
+            "Holdout ROI": hm["ROI"],
+        })
+    return pd.DataFrame(rows)
+
+
+def _v35_final_gate(tiered, season_summary, holdout):
+    if tiered is None or tiered.empty:
+        return pd.DataFrame()
+
+    official = tiered[tiered["verdict"].isin(["BEST BET", "BET"])].copy()
+    dev = official[official["season"].astype(int).isin(V34_DEV_SEASONS)]
+    hld = official[official["season"].astype(int) == int(holdout)]
+
+    dm = _v34_metrics(dev)
+    hm = _v34_metrics(hld)
+
+    positive_dev = 0
+    dev_seasons_present = 0
+    if season_summary is not None and not season_summary.empty:
+        d = season_summary[season_summary["Season"].astype(int).isin(V34_DEV_SEASONS)].copy()
+        d = d[d["Official Bets"] > 0]
+        dev_seasons_present = int(len(d))
+        positive_dev = int((pd.to_numeric(d["ROI"], errors="coerce") > 0).sum())
+
+    dev_pass = (
+        dm["Bets"] >= 150
+        and np.isfinite(dm["ROI"]) and dm["ROI"] > 0
+        and np.isfinite(dm["Win Rate"]) and dm["Win Rate"] > V34_BREAKEVEN
+        and dev_seasons_present >= 3
+        and positive_dev >= 2
+    )
+    hold_pass = (
+        hm["Bets"] >= 35
+        and np.isfinite(hm["ROI"]) and hm["ROI"] > 0
+        and np.isfinite(hm["Win Rate"]) and hm["Win Rate"] > V34_BREAKEVEN
+    )
+    drawdown_pass = (
+        np.isfinite(dm["Max Drawdown"])
+        and abs(dm["Max Drawdown"]) <= 20.0
+    )
+
+    if dev_pass and hold_pass and drawdown_pass:
+        verdict = "PRODUCTION FINALIST — FORWARD TRACK"
+    elif dev_pass:
+        verdict = "DEVELOPMENT PASS / HOLDOUT FAIL"
+    else:
+        verdict = "KEEP IN RESEARCH"
+
+    return pd.DataFrame([{
+        "Architecture": "Balanced Ensemble",
+        "Best Bet Score Floor": V35_BEST_BET_SCORE,
+        "Bet Score Floor": V35_BET_SCORE,
+        "Lean Score Floor": V35_LEAN_SCORE,
+        "Development Official Bets": dm["Bets"],
+        "Development Win Rate": dm["Win Rate"],
+        "Development ROI": dm["ROI"],
+        "Positive Development Seasons": f"{positive_dev}/{dev_seasons_present}",
+        "Development Max Drawdown": dm["Max Drawdown"],
+        "Holdout Official Bets": hm["Bets"],
+        "Holdout Win Rate": hm["Win Rate"],
+        "Holdout ROI": hm["ROI"],
+        "Development Pass": bool(dev_pass),
+        f"{holdout} Holdout Pass": bool(hold_pass),
+        "Drawdown Pass": bool(drawdown_pass),
+        "Verdict": verdict,
+    }])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v35_adaptive_daily_card(test_seasons_tuple, scope, holdout, train_start):
+    (
+        history, reg, reg_summary, cls, cls_summary,
+        bets_raw, bet_summary, preds, fixed_gate,
+    ) = _run_v31_ml_bakeoff(
+        tuple(sorted(set(int(s) for s in test_seasons_tuple))),
+        scope,
+        int(holdout),
+        int(train_start),
+    )
+
+    ranked = _v35_global_daily_rank_frame(
+        history, preds, architecture_name="Balanced Ensemble"
+    )
+    tiered = _v35_apply_quality_tiers(ranked)
+
+    daily, seasons, groups, holdout_tiers = _v35_daily_card_backtest(
+        tiered, holdout
+    )
+    audit = _v35_threshold_audit(ranked, holdout)
+    gate = _v35_final_gate(tiered, seasons, holdout)
+
+    return (
+        ranked, tiered, daily, seasons, groups,
+        holdout_tiers, audit, gate
+    )
+
+
+def _render_v35_adaptive_daily_card(
+    ranked, tiered, daily, seasons, groups,
+    holdout_tiers, audit, gate, holdout
+):
+    st.markdown("#### v3.5 Adaptive Daily Card")
+    st.caption(
+        "The model ranks every game available that day and only recommends plays that clear fixed quality thresholds. "
+        "A Friday night, bowl Tuesday, or full Saturday uses the same qualification bar. "
+        "Day size changes organization only — never the number of required bets."
+    )
+
+    if tiered is None or tiered.empty:
+        st.info("Run v3.5 to test the no-forced-bets daily card.")
+        return
+
+    official = tiered[tiered["verdict"].isin(["BEST BET", "BET"])].copy()
+    leans = tiered[tiered["verdict"] == "LEAN"].copy()
+    passes = tiered[tiered["verdict"] == "PASS"].copy()
+
+    st.markdown("##### Card behavior")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Official Bets", f"{len(official):,}")
+    c2.metric("Best Bets", f"{int((tiered['verdict']=='BEST BET').sum()):,}")
+    c3.metric("Leans", f"{len(leans):,}")
+    c4.metric("Passes", f"{len(passes):,}")
+
+    st.markdown("##### Locked thresholds")
+    st.write(
+        f"Best Bet ≥ {V35_BEST_BET_SCORE:.2f} score with directional agreement; "
+        f"Bet ≥ {V35_BET_SCORE:.2f}; Lean ≥ {V35_LEAN_SCORE:.2f}. "
+        "These floors do not drop on small days."
+    )
+
+    st.markdown("##### Final gate")
+    show_gate = gate.copy()
+    if not show_gate.empty:
+        for c in ["Development Win Rate","Development ROI","Holdout Win Rate","Holdout ROI"]:
+            if c in show_gate.columns:
+                show_gate[c] = show_gate[c].map(
+                    lambda v: "—" if pd.isna(v) else
+                    (f"{100*float(v):+.1f}%" if "ROI" in c else f"{100*float(v):.1f}%")
+                )
+        if "Development Max Drawdown" in show_gate.columns:
+            show_gate["Development Max Drawdown"] = show_gate["Development Max Drawdown"].map(
+                lambda v: "—" if pd.isna(v) else f"{float(v):.1f}u"
+            )
+        st.dataframe(show_gate, use_container_width=True, hide_index=True)
+
+        verdict = str(gate.iloc[0]["Verdict"])
+        if verdict.startswith("PRODUCTION FINALIST"):
+            st.success(
+                "The fixed daily-card thresholds cleared the historical screen. "
+                "Freeze them and begin 2026 forward tracking rather than re-optimizing."
+            )
+        elif "HOLDOUT FAIL" in verdict:
+            st.warning(
+                "The card looked acceptable in development but failed the holdout. "
+                "Do not lower the thresholds just to create more action."
+            )
+        else:
+            st.warning(
+                "The card remains research-only. Weak days should continue to produce few or zero official bets."
+            )
+
+    st.markdown("##### Season-by-season")
+    s = seasons.copy()
+    if not s.empty:
+        for c in ["Win Rate","ROI"]:
+            s[c] = s[c].map(
+                lambda v: "—" if pd.isna(v) else
+                (f"{100*float(v):+.1f}%" if c == "ROI" else f"{100*float(v):.1f}%")
+            )
+        s["Max Drawdown"] = s["Max Drawdown"].map(
+            lambda v: "—" if pd.isna(v) else f"{float(v):.1f}u"
+        )
+        st.dataframe(s, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Presentation groups")
+    st.caption(
+        "Small days stay as one Daily Slate. Medium/large days are grouped for readability only."
+    )
+    g = groups.copy()
+    if not g.empty:
+        for c in ["Win Rate","ROI"]:
+            g[c] = g[c].map(
+                lambda v: "—" if pd.isna(v) else
+                (f"{100*float(v):+.1f}%" if c == "ROI" else f"{100*float(v):.1f}%")
+            )
+        st.dataframe(g, use_container_width=True, hide_index=True)
+
+    with st.expander("Fixed score-bucket audit", expanded=False):
+        a = audit.copy()
+        if not a.empty:
+            for c in ["Win Rate","ROI","Holdout Win Rate","Holdout ROI"]:
+                a[c] = a[c].map(
+                    lambda v: "—" if pd.isna(v) else
+                    (f"{100*float(v):+.1f}%" if "ROI" in c else f"{100*float(v):.1f}%")
+                )
+        st.dataframe(a, use_container_width=True, hide_index=True)
+
+    with st.expander("Daily card history", expanded=False):
+        d = daily.copy()
+        if not d.empty:
+            for c in ["Win Rate","ROI"]:
+                d[c] = d[c].map(
+                    lambda v: "—" if pd.isna(v) else
+                    (f"{100*float(v):+.1f}%" if c == "ROI" else f"{100*float(v):.1f}%")
+                )
+        st.dataframe(d, use_container_width=True, hide_index=True)
+
+    with st.expander("v3.5 Downloads", expanded=True):
+        bundle = _csv_download_bundle({
+            "cfb_v350_final_gate.csv": gate,
+            "cfb_v350_daily_card_summary.csv": daily,
+            "cfb_v350_season_summary.csv": seasons,
+            "cfb_v350_group_summary.csv": groups,
+            "cfb_v350_holdout_tiers.csv": holdout_tiers,
+            "cfb_v350_threshold_audit.csv": audit,
+            "cfb_v350_all_ranked_games.csv": ranked,
+            "cfb_v350_all_verdicts.csv": tiered,
+            "cfb_v350_official_bets.csv": official,
+        })
+        st.download_button(
+            "Download All v3.5 Files",
+            data=bundle,
+            file_name="cfb_v350_adaptive_daily_card_bundle.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v350_all",
+        )
+        st.caption("Upload this ZIP back to ChatGPT for final review.")
+
 # ===== v2.4 current-production spread / total validation =====
 
 VALIDATION_GAP_BUCKETS = [
@@ -11649,6 +12132,63 @@ def _render_model_validation_page():
         st.session_state.get("cfb_v340_seasons", pd.DataFrame()),
         st.session_state.get("cfb_v340_slates", pd.DataFrame()),
         st.session_state.get("cfb_v340_weeks", pd.DataFrame()),
+        holdout,
+    )
+
+    st.markdown("### 15. v3.5 Adaptive Daily Card")
+    st.caption(
+        "Best available bets on any day you run it. Friday night can be one slate; "
+        "full Saturdays can be grouped for readability. The quality bar never drops to force action."
+    )
+
+    if st.button(
+        "Run v3.5 Adaptive Daily Card",
+        use_container_width=True,
+        key="run_v350_daily_card",
+    ):
+        v35prog = st.progress(0, text="Ranking historical daily cards…")
+        try:
+            (
+                v35_ranked,
+                v35_tiered,
+                v35_daily,
+                v35_seasons,
+                v35_groups,
+                v35_holdout_tiers,
+                v35_audit,
+                v35_gate,
+            ) = _run_v35_adaptive_daily_card(
+                tuple(sorted(set(int(s) for s in seasons))),
+                scope,
+                int(holdout),
+                int(v3_train_start),
+            )
+            v35prog.progress(1.0, text="v3.5 adaptive daily card complete.")
+        except Exception as e:
+            v35prog.empty()
+            st.error(f"v3.5 daily card failed: {e}")
+            st.exception(e)
+        else:
+            v35prog.empty()
+            st.session_state["cfb_v350_ranked"] = v35_ranked
+            st.session_state["cfb_v350_tiered"] = v35_tiered
+            st.session_state["cfb_v350_daily"] = v35_daily
+            st.session_state["cfb_v350_seasons"] = v35_seasons
+            st.session_state["cfb_v350_groups"] = v35_groups
+            st.session_state["cfb_v350_holdout_tiers"] = v35_holdout_tiers
+            st.session_state["cfb_v350_audit"] = v35_audit
+            st.session_state["cfb_v350_gate"] = v35_gate
+            st.success("v3.5 adaptive daily card complete.")
+
+    _render_v35_adaptive_daily_card(
+        st.session_state.get("cfb_v350_ranked", pd.DataFrame()),
+        st.session_state.get("cfb_v350_tiered", pd.DataFrame()),
+        st.session_state.get("cfb_v350_daily", pd.DataFrame()),
+        st.session_state.get("cfb_v350_seasons", pd.DataFrame()),
+        st.session_state.get("cfb_v350_groups", pd.DataFrame()),
+        st.session_state.get("cfb_v350_holdout_tiers", pd.DataFrame()),
+        st.session_state.get("cfb_v350_audit", pd.DataFrame()),
+        st.session_state.get("cfb_v350_gate", pd.DataFrame()),
         holdout,
     )
 
@@ -14428,4 +14968,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.4.0 Slate-Aware Finalist • Early / Midday / Late ranking • Live logic unchanged pending final confirmation.")
+st.caption("CFB Edge • v3.5.0 Adaptive Daily Card • No forced bets • Same quality bar every day.")

@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.4.0-SLATE-AWARE-FINALIST"
+MODEL_VERSION = "1.5.0-ADAPTIVE-DAILY-CARD"
 
 DEFAULT_HFA = 2.5
 
@@ -737,3 +737,10 @@ GAMEDAY_SELECTOR_VERSION = "v3.3.0-gameday-selector"
 # set of ranking architectures using 2022-2024 only, locks the development
 # winner, and then evaluates that locked winner on the holdout.
 SLATE_AWARE_FINALIST_VERSION = "v3.4.0-slate-aware-finalist"
+
+
+# v1.5.0 adaptive daily card note:
+# v3.5 ranks every game on the calendar day, applies fixed quality thresholds,
+# and uses day size only for presentation grouping. Small days can produce
+# zero bets; large days can produce several, but the qualification bar never moves.
+ADAPTIVE_DAILY_CARD_VERSION = "v3.5.0-adaptive-daily-card"
