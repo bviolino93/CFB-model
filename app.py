@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.5.2-DAILY-CARD-CACHE-REBUILD"
+MODEL_VERSION = "3.5.3-DAILY-CARD-V33-BRIDGE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -9317,126 +9317,98 @@ def _v35_daily_group_label(game_count, kickoff_hour):
 
 def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ensemble"):
     """
-    Rank all games on a calendar day globally.
-    Time windows are added only for display on larger days.
+    v3.5.3 bridge:
+    Start from the already-validated v3.3 one-row-per-game selector frame,
+    then attach the historical calendar date/kickoff by game_id and re-rank
+    cross-sectionally within each actual calendar day.
+
+    This avoids the separate v3.4 base-frame merge path that was returning
+    zero rows in v3.5.0-v3.5.2.
     """
-    base = _v34_base_game_frame(history, preds)
+    base = _v33_rank_frame(history, preds)
     if base is None or base.empty:
         return pd.DataFrame()
 
-    weights = V34_ARCHITECTURES.get(
-        architecture_name, V34_ARCHITECTURES["Balanced Ensemble"]
-    )
-
-    # Need a real calendar date to reproduce "what was available today".
-    # Older cached v3 history frames may predate the kickoff/date columns added
-    # in v3.4. If so, rebuild the calendar fields from the historical CFBD game
-    # schedule by game_id instead of returning an empty result.
     x = base.copy()
-    if "game_date_et" not in x.columns:
-        x["game_date_et"] = ""
-    if "kickoff_hour_et" not in x.columns:
-        x["kickoff_hour_et"] = np.nan
-    if "kickoff_et" not in x.columns:
-        x["kickoff_et"] = ""
 
-    missing_dates = (
-        x["game_date_et"].astype(str).str.len().eq(0)
-        | x["game_date_et"].isna()
+    # Attach historical kickoff/date directly from CFBD /games by game_id.
+    schedule_rows = []
+    seasons = sorted(
+        pd.to_numeric(x["season"], errors="coerce").dropna().astype(int).unique()
     )
+    for _season in seasons:
+        try:
+            _games = get_backtest_games(int(_season))
+        except Exception:
+            _games = []
 
-    if bool(missing_dates.any()):
-        schedule_rows = []
-        for _season in sorted(
-            pd.to_numeric(x.loc[missing_dates, "season"], errors="coerce")
-            .dropna().astype(int).unique()
-        ):
-            # First try the historical line feed because validation has already
-            # fetched/cached it for these seasons. CFBD line rows also carry the
-            # game id + scheduled start date.
-            _sources = []
-            try:
-                _sources.append(get_backtest_lines(int(_season)))
-            except Exception:
-                pass
-            try:
-                _sources.append(get_backtest_games(int(_season)))
-            except Exception:
-                pass
-
-            for _rows in _sources:
-                for _g in _rows or []:
-                    _gid = _g.get("id")
-                    _raw = (
-                        _g.get("startDate")
-                        or _g.get("start_date")
-                        or _g.get("startTime")
-                    )
-                    if _gid is None or not _raw:
-                        continue
-                    try:
-                        _dt = pd.to_datetime(
-                            _raw, utc=True
-                        ).tz_convert("America/New_York")
-                    except Exception:
-                        continue
-                    schedule_rows.append({
-                        "season": int(_season),
-                        "game_id_key": str(_gid),
-                        "_date_fix": _dt.strftime("%Y-%m-%d"),
-                        "_kickoff_fix": _dt.strftime("%Y-%m-%d %I:%M %p"),
-                        "_hour_fix": float(_dt.hour) + float(_dt.minute) / 60.0,
-                    })
-
-        if schedule_rows:
-            _sched = pd.DataFrame(schedule_rows).drop_duplicates(
-                subset=["season","game_id_key"], keep="last"
+        for _g in _games or []:
+            _gid = _g.get("id")
+            _raw = (
+                _g.get("startDate")
+                or _g.get("start_date")
+                or _g.get("startTime")
             )
-            x["game_id_key"] = x["game_id"].astype(str)
-            x = x.merge(_sched, on=["season","game_id_key"], how="left")
+            if _gid is None or not _raw:
+                continue
+            try:
+                _dt = pd.to_datetime(_raw, utc=True).tz_convert("America/New_York")
+            except Exception:
+                continue
 
-            _need = x["game_date_et"].astype(str).str.len().eq(0) | x["game_date_et"].isna()
-            x.loc[_need, "game_date_et"] = x.loc[_need, "_date_fix"]
+            schedule_rows.append({
+                "season": int(_season),
+                "game_id_key": str(_gid),
+                "kickoff_et": _dt.strftime("%Y-%m-%d %I:%M %p"),
+                "game_date_et": _dt.strftime("%Y-%m-%d"),
+                "kickoff_hour_et": float(_dt.hour) + float(_dt.minute) / 60.0,
+            })
 
-            _need_k = x["kickoff_et"].astype(str).str.len().eq(0) | x["kickoff_et"].isna()
-            x.loc[_need_k, "kickoff_et"] = x.loc[_need_k, "_kickoff_fix"]
+    if not schedule_rows:
+        return pd.DataFrame()
 
-            _hour = pd.to_numeric(x["kickoff_hour_et"], errors="coerce")
-            x["kickoff_hour_et"] = _hour.where(_hour.notna(), x["_hour_fix"])
-
-            x = x.drop(
-                columns=["game_id_key","_date_fix","_kickoff_fix","_hour_fix"],
-                errors="ignore",
-            )
-
-    x = x[
-        x["game_date_et"].notna()
-        & x["game_date_et"].astype(str).str.len().gt(0)
-        & x["game_date_et"].astype(str).ne("nan")
-    ].copy()
+    sched = pd.DataFrame(schedule_rows).drop_duplicates(
+        subset=["season", "game_id_key"], keep="last"
+    )
+    x["game_id_key"] = x["game_id"].astype(str)
+    x = x.merge(sched, on=["season", "game_id_key"], how="inner")
+    x = x.drop(columns=["game_id_key"], errors="ignore")
 
     if x.empty:
         return x
 
+    # Recompute daily cross-sectional score using the exact v3.3 components.
+    # The architecture argument is retained for compatibility, but v3.5.x
+    # intentionally uses the fixed Balanced Ensemble weights.
     ranked_days = []
     for (season, game_date), g in x.groupby(["season", "game_date_et"]):
         z = g.copy()
-        if len(z) == 0:
+        if z.empty:
             continue
 
-        z["confidence_pct"] = z["classifier_confidence"].rank(
-            method="average", pct=True
-        )
-        z["regression_pct"] = z["reg_strength"].rank(
-            method="average", pct=True
+        z["confidence_pct"] = pd.to_numeric(
+            z["classifier_confidence"], errors="coerce"
+        ).rank(method="average", pct=True)
+
+        z["regression_pct"] = pd.to_numeric(
+            z["reg_strength"], errors="coerce"
+        ).rank(method="average", pct=True)
+
+        z["agreement_rate"] = (
+            pd.to_numeric(z["classifier_agreement"], errors="coerce")
+            / pd.to_numeric(z["classifier_models"], errors="coerce").clip(lower=1)
         )
 
         z["selector_score"] = (
-            weights["confidence"] * z["confidence_pct"]
-            + weights["agreement"] * z["agreement_rate"]
-            + weights["regression"] * z["regression_pct"]
-            + weights["direction"] * z["direction_agreement"]
-            + weights["maturity"] * z["data_maturity"]
+            0.40 * z["confidence_pct"]
+            + 0.20 * z["agreement_rate"]
+            + 0.20 * z["regression_pct"]
+            + 0.10 * pd.to_numeric(
+                z["direction_agreement"], errors="coerce"
+            ).fillna(0.0)
+            + 0.10 * pd.to_numeric(
+                z["data_maturity"], errors="coerce"
+            ).fillna(0.0)
         )
 
         z["day_rank"] = z["selector_score"].rank(
@@ -9444,12 +9416,11 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
         ).astype(int)
         z["day_size"] = int(len(z))
         z["day_percentile"] = z["day_rank"] / max(int(len(z)), 1)
-
         z["display_group"] = [
             _v35_daily_group_label(len(z), h)
             for h in pd.to_numeric(z["kickoff_hour_et"], errors="coerce")
         ]
-        z["architecture"] = architecture_name
+        z["architecture"] = "Balanced Ensemble"
         ranked_days.append(z)
 
     return pd.concat(ranked_days, ignore_index=True) if ranked_days else pd.DataFrame()
@@ -9721,6 +9692,10 @@ def _v352_daily_card_diagnostics(ranked, tiered):
             "Check": "Seasons",
             "Value": int(ranked["season"].nunique()) if "season" in ranked else 0,
         })
+        rows.append({
+            "Check": "Games with kickoff",
+            "Value": int(ranked["kickoff_et"].notna().sum()) if "kickoff_et" in ranked else 0,
+        })
     return pd.DataFrame(rows)
 
 
@@ -9737,20 +9712,20 @@ def _render_v35_adaptive_daily_card(
 
     if tiered is None or tiered.empty:
         st.error(
-            "v3.5.2 did not produce daily-card rows. The app will force a fresh "
+            "v3.5.3 did not produce daily-card rows. The app will force a fresh "
             "point-in-time history rebuild the next time you press the run button. "
             "If this message remains after that rebuild, download the diagnostic bundle below."
         )
         diag = _v352_daily_card_diagnostics(ranked, tiered)
         diag_bundle = _csv_download_bundle({
-            "cfb_v352_daily_card_diagnostics.csv": diag,
-            "cfb_v352_ranked_rows.csv": ranked if ranked is not None else pd.DataFrame(),
-            "cfb_v352_verdict_rows.csv": tiered if tiered is not None else pd.DataFrame(),
+            "cfb_v353_daily_card_diagnostics.csv": diag,
+            "cfb_v353_ranked_rows.csv": ranked if ranked is not None else pd.DataFrame(),
+            "cfb_v353_verdict_rows.csv": tiered if tiered is not None else pd.DataFrame(),
         })
         st.download_button(
-            "Download v3.5.2 Diagnostic Bundle",
+            "Download v3.5.3 Diagnostic Bundle",
             data=diag_bundle,
-            file_name="cfb_v352_daily_card_diagnostics.zip",
+            file_name="cfb_v353_daily_card_diagnostics.zip",
             mime="application/zip",
             use_container_width=True,
             key="download_v352_diag",
@@ -9854,20 +9829,20 @@ def _render_v35_adaptive_daily_card(
 
     st.markdown("##### v3.5 Result Bundle")
     bundle = _csv_download_bundle({
-        "cfb_v352_final_gate.csv": gate,
-        "cfb_v352_daily_card_summary.csv": daily,
-        "cfb_v352_season_summary.csv": seasons,
-        "cfb_v352_group_summary.csv": groups,
-        "cfb_v352_holdout_tiers.csv": holdout_tiers,
-        "cfb_v352_threshold_audit.csv": audit,
-        "cfb_v352_all_ranked_games.csv": ranked,
-        "cfb_v352_all_verdicts.csv": tiered,
-        "cfb_v352_official_bets.csv": official,
+        "cfb_v353_final_gate.csv": gate,
+        "cfb_v353_daily_card_summary.csv": daily,
+        "cfb_v353_season_summary.csv": seasons,
+        "cfb_v353_group_summary.csv": groups,
+        "cfb_v353_holdout_tiers.csv": holdout_tiers,
+        "cfb_v353_threshold_audit.csv": audit,
+        "cfb_v353_all_ranked_games.csv": ranked,
+        "cfb_v353_all_verdicts.csv": tiered,
+        "cfb_v353_official_bets.csv": official,
     })
     st.download_button(
-        "Download v3.5.2 Result Bundle",
+        "Download v3.5.3 Result Bundle",
         data=bundle,
-        file_name="cfb_v352_adaptive_daily_card_bundle.zip",
+        file_name="cfb_v353_adaptive_daily_card_bundle.zip",
         mime="application/zip",
         use_container_width=True,
         key="download_v351_all",
@@ -12261,14 +12236,14 @@ def _render_model_validation_page():
         holdout,
     )
 
-    st.markdown("### 15. v3.5.2 Adaptive Daily Card")
+    st.markdown("### 15. v3.5.3 Adaptive Daily Card")
     st.caption(
         "Best available bets on any day you run it. Friday night can be one slate; "
         "full Saturdays can be grouped for readability. The quality bar never drops to force action."
     )
 
     if st.button(
-        "Run v3.5.2 Adaptive Daily Card",
+        "Run v3.5.3 Adaptive Daily Card",
         use_container_width=True,
         key="run_v350_daily_card",
     ):
@@ -12302,7 +12277,7 @@ def _render_model_validation_page():
                 int(holdout),
                 int(v3_train_start),
             )
-            v35prog.progress(1.0, text="v3.5.2 adaptive daily card complete.")
+            v35prog.progress(1.0, text="v3.5.3 adaptive daily card complete.")
         except Exception as e:
             v35prog.empty()
             st.error(f"v3.5 daily card failed: {e}")
@@ -12317,7 +12292,7 @@ def _render_model_validation_page():
             st.session_state["cfb_v350_holdout_tiers"] = v35_holdout_tiers
             st.session_state["cfb_v350_audit"] = v35_audit
             st.session_state["cfb_v350_gate"] = v35_gate
-            st.success("v3.5.2 adaptive daily card complete.")
+            st.success("v3.5.3 adaptive daily card complete.")
 
     _render_v35_adaptive_daily_card(
         st.session_state.get("cfb_v350_ranked", pd.DataFrame()),
@@ -15107,4 +15082,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.5.2 Adaptive Daily Card • Forced fresh history rebuild • No forced bets.")
+st.caption("CFB Edge • v3.5.3 Adaptive Daily Card • v3.3 selector bridge • No forced bets.")
