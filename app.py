@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.5.3-DAILY-CARD-V33-BRIDGE"
+MODEL_VERSION = "3.5.4-DAILY-CARD-ROBUST-FALLBACK"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -9315,34 +9315,42 @@ def _v35_daily_group_label(game_count, kickoff_hour):
     return "Late"
 
 
-def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ensemble"):
-    """
-    v3.5.3 bridge:
-    Start from the already-validated v3.3 one-row-per-game selector frame,
-    then attach the historical calendar date/kickoff by game_id and re-rank
-    cross-sectionally within each actual calendar day.
 
-    This avoids the separate v3.4 base-frame merge path that was returning
-    zero rows in v3.5.0-v3.5.2.
+def _v354_attach_daily_calendar(v33_frame):
     """
-    base = _v33_rank_frame(history, preds)
-    if base is None or base.empty:
+    Convert a known-good v3.3 weekly selector frame into a calendar-day frame.
+    This is intentionally independent of the v3.4/v3.5 history merge.
+    """
+    if v33_frame is None or v33_frame.empty:
         return pd.DataFrame()
 
-    x = base.copy()
-
-    # Attach historical kickoff/date directly from CFBD /games by game_id.
+    x = v33_frame.copy()
     schedule_rows = []
+
     seasons = sorted(
         pd.to_numeric(x["season"], errors="coerce").dropna().astype(int).unique()
     )
-    for _season in seasons:
-        try:
-            _games = get_backtest_games(int(_season))
-        except Exception:
-            _games = []
 
-        for _g in _games or []:
+    for _season in seasons:
+        source_rows = []
+
+        # Prefer /games; then try historical lines as a second source.
+        try:
+            source_rows.extend(get_backtest_games(int(_season)) or [])
+        except Exception:
+            pass
+
+        try:
+            _line_rows = get_backtest_lines(int(_season)) or []
+            for _lr in _line_rows:
+                if isinstance(_lr, dict):
+                    source_rows.append(_lr)
+        except Exception:
+            pass
+
+        for _g in source_rows:
+            if not isinstance(_g, dict):
+                continue
             _gid = _g.get("id")
             _raw = (
                 _g.get("startDate")
@@ -9355,7 +9363,6 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
                 _dt = pd.to_datetime(_raw, utc=True).tz_convert("America/New_York")
             except Exception:
                 continue
-
             schedule_rows.append({
                 "season": int(_season),
                 "game_id_key": str(_gid),
@@ -9368,8 +9375,9 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
         return pd.DataFrame()
 
     sched = pd.DataFrame(schedule_rows).drop_duplicates(
-        subset=["season", "game_id_key"], keep="last"
+        subset=["season", "game_id_key"], keep="first"
     )
+
     x["game_id_key"] = x["game_id"].astype(str)
     x = x.merge(sched, on=["season", "game_id_key"], how="inner")
     x = x.drop(columns=["game_id_key"], errors="ignore")
@@ -9377,15 +9385,12 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
     if x.empty:
         return x
 
-    # Recompute daily cross-sectional score using the exact v3.3 components.
-    # The architecture argument is retained for compatibility, but v3.5.x
-    # intentionally uses the fixed Balanced Ensemble weights.
     ranked_days = []
     for (season, game_date), g in x.groupby(["season", "game_date_et"]):
         z = g.copy()
-        if z.empty:
-            continue
 
+        # v3.3 carries classifier_confidence, classifier_agreement/models,
+        # reg_strength, direction_agreement and data_maturity.
         z["confidence_pct"] = pd.to_numeric(
             z["classifier_confidence"], errors="coerce"
         ).rank(method="average", pct=True)
@@ -9424,6 +9429,14 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
         ranked_days.append(z)
 
     return pd.concat(ranked_days, ignore_index=True) if ranked_days else pd.DataFrame()
+
+
+def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ensemble"):
+    """
+    Build v3.3 selector rows first, then only attach calendar dates.
+    """
+    v33 = _v33_rank_frame(history, preds)
+    return _v354_attach_daily_calendar(v33)
 
 
 def _v35_quality_tier(row):
@@ -9655,9 +9668,8 @@ def _run_v35_adaptive_daily_card(test_seasons_tuple, scope, holdout, train_start
         int(train_start),
     )
 
-    ranked = _v35_global_daily_rank_frame(
-        history, preds, architecture_name="Balanced Ensemble"
-    )
+    v33 = _v33_rank_frame(history, preds)
+    ranked = _v354_attach_daily_calendar(v33)
     tiered = _v35_apply_quality_tiers(ranked)
 
     daily, seasons, groups, holdout_tiers = _v35_daily_card_backtest(
@@ -9666,42 +9678,39 @@ def _run_v35_adaptive_daily_card(test_seasons_tuple, scope, holdout, train_start
     audit = _v35_threshold_audit(ranked, holdout)
     gate = _v35_final_gate(tiered, seasons, holdout)
 
+    # Deep stage-by-stage diagnostics. These make the next failure actionable.
+    cls_pred_rows = 0
+    spread_cls_rows = 0
+    if preds is not None and not preds.empty:
+        cls_pred_rows = int((preds.get("task", pd.Series(index=preds.index, dtype=object)) == "classification").sum())
+        try:
+            spread_cls_rows = int((
+                (preds["task"] == "classification")
+                & (preds["market_type"] == "spread")
+            ).sum())
+        except Exception:
+            spread_cls_rows = 0
+
+    diag = pd.DataFrame([
+        {"Check":"History rows", "Value": 0 if history is None else int(len(history))},
+        {"Check":"Prediction rows", "Value": 0 if preds is None else int(len(preds))},
+        {"Check":"Classification prediction rows", "Value": cls_pred_rows},
+        {"Check":"Spread classification rows", "Value": spread_cls_rows},
+        {"Check":"v3.3 selector rows", "Value": 0 if v33 is None else int(len(v33))},
+        {"Check":"Ranked daily rows", "Value": 0 if ranked is None else int(len(ranked))},
+        {"Check":"Verdict rows", "Value": 0 if tiered is None else int(len(tiered))},
+    ])
+
     return (
         ranked, tiered, daily, seasons, groups,
-        holdout_tiers, audit, gate
+        holdout_tiers, audit, gate, diag, v33
     )
-
-
-
-def _v352_daily_card_diagnostics(ranked, tiered):
-    rows = []
-    rows.append({
-        "Check": "Ranked daily rows",
-        "Value": 0 if ranked is None else int(len(ranked)),
-    })
-    rows.append({
-        "Check": "Verdict rows",
-        "Value": 0 if tiered is None else int(len(tiered)),
-    })
-    if ranked is not None and not ranked.empty:
-        rows.append({
-            "Check": "Calendar dates",
-            "Value": int(ranked["game_date_et"].nunique()) if "game_date_et" in ranked else 0,
-        })
-        rows.append({
-            "Check": "Seasons",
-            "Value": int(ranked["season"].nunique()) if "season" in ranked else 0,
-        })
-        rows.append({
-            "Check": "Games with kickoff",
-            "Value": int(ranked["kickoff_et"].notna().sum()) if "kickoff_et" in ranked else 0,
-        })
-    return pd.DataFrame(rows)
 
 
 def _render_v35_adaptive_daily_card(
     ranked, tiered, daily, seasons, groups,
-    holdout_tiers, audit, gate, holdout
+    holdout_tiers, audit, gate, holdout,
+    diagnostic=None, v33_frame=None
 ):
     st.markdown("#### v3.5 Adaptive Daily Card")
     st.caption(
@@ -9712,23 +9721,33 @@ def _render_v35_adaptive_daily_card(
 
     if tiered is None or tiered.empty:
         st.error(
-            "v3.5.3 did not produce daily-card rows. The app will force a fresh "
-            "point-in-time history rebuild the next time you press the run button. "
-            "If this message remains after that rebuild, download the diagnostic bundle below."
+            "v3.5.4 still did not produce daily-card rows. The stage-by-stage "
+            "diagnostic below now shows exactly whether the loss occurred in "
+            "history, predictions, the v3.3 selector, or the calendar join."
         )
-        diag = _v352_daily_card_diagnostics(ranked, tiered)
+        diag = diagnostic if diagnostic is not None else pd.DataFrame()
+        if not diag.empty:
+            st.dataframe(diag, use_container_width=True, hide_index=True)
+
         diag_bundle = _csv_download_bundle({
-            "cfb_v353_daily_card_diagnostics.csv": diag,
-            "cfb_v353_ranked_rows.csv": ranked if ranked is not None else pd.DataFrame(),
-            "cfb_v353_verdict_rows.csv": tiered if tiered is not None else pd.DataFrame(),
+            "cfb_v354_stage_diagnostics.csv": diag,
+            "cfb_v354_v33_selector_rows.csv": (
+                v33_frame if v33_frame is not None else pd.DataFrame()
+            ),
+            "cfb_v354_ranked_rows.csv": (
+                ranked if ranked is not None else pd.DataFrame()
+            ),
+            "cfb_v354_verdict_rows.csv": (
+                tiered if tiered is not None else pd.DataFrame()
+            ),
         })
         st.download_button(
-            "Download v3.5.3 Diagnostic Bundle",
+            "Download v3.5.4 Diagnostic Bundle",
             data=diag_bundle,
-            file_name="cfb_v353_daily_card_diagnostics.zip",
+            file_name="cfb_v354_daily_card_diagnostics.zip",
             mime="application/zip",
             use_container_width=True,
-            key="download_v352_diag",
+            key="download_v354_diag",
         )
         return
 
@@ -9829,20 +9848,20 @@ def _render_v35_adaptive_daily_card(
 
     st.markdown("##### v3.5 Result Bundle")
     bundle = _csv_download_bundle({
-        "cfb_v353_final_gate.csv": gate,
-        "cfb_v353_daily_card_summary.csv": daily,
-        "cfb_v353_season_summary.csv": seasons,
-        "cfb_v353_group_summary.csv": groups,
-        "cfb_v353_holdout_tiers.csv": holdout_tiers,
-        "cfb_v353_threshold_audit.csv": audit,
-        "cfb_v353_all_ranked_games.csv": ranked,
-        "cfb_v353_all_verdicts.csv": tiered,
-        "cfb_v353_official_bets.csv": official,
+        "cfb_v354_final_gate.csv": gate,
+        "cfb_v354_daily_card_summary.csv": daily,
+        "cfb_v354_season_summary.csv": seasons,
+        "cfb_v354_group_summary.csv": groups,
+        "cfb_v354_holdout_tiers.csv": holdout_tiers,
+        "cfb_v354_threshold_audit.csv": audit,
+        "cfb_v354_all_ranked_games.csv": ranked,
+        "cfb_v354_all_verdicts.csv": tiered,
+        "cfb_v354_official_bets.csv": official,
     })
     st.download_button(
-        "Download v3.5.3 Result Bundle",
+        "Download v3.5.4 Result Bundle",
         data=bundle,
-        file_name="cfb_v353_adaptive_daily_card_bundle.zip",
+        file_name="cfb_v354_adaptive_daily_card_bundle.zip",
         mime="application/zip",
         use_container_width=True,
         key="download_v351_all",
@@ -12236,32 +12255,19 @@ def _render_model_validation_page():
         holdout,
     )
 
-    st.markdown("### 15. v3.5.3 Adaptive Daily Card")
+    st.markdown("### 15. v3.5.4 Adaptive Daily Card")
     st.caption(
         "Best available bets on any day you run it. Friday night can be one slate; "
         "full Saturdays can be grouped for readability. The quality bar never drops to force action."
     )
 
     if st.button(
-        "Run v3.5.3 Adaptive Daily Card",
+        "Run v3.5.4 Adaptive Daily Card",
         use_container_width=True,
         key="run_v350_daily_card",
     ):
         v35prog = st.progress(0, text="Ranking historical daily cards…")
         try:
-            # v3.5.2 deliberately clears the parent ML/history cache here.
-            # Streamlit does not automatically invalidate a cached parent
-            # function when only a transitive helper changes, which is what
-            # caused v3.5/v3.5.1 to reuse pre-kickoff historical frames.
-            try:
-                _run_v31_ml_bakeoff.clear()
-            except Exception:
-                pass
-            try:
-                _run_v35_adaptive_daily_card.clear()
-            except Exception:
-                pass
-
             (
                 v35_ranked,
                 v35_tiered,
@@ -12271,13 +12277,15 @@ def _render_model_validation_page():
                 v35_holdout_tiers,
                 v35_audit,
                 v35_gate,
+                v35_diag,
+                v35_v33,
             ) = _run_v35_adaptive_daily_card(
                 tuple(sorted(set(int(s) for s in seasons))),
                 scope,
                 int(holdout),
                 int(v3_train_start),
             )
-            v35prog.progress(1.0, text="v3.5.3 adaptive daily card complete.")
+            v35prog.progress(1.0, text="v3.5.4 adaptive daily card complete.")
         except Exception as e:
             v35prog.empty()
             st.error(f"v3.5 daily card failed: {e}")
@@ -12292,7 +12300,9 @@ def _render_model_validation_page():
             st.session_state["cfb_v350_holdout_tiers"] = v35_holdout_tiers
             st.session_state["cfb_v350_audit"] = v35_audit
             st.session_state["cfb_v350_gate"] = v35_gate
-            st.success("v3.5.3 adaptive daily card complete.")
+            st.session_state["cfb_v350_diag"] = v35_diag
+            st.session_state["cfb_v350_v33"] = v35_v33
+            st.success("v3.5.4 adaptive daily card complete.")
 
     _render_v35_adaptive_daily_card(
         st.session_state.get("cfb_v350_ranked", pd.DataFrame()),
@@ -12304,6 +12314,8 @@ def _render_model_validation_page():
         st.session_state.get("cfb_v350_audit", pd.DataFrame()),
         st.session_state.get("cfb_v350_gate", pd.DataFrame()),
         holdout,
+        st.session_state.get("cfb_v350_diag", pd.DataFrame()),
+        st.session_state.get("cfb_v350_v33", pd.DataFrame()),
     )
 
     with st.expander("Downloads", expanded=False):
@@ -15082,4 +15094,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.5.3 Adaptive Daily Card • v3.3 selector bridge • No forced bets.")
+st.caption("CFB Edge • v3.5.4 Adaptive Daily Card • Robust v3.3 bridge + stage diagnostics.")
