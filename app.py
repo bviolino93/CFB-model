@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.5.4-DAILY-CARD-ROBUST-FALLBACK"
+MODEL_VERSION = "3.5.5-SLATE-WINDOW-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -8905,7 +8905,21 @@ def _v34_roi(g):
 def _v34_drawdown(g):
     if g is None or g.empty:
         return np.nan
-    x = g.sort_values(
+
+    x = g.copy()
+    if "slate_window" not in x.columns:
+        if "display_group" in x.columns:
+            x["slate_window"] = x["display_group"]
+        else:
+            x["slate_window"] = "Daily Slate"
+
+    if "slate_rank" not in x.columns:
+        if "day_rank" in x.columns:
+            x["slate_rank"] = x["day_rank"]
+        else:
+            x["slate_rank"] = np.arange(1, len(x) + 1)
+
+    x = x.sort_values(
         ["season","week","slate_window","slate_rank"],
         ascending=[True,True,True,True]
     ).copy()
@@ -9425,6 +9439,12 @@ def _v354_attach_daily_calendar(v33_frame):
             _v35_daily_group_label(len(z), h)
             for h in pd.to_numeric(z["kickoff_hour_et"], errors="coerce")
         ]
+
+        # Compatibility alias for shared backtest metrics.  _v34_drawdown
+        # historically sorts on slate_window; v3.5 uses display_group because
+        # grouping is presentation-only.  They are equivalent for ordering.
+        z["slate_window"] = z["display_group"]
+
         z["architecture"] = "Balanced Ensemble"
         ranked_days.append(z)
 
@@ -9721,7 +9741,7 @@ def _render_v35_adaptive_daily_card(
 
     if tiered is None or tiered.empty:
         st.error(
-            "v3.5.4 still did not produce daily-card rows. The stage-by-stage "
+            "v3.5.5 still did not produce daily-card rows. The stage-by-stage "
             "diagnostic below now shows exactly whether the loss occurred in "
             "history, predictions, the v3.3 selector, or the calendar join."
         )
@@ -9730,21 +9750,21 @@ def _render_v35_adaptive_daily_card(
             st.dataframe(diag, use_container_width=True, hide_index=True)
 
         diag_bundle = _csv_download_bundle({
-            "cfb_v354_stage_diagnostics.csv": diag,
-            "cfb_v354_v33_selector_rows.csv": (
+            "cfb_v355_stage_diagnostics.csv": diag,
+            "cfb_v355_v33_selector_rows.csv": (
                 v33_frame if v33_frame is not None else pd.DataFrame()
             ),
-            "cfb_v354_ranked_rows.csv": (
+            "cfb_v355_ranked_rows.csv": (
                 ranked if ranked is not None else pd.DataFrame()
             ),
-            "cfb_v354_verdict_rows.csv": (
+            "cfb_v355_verdict_rows.csv": (
                 tiered if tiered is not None else pd.DataFrame()
             ),
         })
         st.download_button(
-            "Download v3.5.4 Diagnostic Bundle",
+            "Download v3.5.5 Diagnostic Bundle",
             data=diag_bundle,
-            file_name="cfb_v354_daily_card_diagnostics.zip",
+            file_name="cfb_v355_daily_card_diagnostics.zip",
             mime="application/zip",
             use_container_width=True,
             key="download_v354_diag",
@@ -9848,20 +9868,20 @@ def _render_v35_adaptive_daily_card(
 
     st.markdown("##### v3.5 Result Bundle")
     bundle = _csv_download_bundle({
-        "cfb_v354_final_gate.csv": gate,
-        "cfb_v354_daily_card_summary.csv": daily,
-        "cfb_v354_season_summary.csv": seasons,
-        "cfb_v354_group_summary.csv": groups,
-        "cfb_v354_holdout_tiers.csv": holdout_tiers,
-        "cfb_v354_threshold_audit.csv": audit,
-        "cfb_v354_all_ranked_games.csv": ranked,
-        "cfb_v354_all_verdicts.csv": tiered,
-        "cfb_v354_official_bets.csv": official,
+        "cfb_v355_final_gate.csv": gate,
+        "cfb_v355_daily_card_summary.csv": daily,
+        "cfb_v355_season_summary.csv": seasons,
+        "cfb_v355_group_summary.csv": groups,
+        "cfb_v355_holdout_tiers.csv": holdout_tiers,
+        "cfb_v355_threshold_audit.csv": audit,
+        "cfb_v355_all_ranked_games.csv": ranked,
+        "cfb_v355_all_verdicts.csv": tiered,
+        "cfb_v355_official_bets.csv": official,
     })
     st.download_button(
-        "Download v3.5.4 Result Bundle",
+        "Download v3.5.5 Result Bundle",
         data=bundle,
-        file_name="cfb_v354_adaptive_daily_card_bundle.zip",
+        file_name="cfb_v355_adaptive_daily_card_bundle.zip",
         mime="application/zip",
         use_container_width=True,
         key="download_v351_all",
@@ -12255,14 +12275,14 @@ def _render_model_validation_page():
         holdout,
     )
 
-    st.markdown("### 15. v3.5.4 Adaptive Daily Card")
+    st.markdown("### 15. v3.5.5 Adaptive Daily Card")
     st.caption(
         "Best available bets on any day you run it. Friday night can be one slate; "
         "full Saturdays can be grouped for readability. The quality bar never drops to force action."
     )
 
     if st.button(
-        "Run v3.5.4 Adaptive Daily Card",
+        "Run v3.5.5 Adaptive Daily Card",
         use_container_width=True,
         key="run_v350_daily_card",
     ):
@@ -12285,7 +12305,7 @@ def _render_model_validation_page():
                 int(holdout),
                 int(v3_train_start),
             )
-            v35prog.progress(1.0, text="v3.5.4 adaptive daily card complete.")
+            v35prog.progress(1.0, text="v3.5.5 adaptive daily card complete.")
         except Exception as e:
             v35prog.empty()
             st.error(f"v3.5 daily card failed: {e}")
@@ -12302,7 +12322,7 @@ def _render_model_validation_page():
             st.session_state["cfb_v350_gate"] = v35_gate
             st.session_state["cfb_v350_diag"] = v35_diag
             st.session_state["cfb_v350_v33"] = v35_v33
-            st.success("v3.5.4 adaptive daily card complete.")
+            st.success("v3.5.5 adaptive daily card complete.")
 
     _render_v35_adaptive_daily_card(
         st.session_state.get("cfb_v350_ranked", pd.DataFrame()),
@@ -15094,4 +15114,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.5.4 Adaptive Daily Card • Robust v3.3 bridge + stage diagnostics.")
+st.caption("CFB Edge • v3.5.5 Adaptive Daily Card • slate_window compatibility hotfix.")
