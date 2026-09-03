@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.5.1-DAILY-CARD-DATE-HOTFIX"
+MODEL_VERSION = "3.5.2-DAILY-CARD-CACHE-REBUILD"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -9351,27 +9351,42 @@ def _v35_global_daily_rank_frame(history, preds, architecture_name="Balanced Ens
             pd.to_numeric(x.loc[missing_dates, "season"], errors="coerce")
             .dropna().astype(int).unique()
         ):
+            # First try the historical line feed because validation has already
+            # fetched/cached it for these seasons. CFBD line rows also carry the
+            # game id + scheduled start date.
+            _sources = []
             try:
-                _games = get_backtest_games(int(_season))
+                _sources.append(get_backtest_lines(int(_season)))
             except Exception:
-                _games = []
+                pass
+            try:
+                _sources.append(get_backtest_games(int(_season)))
+            except Exception:
+                pass
 
-            for _g in _games or []:
-                _gid = _g.get("id")
-                _raw = _g.get("startDate") or _g.get("start_date") or _g.get("startTime")
-                if _gid is None or not _raw:
-                    continue
-                try:
-                    _dt = pd.to_datetime(_raw, utc=True).tz_convert("America/New_York")
-                except Exception:
-                    continue
-                schedule_rows.append({
-                    "season": int(_season),
-                    "game_id_key": str(_gid),
-                    "_date_fix": _dt.strftime("%Y-%m-%d"),
-                    "_kickoff_fix": _dt.strftime("%Y-%m-%d %I:%M %p"),
-                    "_hour_fix": float(_dt.hour) + float(_dt.minute) / 60.0,
-                })
+            for _rows in _sources:
+                for _g in _rows or []:
+                    _gid = _g.get("id")
+                    _raw = (
+                        _g.get("startDate")
+                        or _g.get("start_date")
+                        or _g.get("startTime")
+                    )
+                    if _gid is None or not _raw:
+                        continue
+                    try:
+                        _dt = pd.to_datetime(
+                            _raw, utc=True
+                        ).tz_convert("America/New_York")
+                    except Exception:
+                        continue
+                    schedule_rows.append({
+                        "season": int(_season),
+                        "game_id_key": str(_gid),
+                        "_date_fix": _dt.strftime("%Y-%m-%d"),
+                        "_kickoff_fix": _dt.strftime("%Y-%m-%d %I:%M %p"),
+                        "_hour_fix": float(_dt.hour) + float(_dt.minute) / 60.0,
+                    })
 
         if schedule_rows:
             _sched = pd.DataFrame(schedule_rows).drop_duplicates(
@@ -9686,6 +9701,29 @@ def _run_v35_adaptive_daily_card(test_seasons_tuple, scope, holdout, train_start
     )
 
 
+
+def _v352_daily_card_diagnostics(ranked, tiered):
+    rows = []
+    rows.append({
+        "Check": "Ranked daily rows",
+        "Value": 0 if ranked is None else int(len(ranked)),
+    })
+    rows.append({
+        "Check": "Verdict rows",
+        "Value": 0 if tiered is None else int(len(tiered)),
+    })
+    if ranked is not None and not ranked.empty:
+        rows.append({
+            "Check": "Calendar dates",
+            "Value": int(ranked["game_date_et"].nunique()) if "game_date_et" in ranked else 0,
+        })
+        rows.append({
+            "Check": "Seasons",
+            "Value": int(ranked["season"].nunique()) if "season" in ranked else 0,
+        })
+    return pd.DataFrame(rows)
+
+
 def _render_v35_adaptive_daily_card(
     ranked, tiered, daily, seasons, groups,
     holdout_tiers, audit, gate, holdout
@@ -9698,7 +9736,25 @@ def _render_v35_adaptive_daily_card(
     )
 
     if tiered is None or tiered.empty:
-        st.info("Run v3.5 to test the no-forced-bets daily card.")
+        st.error(
+            "v3.5.2 did not produce daily-card rows. The app will force a fresh "
+            "point-in-time history rebuild the next time you press the run button. "
+            "If this message remains after that rebuild, download the diagnostic bundle below."
+        )
+        diag = _v352_daily_card_diagnostics(ranked, tiered)
+        diag_bundle = _csv_download_bundle({
+            "cfb_v352_daily_card_diagnostics.csv": diag,
+            "cfb_v352_ranked_rows.csv": ranked if ranked is not None else pd.DataFrame(),
+            "cfb_v352_verdict_rows.csv": tiered if tiered is not None else pd.DataFrame(),
+        })
+        st.download_button(
+            "Download v3.5.2 Diagnostic Bundle",
+            data=diag_bundle,
+            file_name="cfb_v352_daily_card_diagnostics.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="download_v352_diag",
+        )
         return
 
     official = tiered[tiered["verdict"].isin(["BEST BET", "BET"])].copy()
@@ -9798,20 +9854,20 @@ def _render_v35_adaptive_daily_card(
 
     st.markdown("##### v3.5 Result Bundle")
     bundle = _csv_download_bundle({
-        "cfb_v351_final_gate.csv": gate,
-        "cfb_v351_daily_card_summary.csv": daily,
-        "cfb_v351_season_summary.csv": seasons,
-        "cfb_v351_group_summary.csv": groups,
-        "cfb_v351_holdout_tiers.csv": holdout_tiers,
-        "cfb_v351_threshold_audit.csv": audit,
-        "cfb_v351_all_ranked_games.csv": ranked,
-        "cfb_v351_all_verdicts.csv": tiered,
-        "cfb_v351_official_bets.csv": official,
+        "cfb_v352_final_gate.csv": gate,
+        "cfb_v352_daily_card_summary.csv": daily,
+        "cfb_v352_season_summary.csv": seasons,
+        "cfb_v352_group_summary.csv": groups,
+        "cfb_v352_holdout_tiers.csv": holdout_tiers,
+        "cfb_v352_threshold_audit.csv": audit,
+        "cfb_v352_all_ranked_games.csv": ranked,
+        "cfb_v352_all_verdicts.csv": tiered,
+        "cfb_v352_official_bets.csv": official,
     })
     st.download_button(
-        "Download v3.5.1 Result Bundle",
+        "Download v3.5.2 Result Bundle",
         data=bundle,
-        file_name="cfb_v351_adaptive_daily_card_bundle.zip",
+        file_name="cfb_v352_adaptive_daily_card_bundle.zip",
         mime="application/zip",
         use_container_width=True,
         key="download_v351_all",
@@ -12205,19 +12261,32 @@ def _render_model_validation_page():
         holdout,
     )
 
-    st.markdown("### 15. v3.5.1 Adaptive Daily Card")
+    st.markdown("### 15. v3.5.2 Adaptive Daily Card")
     st.caption(
         "Best available bets on any day you run it. Friday night can be one slate; "
         "full Saturdays can be grouped for readability. The quality bar never drops to force action."
     )
 
     if st.button(
-        "Run v3.5.1 Adaptive Daily Card",
+        "Run v3.5.2 Adaptive Daily Card",
         use_container_width=True,
         key="run_v350_daily_card",
     ):
         v35prog = st.progress(0, text="Ranking historical daily cards…")
         try:
+            # v3.5.2 deliberately clears the parent ML/history cache here.
+            # Streamlit does not automatically invalidate a cached parent
+            # function when only a transitive helper changes, which is what
+            # caused v3.5/v3.5.1 to reuse pre-kickoff historical frames.
+            try:
+                _run_v31_ml_bakeoff.clear()
+            except Exception:
+                pass
+            try:
+                _run_v35_adaptive_daily_card.clear()
+            except Exception:
+                pass
+
             (
                 v35_ranked,
                 v35_tiered,
@@ -12233,7 +12302,7 @@ def _render_model_validation_page():
                 int(holdout),
                 int(v3_train_start),
             )
-            v35prog.progress(1.0, text="v3.5.1 adaptive daily card complete.")
+            v35prog.progress(1.0, text="v3.5.2 adaptive daily card complete.")
         except Exception as e:
             v35prog.empty()
             st.error(f"v3.5 daily card failed: {e}")
@@ -12248,7 +12317,7 @@ def _render_model_validation_page():
             st.session_state["cfb_v350_holdout_tiers"] = v35_holdout_tiers
             st.session_state["cfb_v350_audit"] = v35_audit
             st.session_state["cfb_v350_gate"] = v35_gate
-            st.success("v3.5.1 adaptive daily card complete.")
+            st.success("v3.5.2 adaptive daily card complete.")
 
     _render_v35_adaptive_daily_card(
         st.session_state.get("cfb_v350_ranked", pd.DataFrame()),
@@ -15038,4 +15107,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.5.1 Adaptive Daily Card • Date-cache hotfix • No forced bets.")
+st.caption("CFB Edge • v3.5.2 Adaptive Daily Card • Forced fresh history rebuild • No forced bets.")
