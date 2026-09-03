@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.5.0-ADAPTIVE-DAILY-CARD"
+MODEL_VERSION = "1.6.1-AUTO-PERFORMANCE-TRACKER"
 
 DEFAULT_HFA = 2.5
 
@@ -744,3 +744,54 @@ SLATE_AWARE_FINALIST_VERSION = "v3.4.0-slate-aware-finalist"
 # and uses day size only for presentation grouping. Small days can produce
 # zero bets; large days can produce several, but the qualification bar never moves.
 ADAPTIVE_DAILY_CARD_VERSION = "v3.5.0-adaptive-daily-card"
+
+
+# v1.5.1 date-cache hotfix:
+# If an older cached point-in-time history frame lacks calendar date/kickoff
+# fields, v3.5.1 rehydrates those fields from the historical CFBD game schedule
+# by game_id before constructing the daily card.
+ADAPTIVE_DAILY_CARD_HOTFIX_VERSION = "v3.5.1-date-cache-hotfix"
+
+
+# v1.5.2 cache-rebuild hotfix:
+# Streamlit parent caches can survive helper changes. v3.5.2 explicitly clears
+# the parent v3.1 ML/history cache before a daily-card validation run, forcing
+# the historical feature frame to be rebuilt with calendar kickoff fields.
+ADAPTIVE_DAILY_CARD_CACHE_REBUILD_VERSION = "v3.5.2-cache-rebuild"
+
+
+# v1.5.3 bridge hotfix:
+# Daily-card construction now starts from the proven v3.3 selector frame
+# (_v33_rank_frame), attaches calendar kickoff by game_id, then ranks within day.
+# This removes the separate v3.4 base merge that yielded zero daily rows.
+ADAPTIVE_DAILY_CARD_BRIDGE_VERSION = "v3.5.3-v33-bridge"
+
+
+# v1.5.4 robust daily-card fallback:
+# v3.5.4 uses the exact v3.3 selector frame as the sole upstream card source,
+# removes forced upstream cache clearing, and emits stage-level diagnostics:
+# history -> predictions -> spread classification -> v3.3 -> calendar join.
+ADAPTIVE_DAILY_CARD_ROBUST_VERSION = "v3.5.4-robust-fallback"
+
+
+# v1.5.5 slate-window compatibility hotfix:
+# Shared drawdown metrics expected a slate_window/slate_rank schema from v3.4.
+# v3.5 uses display_group/day_rank.  v3.5.5 adds aliases and makes the shared
+# helper schema-tolerant.
+ADAPTIVE_DAILY_CARD_SLATE_WINDOW_HOTFIX = "v3.5.5"
+
+
+# v1.6.0 production daily card:
+# Historical research is locked into a practical live selector.
+# All games on a calendar day are ranked together using the v3.3/v3.5
+# Balanced Ensemble. Spread scores >=0.84 are official 1u plays.
+# The highest-scoring official play is labeled Best Bet for presentation only;
+# it does not receive a larger stake.
+PRODUCTION_DAILY_CARD_VERSION = "v3.6.0-production-daily-card"
+PRODUCTION_DAILY_SCORE_FLOOR = 0.84
+
+
+# v1.6.1 automatic official performance tracker
+# The live app freezes every official >=0.84 spread recommendation before kickoff,
+# auto-grades ATS results after final scores post, and tracks units/ROI permanently.
+PERFORMANCE_TRACKER_VERSION = "v3.6.1-auto-performance-tracker"

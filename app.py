@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.5.5-SLATE-WINDOW-HOTFIX"
+MODEL_VERSION = "3.6.1-AUTO-PERFORMANCE-TRACKER"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -13503,6 +13503,838 @@ def consensus_line(rows):
     }
 
 
+
+# ===== v3.6 locked production daily card =====
+V36_VERSION = "v3.6.0-production-daily-card"
+V36_SCORE_FLOOR = 0.84
+V36_LEAN_FLOOR = 0.72
+V36_TRAIN_START = 2018
+V36_CORE_CLASSIFIERS = ("Gradient Boosting", "Extra Trees", "Logistic")
+V36_CORE_REGRESSORS = ("Gradient Boosting", "Extra Trees", "Random Forest")
+
+
+def _v36_live_prepare(train_df, live_df, features, min_coverage=0.35):
+    """
+    Training medians and feature coverage are learned from historical games only.
+    Live rows never influence feature selection or imputation.
+    """
+    usable, medians = [], {}
+    for f in features:
+        if f not in train_df.columns or f not in live_df.columns:
+            continue
+        s = pd.to_numeric(train_df[f], errors="coerce")
+        if len(s) == 0 or float(s.notna().mean()) < min_coverage:
+            continue
+        med = float(s.median()) if s.notna().any() else 0.0
+        usable.append(f)
+        medians[f] = med
+
+    if len(usable) < 5 or live_df.empty:
+        return None
+
+    Xtr = np.column_stack([
+        pd.to_numeric(train_df[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    Xlive = np.column_stack([
+        pd.to_numeric(live_df[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    return Xtr, Xlive, usable
+
+
+@st.cache_resource(show_spinner=False)
+def _v36_fit_live_spread_models(current_season, scope="Major FBS"):
+    """
+    Fit the locked v3.6 spread ensemble using completed seasons only.
+    For 2026 this means 2018-2025 history. 2026 outcomes never enter the fit.
+    """
+    current_season = int(current_season)
+    hist = _v3_history_frame(V36_TRAIN_START, current_season - 1, scope)
+    if hist is None or hist.empty:
+        return None
+
+    h = hist.copy()
+    h["spread_residual_target"] = (
+        pd.to_numeric(h["actual_margin"], errors="coerce")
+        - pd.to_numeric(h["market_margin"], errors="coerce")
+    )
+    d = pd.to_numeric(h["spread_residual_target"], errors="coerce")
+    h["home_cover_target"] = np.where(
+        d > 0, 1.0, np.where(d < 0, 0.0, np.nan)
+    )
+
+    spread_groups, _ = _v31_feature_groups()
+    features = _v31_flatten(spread_groups) + ["market_margin"]
+
+    # Historical feature coverage/medians are stored with the fitted package.
+    usable, medians = [], {}
+    for f in features:
+        if f not in h.columns:
+            continue
+        s = pd.to_numeric(h[f], errors="coerce")
+        if float(s.notna().mean()) < 0.35:
+            continue
+        usable.append(f)
+        medians[f] = float(s.median()) if s.notna().any() else 0.0
+
+    if len(usable) < 5:
+        return None
+
+    class_train = h.dropna(subset=["home_cover_target"]).copy()
+    reg_train = h.dropna(subset=["spread_residual_target"]).copy()
+
+    Xc = np.column_stack([
+        pd.to_numeric(class_train[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    yc = pd.to_numeric(class_train["home_cover_target"], errors="coerce").to_numpy(dtype=int)
+
+    Xr = np.column_stack([
+        pd.to_numeric(reg_train[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in usable
+    ])
+    yr = pd.to_numeric(reg_train["spread_residual_target"], errors="coerce").to_numpy(dtype=float)
+
+    classifiers = {}
+    for name in V36_CORE_CLASSIFIERS:
+        est = _v31_classifiers().get(name)
+        if est is None:
+            continue
+        try:
+            # Same point-in-time Platt scheme used in v3.1+ research.
+            cal = _v31_inner_calibration(
+                class_train, usable, "home_cover_target", name
+            )
+            est.fit(Xc, yc)
+            classifiers[name] = (est, cal)
+        except Exception:
+            continue
+
+    regressors = {}
+    for name in V36_CORE_REGRESSORS:
+        est = _v31_regressors().get(name)
+        if est is None:
+            continue
+        try:
+            est.fit(Xr, yr)
+            regressors[name] = est
+        except Exception:
+            continue
+
+    if len(classifiers) < 2 or len(regressors) < 2:
+        return None
+
+    return {
+        "features": usable,
+        "medians": medians,
+        "classifiers": classifiers,
+        "regressors": regressors,
+        "train_rows": int(len(h)),
+        "train_through": current_season - 1,
+    }
+
+
+def _v36_live_feature_frame(games_today, slate_df):
+    if not games_today or slate_df is None or slate_df.empty:
+        return pd.DataFrame()
+
+    game_map = {str(g.get("id")): g for g in games_today if g.get("id") is not None}
+    current_season = None
+    for g in games_today:
+        if g.get("season") is not None:
+            current_season = int(g.get("season"))
+            break
+    if current_season is None:
+        return pd.DataFrame()
+
+    preseason = _v3_preseason_data(current_season)
+    adv_cache = {}
+    rows = []
+
+    for _, sr in slate_df.iterrows():
+        gid = str(sr.get("game_id"))
+        g = game_map.get(gid)
+        if g is None:
+            continue
+
+        hs = sr.get("market_home_spread")
+        if hs is None or (isinstance(hs, float) and pd.isna(hs)):
+            continue
+
+        week = int(g.get("week") or 1)
+        if week not in adv_cache:
+            adv_cache[week] = _v3_advanced_through(current_season, week - 1)
+
+        market = {
+            "home_spread": float(hs),
+            "total": sr.get("market_total"),
+        }
+        try:
+            row = _v3_game_feature_row(
+                g, market, preseason, adv_cache.get(week, {})
+            )
+        except Exception:
+            continue
+
+        row["row_index"] = len(rows)
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
+    """
+    Exact production translation of the v3.5 daily selector:
+    classifier consensus + nonlinear residual consensus + cross-sectional
+    daily percentiles + fixed 0.84 qualification floor.
+    """
+    live = _v36_live_feature_frame(games_today, slate_df)
+    if live is None or live.empty:
+        return pd.DataFrame()
+
+    season = int(pd.to_numeric(live["season"], errors="coerce").dropna().iloc[0])
+    fitted = _v36_fit_live_spread_models(season, scope)
+    if not fitted:
+        return pd.DataFrame()
+
+    features = fitted["features"]
+    medians = fitted["medians"]
+    X = np.column_stack([
+        pd.to_numeric(live[f], errors="coerce").fillna(medians[f]).to_numpy(dtype=float)
+        for f in features
+    ])
+
+    # Classification consensus.
+    class_pred = {}
+    for name, (est, cal) in fitted["classifiers"].items():
+        try:
+            raw = est.predict_proba(X)[:, 1]
+            class_pred[name] = _v31_platt_apply(cal, raw)
+        except Exception:
+            continue
+
+    # Residual-regression consensus.
+    reg_pred = {}
+    for name, est in fitted["regressors"].items():
+        try:
+            reg_pred[name] = np.clip(
+                np.asarray(est.predict(X), dtype=float),
+                -V31_SPREAD_CORRECTION_CAP,
+                V31_SPREAD_CORRECTION_CAP,
+            )
+        except Exception:
+            continue
+
+    if len(class_pred) < 2 or len(reg_pred) < 2:
+        return pd.DataFrame()
+
+    rows = []
+    for i, r in live.reset_index(drop=True).iterrows():
+        votes = []
+        for name, probs in class_pred.items():
+            p = float(probs[i])
+            side = "HOME" if p >= 0.5 else "AWAY"
+            conf = max(p, 1.0 - p)
+            votes.append((name, side, conf, p))
+
+        home_n = sum(1 for v in votes if v[1] == "HOME")
+        away_n = sum(1 for v in votes if v[1] == "AWAY")
+        if home_n == away_n:
+            continue
+        pick_side = "HOME" if home_n > away_n else "AWAY"
+        agreeing = [v for v in votes if v[1] == pick_side]
+        if len(agreeing) < 2:
+            continue
+
+        reg_votes = []
+        for name, vals in reg_pred.items():
+            corr = float(vals[i])
+            reg_votes.append((name, "HOME" if corr >= 0 else "AWAY", abs(corr), corr))
+        rh = sum(1 for v in reg_votes if v[1] == "HOME")
+        ra = sum(1 for v in reg_votes if v[1] == "AWAY")
+        reg_side = "HOME" if rh >= ra else "AWAY"
+        reg_agree = max(rh, ra)
+        reg_strengths = [v[2] for v in reg_votes if v[1] == reg_side]
+
+        rows.append({
+            "row_index": int(r.get("row_index", i)),
+            "game_id": r.get("game_id"),
+            "season": season,
+            "week": int(_v3_num(r.get("week"), 1)),
+            "kickoff_et": r.get("kickoff_et", ""),
+            "home_team": r.get("home_team"),
+            "away_team": r.get("away_team"),
+            "market_margin": _v3_num(r.get("market_margin")),
+            "pick_side": pick_side,
+            "classifier_models": len(votes),
+            "classifier_agreement": len(agreeing),
+            "classifier_confidence": float(np.mean([v[2] for v in agreeing])),
+            "reg_side": reg_side,
+            "reg_agreement": int(reg_agree),
+            "reg_strength": float(np.mean(reg_strengths)) if reg_strengths else 0.0,
+            "direction_agreement": 1.0 if pick_side == reg_side else 0.0,
+            "data_maturity": 1.0 if int(_v3_num(r.get("week"), 1)) >= 4 else 0.0,
+            "train_rows": fitted["train_rows"],
+            "train_through": fitted["train_through"],
+        })
+
+    card = pd.DataFrame(rows)
+    if card.empty:
+        return card
+
+    # Exact daily cross-sectional ranking used in v3.5.
+    card["confidence_pct"] = card["classifier_confidence"].rank(
+        method="average", pct=True
+    )
+    card["regression_pct"] = card["reg_strength"].rank(
+        method="average", pct=True
+    )
+    card["agreement_rate"] = (
+        card["classifier_agreement"] / card["classifier_models"].clip(lower=1)
+    )
+    card["selector_score"] = (
+        0.40 * card["confidence_pct"]
+        + 0.20 * card["agreement_rate"]
+        + 0.20 * card["regression_pct"]
+        + 0.10 * card["direction_agreement"]
+        + 0.10 * card["data_maturity"]
+    )
+    card["day_rank"] = card["selector_score"].rank(
+        method="first", ascending=False
+    ).astype(int)
+    card["day_size"] = int(len(card))
+
+    # Production lock: ONLY >= .84 is an official wager.
+    card["verdict"] = np.where(
+        card["selector_score"] >= V36_SCORE_FLOOR,
+        "BET",
+        np.where(card["selector_score"] >= V36_LEAN_FLOOR, "LEAN", "PASS"),
+    )
+
+    official_idx = card.index[card["verdict"] == "BET"].tolist()
+    if official_idx:
+        best_idx = card.loc[official_idx, "selector_score"].idxmax()
+        card.loc[best_idx, "verdict"] = "BEST BET"
+
+    # Flat 1u official stake exactly matches historical ROI evaluation.
+    card["suggested_units"] = np.where(
+        card["verdict"].isin(["BEST BET", "BET"]), 1.0, 0.0
+    )
+
+    home_spread = -pd.to_numeric(card["market_margin"], errors="coerce")
+    card["selection"] = np.where(
+        card["pick_side"] == "HOME",
+        card["home_team"].astype(str) + " " + home_spread.map(lambda v: f"{v:+.1f}"),
+        card["away_team"].astype(str) + " " + (-home_spread).map(lambda v: f"{v:+.1f}"),
+    )
+
+    return card.sort_values(
+        ["selector_score", "classifier_confidence"],
+        ascending=[False, False]
+    ).reset_index(drop=True)
+
+
+V36_TRACKER_PATH = CFB_TRACKER_DIR / "cfb_v36_forward_tracker.csv"
+
+
+def _v361_american_profit(odds, stake=1.0):
+    try:
+        odds = float(odds)
+        stake = float(stake)
+    except Exception:
+        return None
+    if odds > 0:
+        return stake * (odds / 100.0)
+    if odds < 0:
+        return stake * (100.0 / abs(odds))
+    return 0.0
+
+
+def _v361_parse_selection_line(selection):
+    """
+    Parse the frozen spread from strings like 'Georgia -7.5' or 'Florida +3.0'.
+    Returns (team_name, spread) or (selection, None) if not parseable.
+    """
+    s = str(selection or "").strip()
+    m = re.match(r"^(.*)\s([+-]\d+(?:\.\d+)?)$", s)
+    if not m:
+        return s, None
+    return m.group(1).strip(), float(m.group(2))
+
+
+def _v361_result_from_final(home_team, away_team, home_score, away_score, selection):
+    team, spread = _v361_parse_selection_line(selection)
+    if spread is None:
+        return "", ""
+
+    try:
+        hs = float(home_score)
+        a_s = float(away_score)
+    except Exception:
+        return "", ""
+
+    if team == str(home_team):
+        ats_margin = (hs - a_s) + spread
+    elif team == str(away_team):
+        ats_margin = (a_s - hs) + spread
+    else:
+        return "", ""
+
+    if ats_margin > 1e-9:
+        return "WIN", ats_margin
+    if ats_margin < -1e-9:
+        return "LOSS", ats_margin
+    return "PUSH", 0.0
+
+
+def _v361_fetch_final_scores_for_dates(dates):
+    """
+    Fetch completed games for the dates represented in the tracker.
+    Uses the same CFBD games endpoint already used elsewhere in the app.
+    """
+    out = {}
+    for d in sorted(set(str(x) for x in dates if str(x).strip())):
+        try:
+            # CFBD games are season/week based, so use app's date helper if available.
+            # Fallback: infer year and scan schedule results already cached in app helpers.
+            dt = pd.to_datetime(d)
+            season = int(dt.year)
+        except Exception:
+            continue
+
+        games = []
+        # Prefer an existing date-aware helper if the app defines one.
+        try:
+            if "_cfbd_games_by_date" in globals():
+                games = _cfbd_games_by_date(d) or []
+        except Exception:
+            games = []
+
+        if not games:
+            try:
+                # Fall back to season schedule and filter by calendar date.
+                if "_v3_historical_games" in globals():
+                    season_games = _v3_historical_games(season) or []
+                elif "_cfbd_games" in globals():
+                    season_games = _cfbd_games(season) or []
+                else:
+                    season_games = []
+
+                for g in season_games:
+                    start = g.get("start_date") or g.get("startDate") or g.get("start_date_time")
+                    if not start:
+                        continue
+                    try:
+                        gd = pd.to_datetime(start, utc=True).tz_convert("US/Eastern").date().isoformat()
+                    except Exception:
+                        try:
+                            gd = pd.to_datetime(start).date().isoformat()
+                        except Exception:
+                            continue
+                    if gd == d:
+                        games.append(g)
+            except Exception:
+                games = []
+
+        for g in games:
+            gid = str(g.get("id") or "")
+            if not gid:
+                continue
+
+            hs = g.get("home_points")
+            if hs is None:
+                hs = g.get("homePoints")
+            as_ = g.get("away_points")
+            if as_ is None:
+                as_ = g.get("awayPoints")
+
+            completed = g.get("completed")
+            if completed is None:
+                completed = (hs is not None and as_ is not None)
+
+            if not completed or hs is None or as_ is None:
+                continue
+
+            out[gid] = {
+                "home_team": g.get("home_team") or g.get("homeTeam"),
+                "away_team": g.get("away_team") or g.get("awayTeam"),
+                "home_score": hs,
+                "away_score": as_,
+            }
+    return out
+
+
+def _v361_grade_forward_tracker():
+    """
+    Auto-grade frozen official plays once final scores are available.
+    Original recommendation fields are never overwritten.
+    """
+    if not V36_TRACKER_PATH.exists():
+        return 0, pd.DataFrame()
+
+    try:
+        df = pd.read_csv(V36_TRACKER_PATH)
+    except Exception:
+        return 0, pd.DataFrame()
+
+    if df.empty:
+        return 0, df
+
+    # Ensure schema can evolve safely.
+    defaults = {
+        "status": "FROZEN",
+        "result": "",
+        "units_result": "",
+        "final_home_score": "",
+        "final_away_score": "",
+        "graded_at": "",
+        "closing_status": "",
+    }
+    for c, v in defaults.items():
+        if c not in df.columns:
+            df[c] = v
+
+    pending_mask = ~df["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])
+    pending = df[pending_mask].copy()
+    if pending.empty:
+        return 0, df
+
+    finals = _v361_fetch_final_scores_for_dates(pending["game_date"].tolist())
+    if not finals:
+        return 0, df
+
+    graded = 0
+    now = pd.Timestamp.now(tz="US/Eastern").isoformat()
+
+    for idx, r in pending.iterrows():
+        gid = str(r.get("game_id") or "")
+        final = finals.get(gid)
+        if not final:
+            continue
+
+        result, _ = _v361_result_from_final(
+            r.get("home_team"),
+            r.get("away_team"),
+            final["home_score"],
+            final["away_score"],
+            r.get("selection"),
+        )
+        if not result:
+            continue
+
+        stake = float(r.get("suggested_units") or 1.0)
+        # Historical research used -110 flat spread economics.
+        win_profit = _v361_american_profit(-110, stake) or 0.0
+
+        if result == "WIN":
+            units_result = win_profit
+        elif result == "LOSS":
+            units_result = -stake
+        else:
+            units_result = 0.0
+
+        df.at[idx, "result"] = result
+        df.at[idx, "units_result"] = round(float(units_result), 6)
+        df.at[idx, "status"] = "FINAL"
+        df.at[idx, "final_home_score"] = final["home_score"]
+        df.at[idx, "final_away_score"] = final["away_score"]
+        df.at[idx, "graded_at"] = now
+        graded += 1
+
+    if graded:
+        df.to_csv(V36_TRACKER_PATH, index=False)
+
+    return graded, df
+
+
+def _v361_tracker_summary(df):
+    if df is None or df.empty:
+        return {
+            "official": 0, "graded": 0, "pending": 0, "wins": 0,
+            "losses": 0, "pushes": 0, "win_rate": 0.0,
+            "units": 0.0, "roi": 0.0,
+        }
+
+    x = df.copy()
+    res = x["result"].astype(str).str.upper()
+    graded = res.isin(["WIN", "LOSS", "PUSH"])
+    decided = res.isin(["WIN", "LOSS"])
+    wins = int((res == "WIN").sum())
+    losses = int((res == "LOSS").sum())
+    pushes = int((res == "PUSH").sum())
+    pending = int((~graded).sum())
+
+    units = pd.to_numeric(x.get("units_result"), errors="coerce").fillna(0.0).sum()
+    risked = pd.to_numeric(
+        x.loc[graded, "suggested_units"], errors="coerce"
+    ).fillna(0.0).sum()
+
+    return {
+        "official": int(len(x)),
+        "graded": int(graded.sum()),
+        "pending": pending,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "win_rate": (wins / max(wins + losses, 1)),
+        "units": float(units),
+        "roi": (float(units) / risked) if risked > 0 else 0.0,
+    }
+
+
+def _v361_tracker_splits(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    x = df.copy()
+    x["result"] = x["result"].astype(str).str.upper()
+    x["units_result"] = pd.to_numeric(x["units_result"], errors="coerce").fillna(0.0)
+    x["suggested_units"] = pd.to_numeric(x["suggested_units"], errors="coerce").fillna(0.0)
+    x["selector_score"] = pd.to_numeric(x["selector_score"], errors="coerce")
+    x["graded"] = x["result"].isin(["WIN", "LOSS", "PUSH"])
+
+    rows = []
+    for verdict, g in x.groupby("verdict", dropna=False):
+        dec = g[g["result"].isin(["WIN", "LOSS"])]
+        grd = g[g["graded"]]
+        wins = int((dec["result"] == "WIN").sum())
+        losses = int((dec["result"] == "LOSS").sum())
+        pushes = int((g["result"] == "PUSH").sum())
+        risked = grd["suggested_units"].sum()
+        units = grd["units_result"].sum()
+        rows.append({
+            "Tier": verdict,
+            "Official Bets": int(len(g)),
+            "Record": f"{wins}-{losses}-{pushes}",
+            "Win Rate": wins / max(wins + losses, 1),
+            "Units": units,
+            "ROI": units / risked if risked > 0 else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def _v361_render_tracker():
+    graded_n, df = _v361_grade_forward_tracker()
+
+    st.markdown(
+        '<div class="section-kicker">OFFICIAL PERFORMANCE TRACKER</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Every locked Best Bet / Bet is frozen before kickoff, then automatically graded "
+        "from final scores. Original lines and recommendations are never rewritten."
+    )
+
+    if graded_n:
+        st.success(f"Auto-graded {graded_n} completed official bet(s).")
+
+    if df is None or df.empty:
+        st.info("No v3.6 official recommendations have been frozen yet.")
+        return
+
+    s = _v361_tracker_summary(df)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Record", f"{s['wins']}-{s['losses']}-{s['pushes']}")
+    c2.metric("Win Rate", f"{s['win_rate']:.1%}")
+    c3.metric("Units", f"{s['units']:+.2f}u")
+    c4.metric("ROI", f"{s['roi']:+.1%}")
+
+    if s["pending"]:
+        st.caption(f"{s['pending']} official bet(s) are still pending.")
+
+    # Cumulative units chart.
+    graded = df[df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
+    if not graded.empty:
+        graded["graded_at_sort"] = pd.to_datetime(
+            graded.get("graded_at"), errors="coerce"
+        )
+        graded["game_date_sort"] = pd.to_datetime(
+            graded.get("game_date"), errors="coerce"
+        )
+        graded = graded.sort_values(["game_date_sort", "graded_at_sort"], na_position="last")
+        graded["units_result"] = pd.to_numeric(
+            graded["units_result"], errors="coerce"
+        ).fillna(0.0)
+        graded["Cumulative Units"] = graded["units_result"].cumsum()
+        chart_df = graded[["game_date_sort", "Cumulative Units"]].dropna()
+        if not chart_df.empty:
+            st.line_chart(
+                chart_df.set_index("game_date_sort"),
+                use_container_width=True,
+            )
+
+    split_df = _v361_tracker_splits(df)
+    if not split_df.empty:
+        with st.expander("Performance by tier", expanded=False):
+            show = split_df.copy()
+            show["Win Rate"] = show["Win Rate"].map(lambda v: f"{v:.1%}")
+            show["Units"] = show["Units"].map(lambda v: f"{v:+.2f}")
+            show["ROI"] = show["ROI"].map(lambda v: f"{v:+.1%}")
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+    pending = df[~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
+    if not pending.empty:
+        with st.expander(f"Pending official bets — {len(pending)}", expanded=True):
+            cols = [c for c in [
+                "game_date","kickoff_et","selection","verdict",
+                "selector_score","suggested_units"
+            ] if c in pending.columns]
+            st.dataframe(pending[cols], use_container_width=True, hide_index=True)
+
+    with st.expander("Full official bet history", expanded=False):
+        cols = [c for c in [
+            "game_date","selection","verdict","selector_score","result",
+            "units_result","final_away_score","final_home_score","model_version"
+        ] if c in df.columns]
+        st.dataframe(df[cols].sort_values("game_date", ascending=False), use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "Download Official Performance Tracker",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="cfb_v36_forward_tracker.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="download_v361_performance_tracker",
+    )
+
+
+def _v36_track_daily_card(card, selected_date):
+    if card is None or card.empty:
+        return 0
+
+    official = card[card["verdict"].isin(["BEST BET", "BET"])].copy()
+    if official.empty:
+        return 0
+
+    cols = [
+        "model_version","game_date","game_id","kickoff_et",
+        "home_team","away_team","selection","verdict","selector_score",
+        "classifier_confidence","classifier_agreement","classifier_models",
+        "reg_side","reg_agreement","reg_strength","direction_agreement",
+        "suggested_units","status","result","units_result",
+    ]
+
+    existing = pd.DataFrame(columns=cols)
+    try:
+        if V36_TRACKER_PATH.exists():
+            existing = pd.read_csv(V36_TRACKER_PATH)
+    except Exception:
+        existing = pd.DataFrame(columns=cols)
+
+    new_rows = []
+    existing_keys = set()
+    if not existing.empty:
+        for _, er in existing.iterrows():
+            existing_keys.add(
+                (str(er.get("game_date")), str(er.get("game_id")), str(er.get("selection")))
+            )
+
+    for _, r in official.iterrows():
+        key = (str(selected_date), str(r.get("game_id")), str(r.get("selection")))
+        if key in existing_keys:
+            continue
+        new_rows.append({
+            "model_version": MODEL_VERSION,
+            "game_date": str(selected_date),
+            "game_id": r.get("game_id"),
+            "kickoff_et": r.get("kickoff_et"),
+            "home_team": r.get("home_team"),
+            "away_team": r.get("away_team"),
+            "selection": r.get("selection"),
+            "verdict": r.get("verdict"),
+            "selector_score": round(float(r.get("selector_score")), 6),
+            "classifier_confidence": round(float(r.get("classifier_confidence")), 6),
+            "classifier_agreement": int(r.get("classifier_agreement")),
+            "classifier_models": int(r.get("classifier_models")),
+            "reg_side": r.get("reg_side"),
+            "reg_agreement": int(r.get("reg_agreement")),
+            "reg_strength": round(float(r.get("reg_strength")), 6),
+            "direction_agreement": float(r.get("direction_agreement")),
+            "suggested_units": 1.0,
+            "status": "FROZEN",
+            "result": "",
+            "units_result": "",
+        })
+
+    if not new_rows:
+        return 0
+
+    out = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True)
+    try:
+        V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(V36_TRACKER_PATH, index=False)
+    except Exception:
+        return 0
+    return len(new_rows)
+
+
+def _render_v36_live_card(card, selected_date):
+    st.markdown(
+        '<div class="section-kicker">LOCKED DAILY CARD</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Spread-only production selector. Every game on the day is ranked together. "
+        "Only scores ≥0.84 are official plays. The threshold never drops to create action."
+    )
+
+    if card is None or card.empty:
+        st.warning("The locked daily selector could not build a card from the current slate.")
+        return
+
+    official = card[card["verdict"].isin(["BEST BET","BET"])].copy()
+    leans = card[card["verdict"] == "LEAN"].copy()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Games Ranked", len(card))
+    c2.metric("Official Plays", len(official))
+    c3.metric("Quality Floor", "0.84")
+
+    if official.empty:
+        st.info("NO BET today. No spread cleared the locked 0.84 quality floor.")
+    else:
+        for rank_num, (_, r) in enumerate(official.iterrows(), start=1):
+            verdict = str(r.get("verdict"))
+            label = "BEST BET" if verdict == "BEST BET" else "BET"
+            st.markdown(
+                f"""
+                <div class="saved-bet-row">
+                  <div class="saved-bet-rank">#{rank_num}</div>
+                  <div class="saved-bet-main">
+                    <div class="saved-bet-pick">{html.escape(str(r.get("selection","")))}</div>
+                    <div class="saved-bet-sub">
+                      {html.escape(str(r.get("away_team","")))} at {html.escape(str(r.get("home_team","")))}
+                      • Score {float(r.get("selector_score")):.3f}
+                      • Consensus {int(r.get("classifier_agreement"))}/{int(r.get("classifier_models"))}
+                      • 1.0u
+                    </div>
+                  </div>
+                  <div class="saved-grade {'a' if label == 'BEST BET' else 'b'}">{label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if not leans.empty:
+        with st.expander(f"Leans — {len(leans)}", expanded=False):
+            show = leans[[
+                "selection","selector_score","classifier_confidence",
+                "classifier_agreement","classifier_models"
+            ]].copy()
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "Download Locked Daily Card",
+        data=card.to_csv(index=False).encode("utf-8"),
+        file_name=f"cfb_v36_daily_card_{selected_date}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"download_v36_card_{selected_date}",
+    )
+
+
 # ===== CFB v2.1 forward recommendation tracker =====
 CFB_TRACKER_DIR = Path(".cfb_edge_tracker")
 CFB_TRACKER_PATH = CFB_TRACKER_DIR / "cfb_recommendation_tracker.csv"
@@ -14114,6 +14946,8 @@ def _render_more_page():
         with st.expander("Latest single-game projection export", expanded=False):
             ios_save_button("Save Latest Projection CSV", latest_csv, latest_filename)
 
+    _v361_render_tracker()
+
     latest_board = st.session_state.get("cfb_latest_market_board")
     if isinstance(latest_board, pd.DataFrame) and not latest_board.empty:
         with st.expander("Latest full-slate ranked export", expanded=False):
@@ -14169,7 +15003,7 @@ if run_mode == "Full Slate":
     slate_choice = st.selectbox(
         "Slate",
         ["Early", "Midday", "Night", "All Day"],
-        index=0,
+        index=3,
         help=(
             "Early = before 3:30 PM ET • Midday = 3:30 PM–6:59 PM ET • "
             "Night = 7:00 PM ET or later."
@@ -14407,9 +15241,36 @@ if run_mode == "Full Slate":
         st.session_state["cfb_latest_slate_df"] = slate_df.copy()
         st.session_state["cfb_latest_slate_name"] = slate_choice
         st.session_state["cfb_latest_slate_date"] = str(selected_date)
-        _tracked_added = _track_cfb_official_board(market_board, slate_df, selected_date)
-        if _tracked_added:
-            st.toast(f"Tracker froze {_tracked_added} new Best Bet / Bet recommendation(s).")
+
+        v36_card = pd.DataFrame()
+        if slate_choice == "All Day":
+            try:
+                v36_card = _v36_live_daily_card(daily, slate_df, scope="Major FBS")
+            except Exception as _v36e:
+                st.warning(f"Locked daily selector could not run: {_v36e}")
+                v36_card = pd.DataFrame()
+
+            st.session_state["cfb_v36_latest_card"] = v36_card.copy()
+            st.session_state["cfb_v36_latest_date"] = str(selected_date)
+
+            _v36_added = _v36_track_daily_card(v36_card, selected_date)
+            if _v36_added:
+                st.toast(f"Forward tracker froze {_v36_added} new locked recommendation(s).")
+
+            _render_v36_live_card(v36_card, selected_date)
+
+            try:
+                _v361_graded_now, _v361_df_now = _v361_grade_forward_tracker()
+                _v361_sum_now = _v361_tracker_summary(_v361_df_now)
+                if _v361_sum_now["official"] > 0:
+                    st.caption(
+                        f"Tracker: {_v361_sum_now['wins']}-{_v361_sum_now['losses']}-{_v361_sum_now['pushes']} "
+                        f"• {_v361_sum_now['units']:+.2f}u "
+                        f"• {_v361_sum_now['roi']:+.1%} ROI "
+                        f"• {_v361_sum_now['pending']} pending"
+                    )
+            except Exception:
+                pass
 
         st.markdown(
             f"""
@@ -14425,7 +15286,16 @@ if run_mode == "Full Slate":
             unsafe_allow_html=True,
         )
         st.markdown('<div class="section-kicker">SLATE BETTING CARD</div>', unsafe_allow_html=True)
-        st.caption("Top Bets ranks Best Bet and Bet plays by the best combination of win probability, edge, EV and model confidence. Spreads, moneylines and totals all compete for the same list.")
+        if slate_choice == "All Day":
+            st.caption(
+                "The locked v3.6 spread card above is the official production card. "
+                "The legacy multi-market ranking below is retained for research/context only."
+            )
+        else:
+            st.caption(
+                "This time-window view is for research/context. Official v3.6 recommendations "
+                "are created only from the All Day ranking so the quality score uses the full daily opportunity set."
+            )
 
         top_n = st.radio(
             "Ranked card size",
@@ -15114,4 +15984,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.5.5 Adaptive Daily Card • slate_window compatibility hotfix.")
+st.caption("CFB Edge • v3.6.1 Production Daily Card • Locked 0.84 spread floor • Automatic official performance tracking.")
