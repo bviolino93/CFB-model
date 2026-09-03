@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.6.1-AUTO-PERFORMANCE-TRACKER"
+MODEL_VERSION = "3.6.2-TRACKER-INIT-HOTFIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -13835,7 +13835,8 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
     ).reset_index(drop=True)
 
 
-V36_TRACKER_PATH = CFB_TRACKER_DIR / "cfb_v36_forward_tracker.csv"
+# v3.6 tracker path must not depend on the legacy tracker constant being defined later.
+V36_TRACKER_PATH = Path(".cfb_edge_tracker") / "cfb_v36_forward_tracker.csv"
 
 
 def _v361_american_profit(odds, stake=1.0):
@@ -15984,4 +15985,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.6.1 Production Daily Card • Locked 0.84 spread floor • Automatic official performance tracking.")
+st.caption("CFB Edge • v3.6.2 Production Daily Card • Locked 0.84 spread floor • Automatic official performance tracking.")

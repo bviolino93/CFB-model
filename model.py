@@ -4,7 +4,7 @@ import requests
 from statistics import NormalDist, mean, pstdev
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "1.6.1-AUTO-PERFORMANCE-TRACKER"
+MODEL_VERSION = "1.6.2-TRACKER-INIT-HOTFIX"
 
 DEFAULT_HFA = 2.5
 
@@ -795,3 +795,9 @@ PRODUCTION_DAILY_SCORE_FLOOR = 0.84
 # The live app freezes every official >=0.84 spread recommendation before kickoff,
 # auto-grades ATS results after final scores post, and tracks units/ROI permanently.
 PERFORMANCE_TRACKER_VERSION = "v3.6.1-auto-performance-tracker"
+
+
+# v1.6.2 tracker initialization hotfix
+# No model logic, scoring, threshold, or staking changes.
+# Fixes Streamlit startup NameError caused by tracker-path definition order.
+TRACKER_INIT_HOTFIX_VERSION = "v3.6.2"
