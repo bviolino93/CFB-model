@@ -6679,13 +6679,15 @@ if st.session_state.get("ge432_topnav") not in _ge432_options:
 elif st.session_state.get("ge432_topnav") != _ge432_visible_view:
     st.session_state["ge432_topnav"] = _ge432_visible_view
 
-_ge432_choice = st.radio(
+_ge432_choice = st.segmented_control(
     "",
     _ge432_options,
-    horizontal=True,
     label_visibility="collapsed",
     key="ge432_topnav",
 )
+# Segmented control allows deselection (returns None); fall back to current view.
+if not _ge432_choice:
+    _ge432_choice = _ge432_view
 
 _ge432_route = "Game" if _ge432_choice == "Games" else _ge432_choice
 if _ge432_route != _ge432_view:
