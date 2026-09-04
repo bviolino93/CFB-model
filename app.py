@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.2.0-PREMIUM-APP-UI"
+MODEL_VERSION = "4.3.0-GRIDIRON-EDGE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6188,20 +6188,92 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
   .v420-metric-grid>div{padding:7px 3px}
   .v420-metric-grid b{font-size:.61rem}
 }
+
+/* ===== GRIDIRON EDGE v4.3 brand + generated-reference layout ===== */
+.ge-appbar{padding:10px 0 18px!important;margin-bottom:15px!important}
+.ge-brandmark{gap:10px!important}
+.ge-football-logo{width:48px;height:42px;position:relative;flex:0 0 auto}
+.ge-ball{position:absolute;width:39px;height:24px;left:2px;top:8px;border:3px solid #edf6ff;border-radius:50%;transform:rotate(-28deg);box-shadow:0 0 18px rgba(69,157,255,.13)}
+.ge-ball:before{content:"";position:absolute;width:14px;height:3px;background:#edf6ff;left:10px;top:8px;border-radius:3px}
+.ge-ball span,.ge-ball b,.ge-ball i{position:absolute;width:2px;height:7px;background:#edf6ff;top:6px;border-radius:2px}
+.ge-ball span{left:13px}.ge-ball b{left:18px}.ge-ball i{left:23px}
+.ge-wordmark{font-style:italic;line-height:1;white-space:nowrap}
+.ge-wordmark span{color:#f7fbff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
+.ge-wordmark strong{color:#388cff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
+.ge-brand-sub{margin-top:6px;color:#7590aa;font-size:.48rem;font-weight:900;letter-spacing:.17em}
+.ge-right{display:flex;align-items:center;gap:9px}
+.ge-cfb{color:#8ba4bd;font-size:.59rem;font-weight:950;letter-spacing:.13em}
+
+.ge-official-head,.ge-leans-head{display:flex;align-items:center;gap:10px;margin:23px 0 10px;padding:0 2px}
+.ge-check{width:31px;height:31px;display:flex;align-items:center;justify-content:center;border-radius:10px;background:linear-gradient(145deg,#2192ff,#1162d7);color:#fff;font-weight:950;box-shadow:0 8px 22px rgba(28,122,244,.25)}
+.ge-check.muted{background:#11243a;color:#607991;box-shadow:none}
+.ge-section-title{color:#f5f9ff;font-size:.91rem;font-weight:950;letter-spacing:-.01em}
+.ge-section-title span{color:#8ba1b6;font-weight:850}
+.ge-section-sub{color:#6e879f;font-size:.56rem;margin-top:3px}
+.ge-count{margin-left:auto;color:#b9d8ff;background:#102b48;border:1px solid rgba(71,145,231,.16);padding:5px 8px;border-radius:999px;font-size:.48rem;font-weight:950;letter-spacing:.08em}
+.ge-count.amber{color:#e7cd78;background:rgba(150,119,33,.08);border-color:rgba(196,158,55,.15)}
+
+.ge-official-card{padding:16px 15px;margin:9px 0;border-radius:19px;background:linear-gradient(150deg,#0d2239,#09192b);border:1px solid rgba(91,135,175,.18);box-shadow:0 14px 35px rgba(0,0,0,.17)}
+.ge-official-card.best{background:radial-gradient(circle at 88% 0%,rgba(40,131,255,.22),transparent 34%),linear-gradient(145deg,#12355b,#0b2340);border-color:rgba(67,151,249,.42);box-shadow:0 18px 44px rgba(0,0,0,.24)}
+.ge-official-card.bet{border-color:rgba(61,203,151,.23)}
+.ge-card-top{display:flex;align-items:center;gap:8px}
+.ge-rank{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#0c2036;border:1px solid rgba(109,152,191,.13);color:#9bb3ca;font-size:.64rem;font-weight:950}
+.ge-official-card.best .ge-rank{background:linear-gradient(145deg,#2788ed,#1762b7);color:#fff}
+.ge-market{display:inline-flex;padding:5px 7px;border-radius:8px;background:rgba(100,145,186,.08);color:#7e9ab4;font-size:.46rem;font-weight:950;letter-spacing:.10em}
+.ge-market.small{padding:3px 5px;margin-right:6px;font-size:.40rem}
+.ge-verdict{margin-left:auto;padding:6px 9px;border-radius:999px;font-size:.47rem;font-weight:950;letter-spacing:.09em}
+.ge-verdict.best{color:#8dccff;border:1px solid rgba(57,143,244,.34);background:rgba(31,119,225,.10)}
+.ge-verdict.bet{color:#7ce5b4;border:1px solid rgba(58,202,145,.28);background:rgba(39,178,121,.08)}
+.ge-pick{margin:12px 0 0 42px;color:#fff;font-size:1.17rem;font-weight:950;letter-spacing:-.035em}
+.ge-game{margin:4px 0 0 42px;color:#6d869e;font-size:.59rem}
+.ge-metric-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:14px}
+.ge-metric-grid>div{padding:8px 3px;text-align:center;border-radius:10px;background:rgba(3,13,24,.35);border:1px solid rgba(104,145,181,.08)}
+.ge-metric-grid span{display:block;color:#58728b;font-size:.41rem;font-weight:950;letter-spacing:.07em;text-transform:uppercase}
+.ge-metric-grid b{display:block;margin-top:3px;color:#e4eef8;font-size:.65rem;font-weight:950;white-space:nowrap}
+.ge-official-card.best .ge-metric-grid>div:nth-child(3) b,.ge-official-card.bet .ge-metric-grid>div:nth-child(3) b{color:#5ce0a5}
+
+.ge-leans-head{padding:13px 12px;margin-top:17px;border:1px solid rgba(116,151,183,.11);border-bottom:0;border-radius:17px 17px 0 0;background:#0b1d31}
+.ge-lean-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:11px 12px;border-left:1px solid rgba(116,151,183,.11);border-right:1px solid rgba(116,151,183,.11);border-top:1px solid rgba(116,151,183,.07);background:#09192b}
+.ge-lean-row:last-of-type{border-radius:0 0 17px 17px;border-bottom:1px solid rgba(116,151,183,.11)}
+.ge-lean-rank{width:27px;height:27px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#0e2238;color:#6d87a0;font-size:.52rem;font-weight:950}
+.ge-lean-main{min-width:0}.ge-lean-main b{color:#edf5fc;font-size:.68rem}.ge-lean-main small{display:block;color:#617b94;font-size:.49rem;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ge-lean-stats{display:flex;gap:8px;color:#93a9bd;font-size:.51rem;font-weight:800;white-space:nowrap}
+.ge-lean-pill{padding:5px 7px;border-radius:999px;color:#e4c86d;border:1px solid rgba(195,158,54,.25);background:rgba(166,129,32,.07);font-size:.43rem;font-weight:950;letter-spacing:.08em}
+
+.ge-tracker-card{margin:18px 0 8px;padding:14px;border-radius:18px;background:linear-gradient(145deg,#0d2238,#09192a);border:1px solid rgba(103,145,183,.13)}
+.ge-tracker-head{display:flex;align-items:center;gap:8px;color:#eef6ff;font-size:.76rem}.ge-tracker-head span{color:#3f99ff}.ge-tracker-head b{font-weight:950}
+.ge-tracker-grid{display:grid;grid-template-columns:repeat(4,1fr);margin-top:11px;padding:10px 2px;border-radius:12px;background:rgba(3,13,24,.25)}
+.ge-tracker-grid>div{text-align:center;border-right:1px solid rgba(110,147,180,.09)}.ge-tracker-grid>div:last-child{border-right:0}
+.ge-tracker-grid b{display:block;color:#edf6ff;font-size:.72rem;font-weight:950}.ge-tracker-grid>div:nth-child(2) b{color:#58dda5}
+.ge-tracker-grid span{display:block;color:#637e97;font-size:.44rem;margin-top:3px}
+.ge-empty{margin-top:8px!important}
+
+/* stronger app-like spacing */
+.v420-day-summary{margin-bottom:13px!important}
+.v420-slate-hero{padding:15px!important;margin-bottom:13px!important}
+.v420-hero-title{font-size:1.42rem!important}
+.v420-hero-copy{font-size:.62rem!important}
+.v420-section-label{margin-top:0!important}
+
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown(
     """
-    <div class="v420-appbar">
-      <div class="v420-brandmark">
-        <div class="v420-logo">CE</div>
+    <div class="v420-appbar ge-appbar">
+      <div class="v420-brandmark ge-brandmark">
+        <div class="ge-football-logo" aria-hidden="true">
+          <div class="ge-ball"><span></span><b></b><i></i></div>
+        </div>
         <div>
-          <div class="v420-wordmark">CFB EDGE</div>
-          <div class="v420-brand-sub">College Football Intelligence</div>
+          <div class="ge-wordmark"><span>GRIDIRON</span> <strong>EDGE</strong></div>
+          <div class="ge-brand-sub">DATA DRIVEN. GAME READY.</div>
         </div>
       </div>
-      <div class="v420-live"><i></i><span>LIVE</span></div>
+      <div class="ge-right">
+        <div class="ge-cfb">CFB</div>
+        <div class="v420-live"><i></i><span>LIVE</span></div>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -15478,9 +15550,9 @@ def _v390_edge_text(v):
 
 def _render_v36_live_card(card, selected_date):
     """
-    v4.1.1 single ranked slate.
-    Spreads and totals are presented together in one stack.
-    Visible actions: BEST BET / BET / LEAN. PASS stays out of the main slate.
+    v4.3 Gridiron Edge presentation.
+    Official bets are the primary card. Leans are compact secondary rows.
+    Spreads and totals remain ranked together; model math is unchanged.
     """
     if card is None or card.empty:
         st.info("No qualifying spread or total candidates are available.")
@@ -15491,66 +15563,127 @@ def _render_v36_live_card(card, selected_date):
     ranked["cover_probability"] = pd.to_numeric(ranked.get("cover_probability"), errors="coerce")
     ranked["point_edge"] = pd.to_numeric(ranked.get("point_edge"), errors="coerce")
 
-    # Main production slate excludes PASS.
-    visible = ranked[ranked["verdict"].isin(["BEST BET","BET","LEAN"])].copy()
+    tier_order = {"BEST BET": 0, "BET": 1, "LEAN": 2, "PASS": 9}
+    ranked["_tier"] = ranked["verdict"].map(tier_order).fillna(9)
+    ranked = ranked.sort_values(
+        ["_tier","expected_value","cover_probability","point_edge"],
+        ascending=[True,False,False,False],
+        na_position="last",
+    ).reset_index(drop=True)
 
-    if visible.empty:
+    official = ranked[ranked["verdict"].isin(["BEST BET","BET"])].copy()
+    leans = ranked[ranked["verdict"] == "LEAN"].copy()
+
+    if official.empty:
         st.markdown(
             """
-            <div class="edge-empty">
-              <div class="edge-status-pass">NO PLAYS</div>
+            <div class="ge-official-head">
+              <div class="ge-check muted">—</div>
+              <div><div class="ge-section-title">Official Bets</div>
+              <div class="ge-section-sub">No official plays cleared the production criteria.</div></div>
+              <div class="ge-count">0 PLAYS</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+            <div class="edge-empty ge-empty">
+              <div class="edge-status-pass">NO OFFICIAL BETS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">No spread or total cleared the current BET / LEAN criteria.</div>
+              <div class="edge-empty-copy">The model found no spread or total strong enough to bet officially.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     else:
-        tier_order = {"BEST BET": 0, "BET": 1, "LEAN": 2}
-        visible["_tier"] = visible["verdict"].map(tier_order).fillna(9)
-        visible = visible.sort_values(
-            ["_tier","expected_value","cover_probability","point_edge"],
-            ascending=[True,False,False,False],
-            na_position="last",
-        ).reset_index(drop=True)
+        st.markdown(
+            f"""
+            <div class="ge-official-head">
+              <div class="ge-check">✓</div>
+              <div><div class="ge-section-title">Official Bets</div>
+              <div class="ge-section-sub">Highest-conviction plays from the current slate.</div></div>
+              <div class="ge-count">{len(official)} {'PLAY' if len(official)==1 else 'PLAYS'}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        st.markdown('<div class="v420-results-head"><span>RANKED SLATE</span><em>LIVE MODEL OUTPUT</em></div>', unsafe_allow_html=True)
-
-        for i, r in visible.iterrows():
-            verdict = str(r.get("verdict") or "LEAN")
+        for i, (_, r) in enumerate(official.iterrows(), start=1):
+            verdict = str(r.get("verdict") or "BET")
             market_type = str(r.get("market_type") or "SPREAD").upper()
-            rank_num = i + 1
-
-            if verdict == "BEST BET":
-                cls = "best"
-            elif verdict == "BET":
-                cls = "bet"
-            else:
-                cls = "lean"
-
+            cls = "best" if verdict == "BEST BET" else "bet"
             st.markdown(
                 f"""
-                <div class="v411-ranked-row {cls}">
-                  <div class="v411-rank">{rank_num}</div>
-                  <div class="v411-body">
-                    <div class="v411-topline">
-                      <span class="v411-market">{html.escape(market_type)}</span>
-                      <span class="v411-verdict {cls}">{html.escape(verdict)}</span>
-                    </div>
-                    <div class="v411-pick">{html.escape(str(r.get("selection","")))}</div>
-                    <div class="v411-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
-                    <div class="v420-metric-grid">
-                      <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
-                      <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
-                      <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
-                      <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
-                      <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
-                    </div>
+                <div class="ge-official-card {cls}">
+                  <div class="ge-card-top">
+                    <div class="ge-rank">{i}</div>
+                    <span class="ge-market">{html.escape(market_type)}</span>
+                    <span class="ge-verdict {cls}">{'★ ' if cls == 'best' else ''}{html.escape(verdict)}</span>
+                  </div>
+                  <div class="ge-pick">{html.escape(str(r.get("selection","")))}</div>
+                  <div class="ge-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                  <div class="ge-metric-grid">
+                    <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
+                    <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
+                    <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
+                    <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
+                    <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+    if not leans.empty:
+        st.markdown(
+            f"""
+            <div class="ge-leans-head">
+              <div><div class="ge-section-title">Next Best <span>(Leans)</span></div>
+              <div class="ge-section-sub">Interesting value, but not official bets.</div></div>
+              <div class="ge-count amber">{len(leans)} {'PLAY' if len(leans)==1 else 'PLAYS'}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        preview = leans.head(3)
+        for j, (_, r) in enumerate(preview.iterrows(), start=len(official)+1):
+            market_type = str(r.get("market_type") or "SPREAD").upper()
+            st.markdown(
+                f"""
+                <div class="ge-lean-row">
+                  <div class="ge-lean-rank">{j}</div>
+                  <div class="ge-lean-main">
+                    <div><span class="ge-market small">{html.escape(market_type)}</span>
+                    <b>{html.escape(str(r.get("selection","")))}</b></div>
+                    <small>{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</small>
+                  </div>
+                  <div class="ge-lean-stats">
+                    <span>{_v390_edge_text(r.get("point_edge"))}</span>
+                    <span>{_v390_prob_text(r.get("cover_probability"))}</span>
+                    <span>{_v390_prob_text(r.get("expected_value"))}</span>
+                  </div>
+                  <div class="ge-lean-pill">LEAN</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        if len(leans) > 3:
+            with st.expander(f"View all leans ({len(leans)})", expanded=False):
+                extra = leans.iloc[3:]
+                for j, (_, r) in enumerate(extra.iterrows(), start=len(official)+4):
+                    st.markdown(
+                        f"""
+                        <div class="ge-lean-row compact">
+                          <div class="ge-lean-rank">{j}</div>
+                          <div class="ge-lean-main"><div><b>{html.escape(str(r.get("selection","")))}</b></div>
+                          <small>{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</small></div>
+                          <div class="ge-lean-stats"><span>{_v390_edge_text(r.get("point_edge"))}</span>
+                          <span>{_v390_prob_text(r.get("cover_probability"))}</span>
+                          <span>{_v390_prob_text(r.get("expected_value"))}</span></div>
+                          <div class="ge-lean-pill">LEAN</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
     with st.expander("Advanced / diagnostics", expanded=False):
         diag = ranked.copy()
@@ -15566,10 +15699,10 @@ def _render_v36_live_card(card, selected_date):
         st.download_button(
             "Download Ranked Slate",
             data=ranked.to_csv(index=False).encode("utf-8"),
-            file_name=f"cfb_v411_ranked_slate_{selected_date}.csv",
+            file_name=f"gridiron_edge_ranked_slate_{selected_date}.csv",
             mime="text/csv",
             use_container_width=True,
-            key=f"download_v411_ranked_{selected_date}",
+            key=f"download_ge_ranked_{selected_date}",
         )
 
 
@@ -16669,11 +16802,19 @@ if run_mode == "Full Slate":
             _v401_graded_now, _v401_df_now = _v401_grade_tracker()
             _v401_sum_now = _v401_summary(_v401_df_now)
             if _v401_sum_now["bets"] > 0:
-                st.caption(
-                    f"Official tracker: {_v401_sum_now['wins']}-{_v401_sum_now['losses']}-{_v401_sum_now['pushes']} "
-                    f"• {_v401_sum_now['units']:+.2f}u "
-                    f"• {_v401_sum_now['roi']:+.1%} ROI "
-                    f"• {_v401_sum_now['pending']} pending"
+                st.markdown(
+                    f"""
+                    <div class="ge-tracker-card">
+                      <div class="ge-tracker-head"><span>▥</span><b>Today's Tracker</b></div>
+                      <div class="ge-tracker-grid">
+                        <div><b>{_v401_sum_now['wins']}-{_v401_sum_now['losses']}-{_v401_sum_now['pushes']}</b><span>W · L · P</span></div>
+                        <div><b>{_v401_sum_now['units']:+.2f}u</b><span>Units</span></div>
+                        <div><b>{_v401_sum_now['roi']:+.1%}</b><span>ROI</span></div>
+                        <div><b>{_v401_sum_now['pending']}</b><span>Pending</span></div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
         except Exception:
             pass
@@ -17246,4 +17387,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v4.2 • Premium App UI • Spreads + totals ranked together.")
+st.caption("Gridiron Edge • v4.3 • Premium App UI • Spreads + totals ranked together.")
