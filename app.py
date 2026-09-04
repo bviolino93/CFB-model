@@ -15875,62 +15875,50 @@ def _v401_render_official_tracker():
                 "game_date","kickoff_et","market_type","selection","verdict","point_edge",
                 "cover_probability","expected_value","reliability","model_version"
             ] if c in pending.columns]].copy()
-            st.dataframe(show, use_container_width=True, hide_index=True)
 
-    # Performance diagnostics.
-    with st.expander("Performance by model version", expanded=False):
-        t = _v401_split_table(df, "model_version", "Model")
-        if not t.empty:
+    # How the model is performing, once bets start grading.
+    st.markdown("### How the model is doing")
+    if s["graded"] == 0:
+        st.info(
+            "Nothing has been graded yet. Once these games finish, results appear "
+            "here automatically and the breakdowns below fill in."
+        )
+    else:
+        _splits = [
+            ("By market type", "market_type", "Market",
+             "Are spreads or totals the stronger side of the model?"),
+            ("By confidence level", "reliability", "Reliability",
+             "Do higher-confidence bets actually win more often?"),
+            ("By model version", "model_version", "Model",
+             "Has performance changed as the model changed?"),
+        ]
+        for _title, _col, _label, _why in _splits:
+            t = _v401_split_table(df, _col, _label)
+            if t.empty:
+                continue
+            st.markdown(f"**{_title}**")
+            st.caption(_why)
             for c in ["Win Rate","ROI"]:
                 t[c] = t[c].map(lambda v: f"{v:.1%}")
             t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
             st.dataframe(t, use_container_width=True, hide_index=True)
 
-    with st.expander("Performance by market", expanded=False):
-        t = _v401_split_table(df, "market_type", "Market")
-        if not t.empty:
-            for c in ["Win Rate","ROI"]:
-                t[c] = t[c].map(lambda v: f"{v:.1%}")
-            t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
-            st.dataframe(t, use_container_width=True, hide_index=True)
-
-    with st.expander("Performance by reliability", expanded=False):
-        t = _v401_split_table(df, "reliability", "Reliability")
-        if not t.empty:
-            for c in ["Win Rate","ROI"]:
-                t[c] = t[c].map(lambda v: f"{v:.1%}")
-            t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
-            st.dataframe(t, use_container_width=True, hide_index=True)
-
-    with st.expander("Full official bet history", expanded=False):
+    with st.expander("Full bet history", expanded=False):
+        st.caption("Every frozen bet, newest first. Also saved in your Google Sheet.")
         show = df[[c for c in [
-            "game_date","market_type","selection","odds","verdict","fair_home_spread","fair_total",
+            "game_date","market_type","selection","odds","verdict",
             "point_edge","cover_probability","expected_value","reliability",
-            "result","units_result","final_away_score","final_home_score","model_version"
+            "result","units_result","final_away_score","final_home_score"
         ] if c in df.columns]].copy()
         st.dataframe(show.sort_values("game_date", ascending=False), use_container_width=True, hide_index=True)
-
-    st.download_button(
-        "Download Official Bet Tracker",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="cfb_official_bet_tracker.csv",
-        mime="text/csv",
-        use_container_width=True,
-        key="download_v401_official_tracker",
-    )
-
-    with st.expander("Tracker backup / restore", expanded=False):
-        up = st.file_uploader("Restore official tracker CSV", type=["csv"], key="v401_tracker_restore")
-        if st.button("Merge Tracker Backup", disabled=(up is None), use_container_width=True, key="v401_tracker_merge"):
-            try:
-                incoming = _v401_clean_tracker(pd.read_csv(up))
-                merged = pd.concat([df,incoming], ignore_index=True)
-                merged = merged.drop_duplicates("record_key", keep="first")
-                _v401_save_tracker(merged)
-                st.success(f"Tracker restored: {len(merged)} official records.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not restore tracker: {e}")
+        st.download_button(
+            "Download as CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name="saturday_edge_bet_tracker.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_v401_official_tracker",
+        )
 
 
 def _v410_total_card(slate_df):
