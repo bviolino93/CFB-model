@@ -6798,6 +6798,11 @@ def ios_save_button(label, csv_text, filename):
     )
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def get_finals_games(year):
+    """Fresh games feed for grading. Short TTL so completed games appear quickly."""
+    return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_backtest_games(year):
     return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
@@ -15406,8 +15411,33 @@ def _v401_clean_tracker(df):
             x.at[idx, "status"] = "FROZEN"
     return x[V401_TRACKER_COLUMNS]
 
+def _v401_sheet():
+    """Return the tracker worksheet, or None if Sheets isn't configured."""
+    try:
+        if "gcp_service_account" not in st.secrets:
+            return None
+        import gspread
+        sa = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+        name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
+        book = sa.open(name)
+        try:
+            return book.worksheet("tracker")
+        except Exception:
+            return book.add_worksheet(title="tracker", rows=2000, cols=40)
+    except Exception:
+        return None
+
 def _v401_load_tracker():
-    # Prefer the new unified tracker. If absent, migrate the old forward tracker.
+    ws = _v401_sheet()
+    if ws is not None:
+        try:
+            rows = ws.get_all_records()
+            if rows:
+                return _v401_clean_tracker(pd.DataFrame(rows))
+            return _v401_empty_tracker()
+        except Exception:
+            pass
+    # Fallback: local file (ephemeral on Streamlit Cloud).
     try:
         if V36_TRACKER_PATH.exists():
             return _v401_clean_tracker(pd.read_csv(V36_TRACKER_PATH))
@@ -15421,8 +15451,17 @@ def _v401_load_tracker():
     return _v401_empty_tracker()
 
 def _v401_save_tracker(df):
+    x = _v401_clean_tracker(df)
+    ws = _v401_sheet()
+    if ws is not None:
+        try:
+            body = [list(x.columns)] + x.astype(object).where(pd.notna(x), "").values.tolist()
+            ws.clear()
+            ws.update(body, value_input_option="RAW")
+            return True
+        except Exception:
+            pass
     try:
-        x = _v401_clean_tracker(df)
         V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = V36_TRACKER_PATH.with_suffix(".tmp")
         x.to_csv(tmp, index=False)
@@ -15577,7 +15616,7 @@ def _v401_fetch_finals(date_strings):
 
     for y in sorted(years):
         try:
-            games = get_backtest_games(y)
+            games = get_finals_games(y)
         except Exception:
             games = []
         for g in games or []:
@@ -15736,6 +15775,14 @@ def _v401_render_official_tracker():
 
     if graded_now:
         st.success(f"Auto-graded {graded_now} completed official bet(s).")
+
+    if _v401_sheet() is not None:
+        st.caption("Storage: Google Sheets — history is saved permanently.")
+    else:
+        st.warning(
+            "Storage: temporary. Bet history will be erased when the app restarts. "
+            "Connect Google Sheets to keep a permanent record."
+        )
 
     if df is None or df.empty:
         st.info("No official bets have been frozen yet. Run a slate; BET / BEST BET recommendations will be added automatically.")
