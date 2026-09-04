@@ -6307,10 +6307,10 @@ div[class*="st-key-ge432_topnav"] svg{
 
 /* FORCE filter columns to remain side-by-side on mobile */
 div[class*="st-key-ge433_filter_row"] [data-testid="stHorizontalBlock"]{
-  display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:8px!important;
+  display:flex!important;flex-direction:column!important;gap:8px!important;
 }
 div[class*="st-key-ge433_filter_row"] [data-testid="column"]{
-  width:50%!important;flex:1 1 50%!important;min-width:0!important;
+  width:100%!important;flex:1 1 100%!important;min-width:0!important;
 }
 
 /* kill Streamlit white filter styling */
@@ -14720,17 +14720,6 @@ else:
 if not daily:
     st.warning("No games found for that date with the selected game-level filter.")
     st.stop()
-
-st.markdown(
-    f"""
-    <div class="ge433-summary">
-      <span class="ge433-chip">▣ {selected_date:%a, %b %d, %Y}</span>
-      <span class="ge433-chip">▰ {html.escape(str(slate_filter))}</span>
-      <span class="ge433-live"><i></i> LIVE</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 
 
