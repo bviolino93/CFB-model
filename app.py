@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.9.1-EDGE-ENGINE-LIVE"
+MODEL_VERSION = "4.0.0-FUNDAMENTAL-EDGE-ENGINE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6003,7 +6003,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.9.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v4.0</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -14344,9 +14344,9 @@ def _v36_live_feature_frame(games_today, slate_df):
 
 def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
     """
-    Exact production translation of the v3.5 daily selector:
-    classifier consensus + nonlinear residual consensus + cross-sectional
-    daily percentiles + fixed 0.84 qualification floor.
+    v3.9.2 production edge engine:
+    fair spread chooses the betting side; classifier/regression consensus
+    measures reliability; cross-sectional score controls qualification.
     """
     live = _v36_live_feature_frame(games_today, slate_df)
     if live is None or live.empty:
@@ -14389,35 +14389,66 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
         return pd.DataFrame()
 
     rows = []
+    _sl = slate_df.reset_index(drop=True) if slate_df is not None and not slate_df.empty else pd.DataFrame()
+
     for i, r in live.reset_index(drop=True).iterrows():
+        row_index = int(r.get("row_index", i))
+
+        # v4.0: INDEPENDENT FUNDAMENTAL FAIR LINE DETERMINES THE BETTING SIDE.
+        # Negative home spread means the home team is favored.
+        # If fair home spread is lower/more negative than market, HOME has value.
+        # If fair home spread is higher/less negative than market, AWAY has value.
+        if _sl.empty or row_index < 0 or row_index >= len(_sl):
+            continue
+
+        sr = _sl.iloc[row_index]
+        market_home = _v3_num(sr.get("market_home_spread"), np.nan)
+        fair_home = _v3_num(sr.get("fundamental_home_spread", sr.get("raw_model_home_spread")), np.nan)
+
+        if not np.isfinite(market_home) or not np.isfinite(fair_home):
+            continue
+
+        signed_home_edge = float(market_home - fair_home)
+        if abs(signed_home_edge) < 1e-9:
+            # True coin-flip price: no directional edge to rank.
+            continue
+
+        pick_side = "HOME" if signed_home_edge > 0 else "AWAY"
+
+        # Classifiers are now reliability evidence, not the side picker.
         votes = []
+        chosen_side_probs = []
         for name, probs in class_pred.items():
-            p = float(probs[i])
-            side = "HOME" if p >= 0.5 else "AWAY"
-            conf = max(p, 1.0 - p)
-            votes.append((name, side, conf, p))
+            p_home = float(probs[i])
+            classifier_side = "HOME" if p_home >= 0.5 else "AWAY"
+            chosen_prob = p_home if pick_side == "HOME" else (1.0 - p_home)
+            votes.append((name, classifier_side, chosen_prob, p_home))
+            chosen_side_probs.append(chosen_prob)
 
-        home_n = sum(1 for v in votes if v[1] == "HOME")
-        away_n = sum(1 for v in votes if v[1] == "AWAY")
-        if home_n == away_n:
-            continue
-        pick_side = "HOME" if home_n > away_n else "AWAY"
         agreeing = [v for v in votes if v[1] == pick_side]
-        if len(agreeing) < 2:
-            continue
+        classifier_agreement = len(agreeing)
+        classifier_confidence = (
+            float(np.mean(chosen_side_probs)) if chosen_side_probs else 0.5
+        )
 
+        # Regression models also become reliability evidence around the
+        # fair-line-selected side.
         reg_votes = []
         for name, vals in reg_pred.items():
             corr = float(vals[i])
             reg_votes.append((name, "HOME" if corr >= 0 else "AWAY", abs(corr), corr))
-        rh = sum(1 for v in reg_votes if v[1] == "HOME")
-        ra = sum(1 for v in reg_votes if v[1] == "AWAY")
-        reg_side = "HOME" if rh >= ra else "AWAY"
-        reg_agree = max(rh, ra)
-        reg_strengths = [v[2] for v in reg_votes if v[1] == reg_side]
+
+        reg_agree = sum(1 for v in reg_votes if v[1] == pick_side)
+        reg_strengths = [v[2] for v in reg_votes if v[1] == pick_side]
+        reg_consensus_side = (
+            "HOME"
+            if sum(1 for v in reg_votes if v[1] == "HOME")
+               >= sum(1 for v in reg_votes if v[1] == "AWAY")
+            else "AWAY"
+        )
 
         rows.append({
-            "row_index": int(r.get("row_index", i)),
+            "row_index": row_index,
             "game_id": r.get("game_id"),
             "season": season,
             "week": int(_v3_num(r.get("week"), 1)),
@@ -14425,14 +14456,18 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
             "home_team": r.get("home_team"),
             "away_team": r.get("away_team"),
             "market_margin": _v3_num(r.get("market_margin")),
+            "market_home_spread": float(market_home),
+            "fair_home_spread": float(fair_home),
+            "signed_home_edge": float(signed_home_edge),
+            "point_edge": abs(float(signed_home_edge)),
             "pick_side": pick_side,
             "classifier_models": len(votes),
-            "classifier_agreement": len(agreeing),
-            "classifier_confidence": float(np.mean([v[2] for v in agreeing])),
-            "reg_side": reg_side,
+            "classifier_agreement": int(classifier_agreement),
+            "classifier_confidence": float(classifier_confidence),
+            "reg_side": reg_consensus_side,
             "reg_agreement": int(reg_agree),
             "reg_strength": float(np.mean(reg_strengths)) if reg_strengths else 0.0,
-            "direction_agreement": 1.0 if pick_side == reg_side else 0.0,
+            "direction_agreement": 1.0 if reg_consensus_side == pick_side else 0.0,
             "data_maturity": 1.0 if int(_v3_num(r.get("week"), 1)) >= 4 else 0.0,
             "train_rows": fitted["train_rows"],
             "train_through": fitted["train_through"],
@@ -14464,24 +14499,39 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
     ).astype(int)
     card["day_size"] = int(len(card))
 
-    # Production lock: ONLY >= .84 is an official wager.
-    card["verdict"] = np.where(
-        card["selector_score"] >= V36_SCORE_FLOOR,
-        "BET",
-        np.where(card["selector_score"] >= V36_LEAN_FLOOR, "LEAN", "PASS"),
+    # v4.0 PRODUCTION VERDICT
+    # Official spread status comes from the independent fair-line probability
+    # and price-adjusted EV grade. Selector score is reliability context only.
+    _fg = card.get("fundamental_grade", pd.Series("PASS", index=card.index)).astype(str)
+    card["verdict"] = np.select(
+        [
+            _fg.eq("STRONG BET"),
+            _fg.eq("BET"),
+            _fg.eq("LEAN"),
+        ],
+        ["BET", "BET", "LEAN"],
+        default="PASS",
     )
 
     official_idx = card.index[card["verdict"] == "BET"].tolist()
     if official_idx:
-        best_idx = card.loc[official_idx, "selector_score"].idxmax()
+        # BEST BET = strongest expected value, then cover probability, then
+        # reliability score. No forced official bet if none clears the grade.
+        _rank = card.loc[official_idx].copy()
+        _rank["_ev_rank"] = pd.to_numeric(_rank.get("expected_value"), errors="coerce").fillna(-999)
+        _rank["_p_rank"] = pd.to_numeric(_rank.get("cover_probability"), errors="coerce").fillna(0)
+        _rank["_r_rank"] = pd.to_numeric(_rank.get("selector_score"), errors="coerce").fillna(0)
+        best_idx = _rank.sort_values(
+            ["_ev_rank", "_p_rank", "_r_rank"],
+            ascending=[False, False, False],
+        ).index[0]
         card.loc[best_idx, "verdict"] = "BEST BET"
 
-    # Flat 1u official stake exactly matches historical ROI evaluation.
     card["suggested_units"] = np.where(
         card["verdict"].isin(["BEST BET", "BET"]), 1.0, 0.0
     )
 
-    home_spread = -pd.to_numeric(card["market_margin"], errors="coerce")
+    home_spread = pd.to_numeric(card["market_home_spread"], errors="coerce")
     card["selection"] = np.where(
         card["pick_side"] == "HOME",
         card["home_team"].astype(str) + " " + home_spread.map(lambda v: f"{v:+.1f}"),
@@ -14493,13 +14543,18 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
     # not change the production selector verdict.
     if slate_df is not None and not slate_df.empty and "row_index" in card.columns:
         _lookup_cols = [
-            "market_home_spread",
-            "adjusted_model_home_spread",
-            "home_cover_prob",
-            "away_cover_prob",
+            "fundamental_home_cover_prob",
+            "fundamental_away_cover_prob",
+            "fundamental_cover_prob",
+            "fundamental_grade",
+            "fundamental_prob_edge",
+            "fundamental_ev",
             "model_confidence",
             "data_completeness",
             "market_source",
+            "raw_model_home_spread",
+            "adjusted_model_home_spread",
+            "spread_residual_correction",
         ]
         _sl = slate_df.reset_index(drop=True)
         for _c in _lookup_cols:
@@ -14511,31 +14566,67 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
                 )
 
     card["fair_home_spread"] = pd.to_numeric(
-        card.get("adjusted_model_home_spread"), errors="coerce"
+        card.get("fair_home_spread"), errors="coerce"
     )
     card["market_home_spread_display"] = pd.to_numeric(
         card.get("market_home_spread"), errors="coerce"
     )
-    card["point_edge"] = (
-        card["market_home_spread_display"] - card["fair_home_spread"]
-    ).abs()
-
-    card["cover_probability"] = np.where(
-        card["pick_side"].eq("HOME"),
-        pd.to_numeric(card.get("home_cover_prob"), errors="coerce"),
-        pd.to_numeric(card.get("away_cover_prob"), errors="coerce"),
+    card["point_edge"] = pd.to_numeric(
+        card.get("point_edge"), errors="coerce"
     )
 
-    # Reliability is an interpretable label backed by the already-validated
-    # selector confidence machinery. Numeric selector score is retained only
-    # for diagnostics / historical compatibility.
+    card["cover_probability"] = pd.to_numeric(
+        card.get("fundamental_cover_prob"), errors="coerce"
+    )
+    card["probability_edge"] = pd.to_numeric(
+        card.get("fundamental_prob_edge"), errors="coerce"
+    )
+    card["expected_value"] = pd.to_numeric(
+        card.get("fundamental_ev"), errors="coerce"
+    )
+
+    card["probability_direction_ok"] = (
+        (pd.to_numeric(card["point_edge"], errors="coerce") <= 1e-9)
+        | (pd.to_numeric(card["cover_probability"], errors="coerce") >= 0.50)
+    )
+    # Never promote a mathematically inconsistent row.
+    _bad_prob_dir = ~card["probability_direction_ok"].fillna(False)
+    if _bad_prob_dir.any():
+        card.loc[_bad_prob_dir, "fundamental_grade"] = "PASS"
+        card.loc[_bad_prob_dir, "fundamental_prob_edge"] = np.nan
+        card.loc[_bad_prob_dir, "fundamental_ev"] = np.nan
+
+    # v4.0 final official status after probability-direction sanity check.
+    _fg_final = card.get("fundamental_grade", pd.Series("PASS", index=card.index)).astype(str)
+    card["verdict"] = np.select(
+        [_fg_final.eq("STRONG BET"), _fg_final.eq("BET"), _fg_final.eq("LEAN")],
+        ["BET", "BET", "LEAN"],
+        default="PASS",
+    )
+    _official_final = card.index[card["verdict"] == "BET"].tolist()
+    if _official_final:
+        _rank_final = card.loc[_official_final].copy()
+        _rank_final["_ev"] = pd.to_numeric(_rank_final.get("expected_value"), errors="coerce").fillna(-999)
+        _rank_final["_p"] = pd.to_numeric(_rank_final.get("cover_probability"), errors="coerce").fillna(0)
+        _best_final = _rank_final.sort_values(["_ev","_p"], ascending=[False,False]).index[0]
+        card.loc[_best_final, "verdict"] = "BEST BET"
+    card["suggested_units"] = np.where(
+        card["verdict"].isin(["BEST BET","BET"]), 1.0, 0.0
+    )
+
+
+    # Reliability is context, not a hard gate in v4.0.
+    # It blends the old ensemble agreement signal with fundamental data quality.
+    _sel = pd.to_numeric(card["selector_score"], errors="coerce").fillna(0.0)
+    _mc = pd.to_numeric(card.get("model_confidence"), errors="coerce").fillna(0.0)
+    _dc = pd.to_numeric(card.get("data_completeness"), errors="coerce").fillna(0.0)
     card["reliability"] = np.select(
         [
-            card["selector_score"] >= 0.84,
-            card["selector_score"] >= 0.80,
-            card["selector_score"] >= 0.78,
+            (_sel >= 0.84) & (_mc >= 76) & (_dc >= 0.80),
+            (_sel >= 0.72) & (_mc >= 70) & (_dc >= 0.70),
+            (_mc >= 66) & (_dc >= 0.60),
         ],
-        ["PRIME", "HIGH", "WATCH"],
+        ["PRIME", "HIGH", "MODERATE"],
         default="LOW",
     )
 
@@ -15037,13 +15128,13 @@ def _render_v36_live_card(card, selected_date):
             <div class="edge-empty">
               <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">The model found edges, but none cleared the 0.80 production standard.</div>
+              <div class="edge-empty-copy">The model found differences from market, but none produced enough probability and price-adjusted value for an official bet.</div>
               <div class="edge-closest">
                 <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
                 <div class="edge-grid four">
                   <div><span>Market</span><b>{_v390_spread_text(closest.get("market_home_spread_display"))}</b></div>
                   <div><span>Fair</span><b>{_v390_spread_text(closest.get("fair_home_spread"))}</b></div>
-                  <div><span>Edge</span><b>{_v390_edge_text(closest.get("point_edge"))}</b></div>
+                  <div><span>Pts Edge</span><b>{_v390_edge_text(closest.get("point_edge"))}</b></div>
                   <div><span>Cover</span><b>{_v390_prob_text(closest.get("cover_probability"))}</b></div>
                 </div>
                 <div class="edge-reliability">Reliability <b>{html.escape(str(closest.get("reliability","—")))}</b></div>
@@ -15068,12 +15159,12 @@ def _render_v36_live_card(card, selected_date):
                   <div class="edge-grid four">
                     <div><span>Market</span><b>{_v390_spread_text(r.get("market_home_spread_display"))}</b></div>
                     <div><span>Fair</span><b>{_v390_spread_text(r.get("fair_home_spread"))}</b></div>
-                    <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
+                    <div><span>Pts Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
                     <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
                   </div>
                   <div class="edge-card-bottom">
                     <span>Reliability <b>{html.escape(str(r.get("reliability","—")))}</b></span>
-                    <span>Market source <b>{html.escape(str(r.get("market_source") or "Validated feed"))}</b></span>
+                    <span>Prob edge <b>{_v390_prob_text(r.get("probability_edge"))}</b> · EV <b>{_v390_prob_text(r.get("expected_value"))}</b></span>
                   </div>
                 </div>
                 """,
@@ -15099,7 +15190,7 @@ def _render_v36_live_card(card, selected_date):
                     <div class="edge-mini-row">
                       <div>
                         <b>{html.escape(str(r.get("selection","")))}</b>
-                        <span>{_v390_edge_text(r.get("point_edge"))} · {_v390_prob_text(r.get("cover_probability"))} cover</span>
+                        <span>{_v390_edge_text(r.get("point_edge"))} · {_v390_prob_text(r.get("cover_probability"))} cover · EV {_v390_prob_text(r.get("expected_value"))}</span>
                       </div>
                       <div class="edge-mini-rel">{html.escape(str(r.get("reliability","LOW")))}</div>
                     </div>
@@ -15109,10 +15200,12 @@ def _render_v36_live_card(card, selected_date):
 
     with st.expander("Model diagnostics", expanded=False):
         diag_cols = [c for c in [
-            "selection","market_home_spread_display","fair_home_spread","point_edge",
-            "cover_probability","reliability","classifier_confidence",
-            "classifier_agreement","classifier_models","reg_strength",
-            "direction_agreement","selector_score","verdict"
+            "selection","pick_side","market_home_spread_display","fair_home_spread",
+            "raw_model_home_spread","adjusted_model_home_spread","spread_residual_correction",
+            "signed_home_edge","point_edge","cover_probability","probability_edge",
+            "expected_value","fundamental_grade","reliability","model_confidence",
+            "data_completeness","classifier_confidence","classifier_agreement",
+            "classifier_models","reg_strength","direction_agreement","selector_score","verdict"
         ] if c in ranked.columns]
         st.dataframe(ranked[diag_cols], use_container_width=True, hide_index=True)
 
@@ -15728,9 +15821,9 @@ def _render_more_page():
         """
         <div class="edge-method">
           <div class="edge-method-title">v3.9 decision stack</div>
-          <div class="edge-method-row"><b>1</b><span>Projection</span><em>What is the fair spread?</em></div>
-          <div class="edge-method-row"><b>2</b><span>Edge</span><em>How far is the market from fair?</em></div>
-          <div class="edge-method-row"><b>3</b><span>Reliability</span><em>How much should we trust that edge?</em></div>
+          <div class="edge-method-row"><b>1</b><span>Projection</span><em>SP+/SRS + talent + returning production + matchup + HFA build an independent fair line.</em></div>
+          <div class="edge-method-row"><b>2</b><span>Edge</span><em>Sportsbook spread is compared with fair only after projection.</em></div>
+          <div class="edge-method-row"><b>3</b><span>Decision</span><em>Cover probability + price EV grade the bet; ensemble agreement is reliability context.</em></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -15800,7 +15893,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Price the spread first: market line, fair line, point edge, cover probability, then reliability. Official = 0.80+; Watch = 0.78–0.799.</div></div>',
+        '<div class="mobile-page-sub">Independent football projection sets the fair spread. The sportsbook line is comparison only. Cover probability + EV determine BET / WATCH / PASS; reliability is context, not a veto.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -15887,6 +15980,59 @@ if run_mode == "Full Slate":
             # to the current year train a small regularized residual correction.
             raw_home_spread = gp["model_home_spread"]
             raw_total = gp["model_total"]
+
+            # v4.0 FUNDAMENTAL SPREAD ENGINE
+            # This projection is generated before the sportsbook line is introduced.
+            # The market is comparison data only; it does not anchor the fair spread.
+            fundamental_home_spread = float(raw_home_spread)
+            fundamental_home_margin = -fundamental_home_spread
+            fundamental_margin_sd = float(gp.get("margin_sd") or BASE_MARGIN_SD)
+
+            fundamental_home_cover_prob = None
+            fundamental_away_cover_prob = None
+            fundamental_point_edge = None
+            fundamental_pick_side = None
+            fundamental_cover_prob = None
+            fundamental_grade = "NO LINE"
+            fundamental_prob_edge = None
+            fundamental_ev = None
+
+            if market.get("home_spread") is not None:
+                _mkt_hs = float(market["home_spread"])
+                _signed_home_edge = _mkt_hs - fundamental_home_spread
+                fundamental_point_edge = abs(_signed_home_edge)
+                if abs(_signed_home_edge) > 1e-9:
+                    fundamental_pick_side = "HOME" if _signed_home_edge > 0 else "AWAY"
+
+                fundamental_home_cover_prob = cover_probability(
+                    fundamental_home_margin,
+                    _mkt_hs,
+                    side="home",
+                    sigma=fundamental_margin_sd,
+                )
+                fundamental_away_cover_prob = 1.0 - fundamental_home_cover_prob
+
+                if fundamental_pick_side == "HOME":
+                    fundamental_cover_prob = fundamental_home_cover_prob
+                elif fundamental_pick_side == "AWAY":
+                    fundamental_cover_prob = fundamental_away_cover_prob
+
+                if fundamental_cover_prob is not None:
+                    fundamental_grade, fundamental_prob_edge, fundamental_ev, _ = grade(
+                        fundamental_cover_prob,
+                        -110,
+                        gp["confidence"],
+                        market_type="spread",
+                        projection_gap=fundamental_point_edge,
+                        week=gp["week"],
+                    )
+                    fundamental_grade = apply_fcs_guard(
+                        fundamental_grade,
+                        gp.get("fcs_fallback_used", False),
+                    )
+
+            # Legacy market-residual layer is retained only for research and
+            # calibration diagnostics. It no longer supplies the production fair line.
             residual_p = residual_market_projection(gp, market, residual_models)
 
             adjusted_home_spread = residual_p["adjusted_home_spread"]
@@ -16020,6 +16166,15 @@ if run_mode == "Full Slate":
                 "market_home_spread": market.get("home_spread"),
                 "market_total": market.get("total"),
                 "raw_model_home_spread": round(raw_home_spread, 3),
+                "fundamental_home_spread": round(fundamental_home_spread, 3),
+                "fundamental_point_edge": round(fundamental_point_edge, 3) if fundamental_point_edge is not None else None,
+                "fundamental_pick_side": fundamental_pick_side,
+                "fundamental_home_cover_prob": round(float(fundamental_home_cover_prob), 6) if fundamental_home_cover_prob is not None else None,
+                "fundamental_away_cover_prob": round(float(fundamental_away_cover_prob), 6) if fundamental_away_cover_prob is not None else None,
+                "fundamental_cover_prob": round(float(fundamental_cover_prob), 6) if fundamental_cover_prob is not None else None,
+                "fundamental_grade": fundamental_grade,
+                "fundamental_prob_edge": round(float(fundamental_prob_edge), 6) if fundamental_prob_edge is not None else None,
+                "fundamental_ev": round(float(fundamental_ev), 6) if fundamental_ev is not None else None,
                 "adjusted_model_home_spread": round(adjusted_home_spread, 3),
                 "side_market_weight": round(side_weight, 3),
                 "side_shrink_points": round(side_shrink, 3),
@@ -16115,7 +16270,7 @@ if run_mode == "Full Slate":
                 if verdict in ("BEST BET","BET"):
                     state = verdict
                     state_cls = "official"
-                elif str(rr.get("reliability")) == "WATCH":
+                elif str(rr.get("verdict")) == "LEAN":
                     state = "WATCH"
                     state_cls = "watch"
                 else:
@@ -16150,6 +16305,8 @@ if run_mode == "Full Slate":
                           {_v390_edge_text(rr.get("point_edge"))}
                           <span>•</span>
                           {_v390_prob_text(rr.get("cover_probability"))} cover
+                          <span>•</span>
+                          EV {_v390_prob_text(rr.get("expected_value"))}
                         </div>
                         {ml_html}
                       </div>
@@ -16731,4 +16888,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.9.1 Edge Engine Live • Fair spread • Point edge • Cover probability • 0.80 production floor.")
+st.caption("CFB Edge • v4.0 Fundamental Edge Engine • Independent fair line → edge → cover probability → EV.")
