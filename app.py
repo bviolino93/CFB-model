@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.8.1-SPREAD-CORE-ML-VALUE"
+MODEL_VERSION = "3.8.2-SLATE-NATIVE-FAST"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -5920,7 +5920,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.8.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v3.8.2</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -15271,7 +15271,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Spreads drive the card. Moneyline appears only when exceptional value clears a separate gate.</div></div>',
+        '<div class="mobile-page-sub">Rank the selected slate. Spreads drive the card; moneyline appears only when exceptional value clears its gate.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -15284,8 +15284,8 @@ if run_mode == "Full Slate":
         ),
     )
 
-    # v3.8.1: every time-window view is a FILTER of the same full-day
-    # spread production run. We never fall back to a different ML/total board.
+    # v3.8.2: the selected time window IS the production universe.
+    # Each slate is ranked independently, while the 0.84 floor stays locked.
     production_games = sorted(
         list(daily),
         key=lambda g: kickoff_et(g) if kickoff_et(g) is not None else pd.Timestamp.max.tz_localize("UTC"),
@@ -15296,7 +15296,7 @@ if run_mode == "Full Slate":
         slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
     st.caption(
-        f"{len(slate_games)} games shown • production ranks all {len(production_games)} games together."
+        f"{len(slate_games)} games in the {slate_choice} production slate • 0.84 floor stays locked."
     )
 
     if not slate_games:
@@ -15319,7 +15319,7 @@ if run_mode == "Full Slate":
         # Efficiently pull all line data by unique week rather than one request per game.
         line_cache = {}
         if include_lines:
-            weeks = sorted({g.get("week") for g in production_games if g.get("week") is not None})
+            weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
             for wk in weeks:
                 try:
                     raw = fetch_lines(API_KEY, year=year, week=int(wk))
@@ -15329,7 +15329,11 @@ if run_mode == "Full Slate":
 
         slate_rows = []
 
-        for g in production_games:
+        # Fit/load the historical residual correction once per slate run,
+        # not once for every matchup.
+        residual_models = fit_live_residual_models(int(year), "Major FBS")
+
+        for g in slate_games:
             gp = project_game(g, model_data_s, hfa=2.5)
             k = kickoff_et(g)
 
@@ -15354,7 +15358,6 @@ if run_mode == "Full Slate":
             # to the current year train a small regularized residual correction.
             raw_home_spread = gp["model_home_spread"]
             raw_total = gp["model_total"]
-            residual_models = fit_live_residual_models(int(year), "Major FBS")
             residual_p = residual_market_projection(gp, market, residual_models)
 
             adjusted_home_spread = residual_p["adjusted_home_spread"]
@@ -15509,20 +15512,11 @@ if run_mode == "Full Slate":
                 "market_grades_json": json.dumps(market_grades),
             })
 
-        production_slate_df = pd.DataFrame(slate_rows)
-
-        # Display subset uses kickoff bucket only; production remains all-day.
-        if slate_choice == "All Day":
-            slate_df = production_slate_df.copy()
-        else:
-            _display_ids = {str(g.get("id")) for g in slate_games}
-            slate_df = production_slate_df[
-                production_slate_df["game_id"].astype(str).isin(_display_ids)
-            ].copy()
+        # Selected slate is both the analysis universe and the display universe.
+        slate_df = pd.DataFrame(slate_rows)
 
         st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
-        # Research board is scoped to the visible window only.
         market_board = _ranked_market_board(slate_df)
         st.session_state["cfb_latest_market_board"] = market_board.copy()
         st.session_state["cfb_latest_slate_df"] = slate_df.copy()
@@ -15530,39 +15524,25 @@ if run_mode == "Full Slate":
         st.session_state["cfb_latest_slate_date"] = str(selected_date)
 
         v36_card = pd.DataFrame()
-        v36_display_card = pd.DataFrame()
         try:
-            # Always rank the complete day together.
-            v36_card = _v36_live_daily_card(daily, production_slate_df, scope="Major FBS")
+            # v3.8.2: rank only the selected slate. Cross-sectional percentiles,
+            # day_rank and BEST BET designation are therefore slate-native.
+            v36_card = _v36_live_daily_card(slate_games, slate_df, scope="Major FBS")
         except Exception as _v36e:
-            st.warning(f"Locked daily selector could not run: {_v36e}")
+            st.warning(f"Locked slate selector could not run: {_v36e}")
             v36_card = pd.DataFrame()
 
         st.session_state["cfb_v36_latest_card"] = v36_card.copy()
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
+        st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # Freeze official recommendations from the all-day card only.
+        # The floor remains locked. This freezes only actual qualifiers;
+        # no play is created simply because a slate was run.
         _v36_added = _v36_track_daily_card(v36_card, selected_date)
         if _v36_added:
-            st.toast(f"Forward tracker froze {_v36_added} new locked recommendation(s).")
+            st.toast(f"Tracker froze {_v36_added} new qualifying recommendation(s).")
 
-        # Filter the SAME production card for Early / Midday / Night.
-        if len(v36_card):
-            if slate_choice == "All Day":
-                v36_display_card = v36_card.copy()
-            else:
-                _visible_pairs = {
-                    (str(g.get("awayTeam") or g.get("away_team") or ""),
-                     str(g.get("homeTeam") or g.get("home_team") or ""))
-                    for g in slate_games
-                }
-                _mask = v36_card.apply(
-                    lambda r: (str(r.get("away_team","")), str(r.get("home_team",""))) in _visible_pairs,
-                    axis=1,
-                )
-                v36_display_card = v36_card.loc[_mask].copy()
-
-        _render_v36_live_card(v36_display_card, selected_date)
+        _render_v36_live_card(v36_card, selected_date)
 
         try:
             _v361_graded_now, _v361_df_now = _v361_grade_forward_tracker()
@@ -15588,8 +15568,8 @@ if run_mode == "Full Slate":
                 if _g not in ml_by_game:
                     ml_by_game[_g] = _mlr
 
-        if isinstance(v36_display_card, pd.DataFrame) and len(v36_display_card):
-            v381_ranked = v36_display_card.copy()
+        if isinstance(v36_card, pd.DataFrame) and len(v36_card):
+            v381_ranked = v36_card.copy()
             v381_ranked["selector_score"] = pd.to_numeric(v381_ranked["selector_score"], errors="coerce")
             v381_ranked = v381_ranked.sort_values("selector_score", ascending=False, na_position="last")
 
@@ -16202,4 +16182,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.8.1 Spread Core • Validated spreads • Opportunistic ML value overlay • Locked 0.84 spread floor.")
+st.caption("CFB Edge • v3.8.2 Slate Native • Spread-first • Opportunistic ML value overlay • Locked 0.84 floor.")
