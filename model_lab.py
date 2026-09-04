@@ -362,6 +362,29 @@ if st.button("Run walk-forward test", type="primary", use_container_width=True):
     w.columns = ["Test season"] + [c[2:] for c in wcols]
     st.dataframe(w.round(3), use_container_width=True, hide_index=True)
 
+    st.subheader("Export for analysis")
+    st.caption(
+        "Download these and send them over for deeper analysis — calibration, "
+        "where edges concentrate, alternative specifications."
+    )
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            "Download game-level dataset",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"model_lab_games_{first}_{last}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with d2:
+        st.download_button(
+            "Download results table",
+            data=res.to_csv(index=False).encode("utf-8"),
+            file_name=f"model_lab_results_{first}_{last}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
     with st.expander("Important caveats", expanded=False):
         st.markdown(
             """
