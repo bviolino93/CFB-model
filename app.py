@@ -6089,6 +6089,8 @@ st.markdown("""
 <style>
 /* CFB EDGE v4.2 — premium standalone app skin */
 [data-testid="stHeader"]{display:none!important;height:0!important;min-height:0!important;background:transparent!important;}
+[data-testid="stMarkdownContainer"]:has(> style){display:none!important;}
+[data-testid="stElementContainer"]:has(style):not(:has(*:not(style):not([data-testid="stMarkdownContainer"]))){display:none!important;height:0!important;margin:0!important;padding:0!important;}
 [data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"],#MainMenu,footer{display:none!important;}
 .block-container{max-width:760px!important;padding:calc(4px + env(safe-area-inset-top)) 18px calc(108px + env(safe-area-inset-bottom))!important;}
 html,body,[data-testid="stAppViewContainer"]{
