@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.0.3-MINIMAL-SLATE"
+MODEL_VERSION = "4.2.0-PREMIUM-APP-UI"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4828,6 +4828,75 @@ st.set_page_config(
 # ---------- Sleek mobile-first app theme ----------
 
 
+
+st.markdown("""
+<style>
+/* v4.1.1 unified ranked slate */
+.v411-ranked-row{
+  display:flex;
+  gap:12px;
+  align-items:flex-start;
+  padding:15px 2px;
+  border-bottom:1px solid rgba(148,163,184,.10);
+}
+.v411-ranked-row.best{
+  border:1px solid rgba(74,174,255,.35);
+  border-radius:16px;
+  padding:16px;
+  margin:8px 0 10px;
+  background:rgba(16,38,63,.55);
+}
+.v411-rank{
+  flex:0 0 24px;
+  color:#657b92;
+  font-size:.76rem;
+  font-weight:900;
+  padding-top:3px;
+}
+.v411-body{min-width:0;flex:1}
+.v411-topline{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center;
+}
+.v411-market{
+  color:#6e859d;
+  font-size:.59rem;
+  font-weight:900;
+  letter-spacing:.10em;
+}
+.v411-verdict{
+  font-size:.59rem;
+  font-weight:950;
+  letter-spacing:.08em;
+}
+.v411-verdict.best{color:#6bc1ff}
+.v411-verdict.bet{color:#80d7b0}
+.v411-verdict.lean{color:#d6bb72}
+.v411-pick{
+  color:#f7fbff;
+  font-size:1.02rem;
+  font-weight:900;
+  margin-top:4px;
+}
+.v411-game{
+  color:#73889f;
+  font-size:.64rem;
+  margin-top:3px;
+}
+.v411-metrics{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:8px;
+  color:#70869e;
+  font-size:.62rem;
+}
+.v411-metrics b{color:#bccddd}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 .v403-watch-row{
@@ -6015,23 +6084,129 @@ div[class*="st-key-cfb_nav_home_"],div[class*="st-key-cfb_nav_live_"],div[class*
 </style>
 """, unsafe_allow_html=True)
 
+
+st.markdown("""
+<style>
+/* CFB EDGE v4.2 — premium standalone app skin */
+[data-testid="stHeader"]{height:0!important;min-height:0!important;background:transparent!important;}
+[data-testid="stToolbar"],[data-testid="stDecoration"],#MainMenu,footer{display:none!important;}
+.block-container{max-width:760px!important;padding:calc(14px + env(safe-area-inset-top)) 18px calc(108px + env(safe-area-inset-bottom))!important;}
+html,body,[data-testid="stAppViewContainer"]{
+  background:radial-gradient(circle at 85% -10%,rgba(57,126,255,.14),transparent 28%),
+             radial-gradient(circle at 0% 20%,rgba(40,191,255,.05),transparent 26%),#07111e!important;
+}
+
+/* top app bar */
+.v420-appbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 0 17px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,.10);}
+.v420-brandmark{display:flex;align-items:center;gap:11px;min-width:0}
+.v420-logo{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.72rem;font-weight:950;background:linear-gradient(145deg,#3a86ff,#1d5fd1);border:1px solid rgba(255,255,255,.18);box-shadow:0 8px 24px rgba(42,118,255,.25),inset 0 1px 0 rgba(255,255,255,.18)}
+.v420-wordmark{color:#fff;font-size:.91rem;font-weight:950;letter-spacing:.11em;line-height:1}
+.v420-brand-sub{color:#607790;font-size:.55rem;font-weight:750;margin-top:5px}
+.v420-live{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;border:1px solid rgba(54,211,153,.25);background:rgba(35,197,132,.06);color:#9aefd0;font-size:.56rem;font-weight:950;letter-spacing:.12em}
+.v420-live i{width:7px;height:7px;border-radius:50%;background:#48dfaa;box-shadow:0 0 13px rgba(72,223,170,.72)}
+
+.v420-section-label{color:#59718b;font-size:.54rem;font-weight:950;letter-spacing:.15em;margin:2px 0 7px;text-transform:uppercase}
+div[class*="st-key-v420_game_date"] [data-baseweb="input"],
+div[class*="st-key-v420_game_level"] [data-baseweb="select"]>div{
+  min-height:48px!important;border-radius:14px!important;background:rgba(13,27,44,.86)!important;
+  border:1px solid rgba(122,156,188,.16)!important;box-shadow:none!important
+}
+div[class*="st-key-v420_game_date"] input{color:#edf5ff!important;-webkit-text-fill-color:#edf5ff!important;font-weight:800!important}
+div[class*="st-key-v420_game_level"] [data-baseweb="select"] *{color:#eaf3fc!important}
+
+.v420-day-summary{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:11px 0 18px;padding:13px 14px;border-radius:16px;background:linear-gradient(135deg,rgba(17,37,60,.88),rgba(10,25,42,.88));border:1px solid rgba(122,156,188,.13)}
+.v420-day-summary>div:first-child{display:flex;flex-direction:column;gap:2px}
+.v420-day-kicker{color:#68819a;font-size:.54rem;font-weight:900;letter-spacing:.09em;text-transform:uppercase}
+.v420-day-summary b{color:#f7fbff;font-size:.88rem}
+.v420-day-meta{display:flex;align-items:center;gap:7px;color:#8299af;font-size:.59rem;font-weight:750;text-align:right}
+.v420-day-meta i,.v420-slate-info i{width:3px;height:3px;border-radius:50%;background:#3d556e;display:block}
+
+.v420-slate-hero{padding:18px 17px;margin:2px 0 17px;border-radius:20px;background:radial-gradient(circle at 92% 0%,rgba(71,145,255,.18),transparent 32%),linear-gradient(145deg,#102743,#0b1d32 62%,#091827);border:1px solid rgba(77,135,194,.24);box-shadow:0 20px 44px rgba(0,0,0,.20)}
+.v420-eyebrow{color:#62b9ff;font-size:.55rem;font-weight:950;letter-spacing:.16em}
+.v420-hero-row{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-top:7px}
+.v420-hero-title{color:#fff;font-size:1.72rem;font-weight:950;letter-spacing:-.05em;line-height:1}
+.v420-hero-copy{color:#7891a9;font-size:.70rem;margin-top:7px}
+.v420-market-pill{padding:6px 8px;border-radius:9px;color:#9db9d5;background:rgba(4,14,26,.45);border:1px solid rgba(126,162,196,.14);font-size:.52rem;font-weight:900;letter-spacing:.08em}
+
+div[class*="st-key-v420_slate_segment"] [role="radiogroup"]{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:4px!important;padding:4px!important;border-radius:14px!important;background:#0b1b2d!important;border:1px solid rgba(120,154,188,.13)!important}
+div[class*="st-key-v420_slate_segment"] label{min-height:40px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:10px!important;margin:0!important;padding:0 4px!important;background:transparent!important}
+div[class*="st-key-v420_slate_segment"] label p{margin:0!important;color:#728aa2!important;font-size:.65rem!important;font-weight:850!important}
+div[class*="st-key-v420_slate_segment"] label:has(input:checked){background:linear-gradient(145deg,#1d4f86,#173e69)!important;box-shadow:0 4px 14px rgba(8,24,41,.35),inset 0 1px 0 rgba(255,255,255,.06)!important}
+div[class*="st-key-v420_slate_segment"] label:has(input:checked) p{color:#f8fbff!important}
+div[class*="st-key-v420_slate_segment"] [data-baseweb="radio"]{display:none!important}
+.v420-slate-info{display:flex;align-items:center;gap:8px;margin:10px 2px 13px;color:#6f879f;font-size:.60rem;font-weight:740}
+.v420-slate-info b{color:#c6d6e5;font-size:.68rem}
+
+div[data-testid="stExpander"]{border-radius:15px!important;border:1px solid rgba(122,156,188,.11)!important;background:rgba(10,24,40,.55)!important;box-shadow:none!important}
+div[data-testid="stExpander"] summary{min-height:48px!important;color:#b7c8d8!important}
+div[data-testid="stExpander"] summary p{font-size:.72rem!important;font-weight:780!important}
+
+div[class*="st-key-v420_run_slate"] button{min-height:54px!important;border-radius:16px!important;background:linear-gradient(135deg,#2f7cff,#1e66df)!important;border:1px solid rgba(255,255,255,.08)!important;box-shadow:0 14px 30px rgba(28,103,231,.28),inset 0 1px 0 rgba(255,255,255,.14)!important;font-size:.81rem!important;font-weight:900!important}
+
+.v420-results-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:24px 2px 7px}
+.v420-results-head span{color:#eef6ff;font-size:.72rem;font-weight:950;letter-spacing:.12em}
+.v420-results-head em{color:#4f6a83;font-size:.49rem;font-style:normal;font-weight:900;letter-spacing:.10em}
+
+.v411-ranked-row{display:grid!important;grid-template-columns:34px minmax(0,1fr)!important;gap:10px!important;align-items:flex-start!important;padding:15px 14px!important;margin:8px 0!important;border:1px solid rgba(125,158,190,.11)!important;border-radius:17px!important;background:linear-gradient(150deg,rgba(13,29,48,.90),rgba(8,20,34,.90))!important;box-shadow:0 11px 28px rgba(0,0,0,.13)!important}
+.v411-ranked-row.best{border-color:rgba(74,157,255,.36)!important;background:radial-gradient(circle at 90% 0%,rgba(61,142,255,.18),transparent 33%),linear-gradient(145deg,#102b4a,#0b2038)!important;box-shadow:0 18px 42px rgba(0,0,0,.22)!important}
+.v411-ranked-row.bet{border-color:rgba(75,196,151,.18)!important}
+.v411-ranked-row.lean{opacity:.92}
+.v411-rank{width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:#0a1c30;color:#6d8aa5!important;font-size:.62rem!important;font-weight:950!important;border:1px solid rgba(120,157,191,.10)}
+.v411-ranked-row.best .v411-rank{background:#1e65ad;color:#fff!important}
+.v411-market{display:inline-flex;padding:4px 6px;border-radius:7px;background:rgba(115,151,184,.08);color:#7691aa!important;font-size:.48rem!important;font-weight:950!important;letter-spacing:.10em!important}
+.v411-verdict{padding:5px 8px;border-radius:999px;font-size:.49rem!important;font-weight:950!important;letter-spacing:.09em!important;border:1px solid transparent}
+.v411-verdict.best{color:#94cfff!important;background:rgba(56,136,232,.10);border-color:rgba(73,151,245,.18)}
+.v411-verdict.bet{color:#8fe2bc!important;background:rgba(46,186,126,.075);border-color:rgba(68,199,145,.16)}
+.v411-verdict.lean{color:#dbc47e!important;background:rgba(188,154,56,.06);border-color:rgba(190,158,69,.14)}
+.v411-pick{color:#fff!important;font-size:1.12rem!important;font-weight:950!important;letter-spacing:-.025em!important;margin-top:5px!important}
+.v411-game{color:#627b94!important;font-size:.61rem!important;margin-top:4px!important}
+.v420-metric-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:12px}
+.v420-metric-grid>div{min-width:0;padding:8px 5px;border-radius:10px;text-align:center;background:rgba(4,14,25,.36);border:1px solid rgba(113,150,184,.075)}
+.v420-metric-grid span{display:block;color:#526b84;font-size:.43rem;font-weight:900;letter-spacing:.06em;text-transform:uppercase}
+.v420-metric-grid b{display:block;color:#d8e6f2;font-size:.66rem;font-weight:900;margin-top:3px;white-space:nowrap}
+
+/* four-tab native bottom nav */
+div[class*="st-key-cfb_nav_"]{width:25vw!important;background:rgba(5,16,28,.97)!important;border-top:1px solid rgba(94,132,168,.18)!important;backdrop-filter:blur(22px)!important}
+div[class*="st-key-cfb_nav_slate_"]{left:0!important}
+div[class*="st-key-cfb_nav_game_"]{left:25vw!important}
+div[class*="st-key-cfb_nav_tracker_"]{left:50vw!important}
+div[class*="st-key-cfb_nav_more_"]{left:75vw!important}
+div[class*="st-key-cfb_nav_"] button{height:72px!important;min-height:72px!important;background:transparent!important;padding:7px 2px calc(8px + env(safe-area-inset-bottom))!important;color:#62788d!important;border:0!important}
+div[class*="st-key-cfb_nav_"] button::before{width:23px!important;height:23px!important;background-color:#62788d!important}
+div[class*="st-key-cfb_nav_"][class*="_active"] button{color:#58adff!important}
+div[class*="st-key-cfb_nav_"][class*="_active"] button::before{background-color:#58adff!important}
+div[class*="st-key-cfb_nav_slate_"] button::before{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Crect x='3' y='4' width='18' height='4' rx='2'/%3E%3Crect x='3' y='10' width='18' height='4' rx='2'/%3E%3Crect x='3' y='16' width='18' height='4' rx='2'/%3E%3C/svg%3E")!important;mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Crect x='3' y='4' width='18' height='4' rx='2'/%3E%3Crect x='3' y='10' width='18' height='4' rx='2'/%3E%3Crect x='3' y='16' width='18' height='4' rx='2'/%3E%3C/svg%3E")!important}
+div[class*="st-key-cfb_nav_game_"] button::before{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cellipse cx='12' cy='12' rx='8' ry='5' transform='rotate(-35 12 12)'/%3E%3Cpath d='m9 9 6 6M10.5 7.8l5.7 5.7M7.8 10.5l5.7 5.7'/%3E%3C/svg%3E")!important;mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cellipse cx='12' cy='12' rx='8' ry='5' transform='rotate(-35 12 12)'/%3E%3Cpath d='m9 9 6 6M10.5 7.8l5.7 5.7M7.8 10.5l5.7 5.7'/%3E%3C/svg%3E")!important}
+div[class*="st-key-cfb_nav_tracker_"] button::before{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M4 19V11M10 19V6M16 19V9M22 19V3'/%3E%3C/svg%3E")!important;mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M4 19V11M10 19V6M16 19V9M22 19V3'/%3E%3C/svg%3E")!important}
+div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3C/svg%3E")!important;mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3C/svg%3E")!important}
+
+@media(max-width:520px){
+  .block-container{padding-left:14px!important;padding-right:14px!important}
+  .v420-hero-title{font-size:1.55rem}
+  .v420-market-pill{display:none}
+  .v420-metric-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+  .v420-metric-grid>div{padding:7px 3px}
+  .v420-metric-grid b{font-size:.61rem}
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown(
-    f"""
-    <div class="terminal-brand">
-      <div class="terminal-brand-row">
+    """
+    <div class="v420-appbar">
+      <div class="v420-brandmark">
+        <div class="v420-logo">CE</div>
         <div>
-          <div class="terminal-wordmark">CFB EDGE</div>
-          <div class="terminal-tagline">Quantitative college football betting</div>
+          <div class="v420-wordmark">CFB EDGE</div>
+          <div class="v420-brand-sub">College Football Intelligence</div>
         </div>
-        <div class="terminal-status"><span></span> LIVE</div>
       </div>
-      <div class="terminal-meta">
-        <span>v4.0.3</span><i></i><span>Validated markets</span><i></i><span>Fundamental edge engine</span>
-      </div>
+      <div class="v420-live"><i></i><span>LIVE</span></div>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
 
 try:
     API_KEY = st.secrets["CFBD_API_KEY"]
@@ -11660,7 +11835,7 @@ def _summarize_situational_segments(segment_df, holdout):
             and seasons_won >= 2
             and pd.notna(avg_impr) and avg_impr > 0
         ):
-            label = "WATCH"
+            label = "LEAN"
         else:
             label = "NO SIGNAL"
 
@@ -11840,7 +12015,7 @@ def _render_situational_discovery_results(
     ])].copy()
 
     stable = focus[focus["Discovery Label"] == "STABLE SIGNAL"]
-    watch = focus[focus["Discovery Label"] == "WATCH"]
+    watch = focus[focus["Discovery Label"] == "LEAN"]
 
     if not stable.empty:
         names = ", ".join(
@@ -13984,7 +14159,13 @@ if _v38_main_view == "Game":
 
 top1, top2 = st.columns([1, 1])
 with top1:
-    selected_date = st.date_input("Game date", value=date.today())
+    st.markdown('<div class="v420-section-label">DATE</div>', unsafe_allow_html=True)
+    selected_date = st.date_input(
+        "Game date",
+        value=date.today(),
+        label_visibility="collapsed",
+        key="v420_game_date",
+    )
 year = selected_date.year
 
 try:
@@ -14023,10 +14204,13 @@ def is_major_team(g, side):
     )
 
 with top2:
+    st.markdown('<div class="v420-section-label">UNIVERSE</div>', unsafe_allow_html=True)
     slate_filter = st.selectbox(
         "Game level",
         ["Major FBS", "All FBS", "All college games"],
         index=0,
+        label_visibility="collapsed",
+        key="v420_game_level",
         help=(
             "Major FBS = Power-conference teams plus Notre Dame. "
             "All FBS removes FCS-vs-FCS games. All college games shows everything returned by CFBD."
@@ -14052,7 +14236,20 @@ if not daily:
     st.warning("No games found for that date with the selected game-level filter.")
     st.stop()
 
-st.caption(f"{len(daily)} matchup(s) available • {selected_date:%A, %b %d}")
+st.markdown(
+    f"""
+    <div class="v420-day-summary">
+      <div>
+        <span class="v420-day-kicker">{selected_date:%A}</span>
+        <b>{selected_date:%B %d}</b>
+      </div>
+      <div class="v420-day-meta">
+        <span>{len(daily)} games</span><i></i><span>{html.escape(str(slate_filter))}</span>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def kickoff_et(g):
@@ -14665,8 +14862,9 @@ V36_LEGACY_TRACKER_PATH = Path(".cfb_edge_tracker") / "cfb_v36_forward_tracker.c
 
 V401_TRACKER_COLUMNS = [
     "record_key","model_version","game_date","game_id","kickoff_et",
-    "home_team","away_team","selection","pick_side","bet_line","odds",
+    "home_team","away_team","selection","market_type","pick_side","bet_line","odds",
     "verdict","fundamental_grade","fair_home_spread","market_home_spread",
+    "fair_total","market_total",
     "point_edge","cover_probability","probability_edge","expected_value",
     "reliability","model_confidence","data_completeness","selector_score",
     "suggested_units","frozen_at_et","status","result","units_result",
@@ -14699,7 +14897,10 @@ def _v401_clean_tracker(df):
     for idx, r in x.iterrows():
         sel = str(r.get("selection") or "")
         if not r.get("record_key"):
-            x.at[idx, "record_key"] = f"{r.get('game_date')}|{r.get('game_id')}|SPREAD"
+            _mt = str(r.get("market_type") or "SPREAD").upper()
+            x.at[idx, "record_key"] = f"{r.get('game_date')}|{r.get('game_id')}|{_mt}"
+        if not r.get("market_type"):
+            x.at[idx, "market_type"] = "SPREAD"
         if not r.get("pick_side"):
             ht = str(r.get("home_team") or "")
             at = str(r.get("away_team") or "")
@@ -14777,8 +14978,9 @@ def _v401_kickoff_has_started(kickoff_et, selected_date=None):
 
 def _v401_track_daily_card(card, selected_date):
     """
-    Freeze the FIRST official v4 spread recommendation for a game.
-    Later line moves / reruns never rewrite the original tracked wager.
+    Freeze the FIRST official recommendation per game + market type.
+    A game may therefore have one official spread and one official total.
+    Later reruns never rewrite the frozen line.
     """
     if card is None or card.empty:
         return 0
@@ -14788,10 +14990,7 @@ def _v401_track_daily_card(card, selected_date):
         return 0
 
     tracker = _v401_load_tracker()
-    # One official spread record per game/date, regardless of later model reruns/version changes.
-    existing = set(
-        tracker["record_key"].astype(str)
-    ) if not tracker.empty else set()
+    existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
 
     rows = []
     now = pd.Timestamp.now(tz="America/New_York").isoformat()
@@ -14800,21 +14999,12 @@ def _v401_track_daily_card(card, selected_date):
         gid = str(r.get("game_id") or "")
         if not gid:
             continue
-        key = f"{selected_date}|{gid}|SPREAD"
+        market_type = str(r.get("market_type") or "SPREAD").upper()
+        key = f"{selected_date}|{gid}|{market_type}"
         if key in existing:
             continue
         if _v401_kickoff_has_started(r.get("kickoff_et"), selected_date):
             continue
-
-        try:
-            bet_line = float(
-                r.get("market_home_spread_display")
-                if str(r.get("pick_side")) == "HOME"
-                else -float(r.get("market_home_spread_display"))
-            )
-        except Exception:
-            m = re.search(r"([+-]\d+(?:\.\d+)?)\s*$", str(r.get("selection") or ""))
-            bet_line = float(m.group(1)) if m else None
 
         def fnum(name):
             try:
@@ -14822,6 +15012,19 @@ def _v401_track_daily_card(card, selected_date):
                 return v if np.isfinite(v) else None
             except Exception:
                 return None
+
+        if market_type == "TOTAL":
+            bet_line = fnum("bet_line")
+        else:
+            try:
+                bet_line = float(
+                    r.get("market_home_spread_display")
+                    if str(r.get("pick_side")) == "HOME"
+                    else -float(r.get("market_home_spread_display"))
+                )
+            except Exception:
+                m = re.search(r"([+-]\d+(?:\.\d+)?)\s*$", str(r.get("selection") or ""))
+                bet_line = float(m.group(1)) if m else None
 
         rows.append({
             "record_key": key,
@@ -14832,13 +15035,16 @@ def _v401_track_daily_card(card, selected_date):
             "home_team": r.get("home_team"),
             "away_team": r.get("away_team"),
             "selection": r.get("selection"),
+            "market_type": market_type,
             "pick_side": r.get("pick_side"),
             "bet_line": bet_line,
-            "odds": -110,
+            "odds": fnum("odds") or -110,
             "verdict": r.get("verdict"),
             "fundamental_grade": r.get("fundamental_grade"),
             "fair_home_spread": fnum("fair_home_spread"),
             "market_home_spread": fnum("market_home_spread_display"),
+            "fair_total": fnum("fair_total"),
+            "market_total": fnum("market_total"),
             "point_edge": fnum("point_edge"),
             "cover_probability": fnum("cover_probability"),
             "probability_edge": fnum("probability_edge"),
@@ -14864,6 +15070,7 @@ def _v401_track_daily_card(card, selected_date):
     out = pd.concat([tracker, pd.DataFrame(rows)], ignore_index=True)
     _v401_save_tracker(out)
     return len(rows)
+
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _v401_fetch_finals(date_strings):
@@ -14908,26 +15115,37 @@ def _v401_result_from_final(row, final):
     except Exception:
         return None
 
-    side = str(row.get("pick_side") or "")
-    if side == "HOME":
-        margin = hs + line - aas
-    elif side == "AWAY":
-        margin = aas + line - hs
-    else:
-        # Legacy fallback via selection text.
-        sel = str(row.get("selection") or "")
-        if sel.startswith(str(row.get("home_team") or "") + " "):
-            margin = hs + line - aas
-        elif sel.startswith(str(row.get("away_team") or "") + " "):
-            margin = aas + line - hs
+    market_type = str(row.get("market_type") or "SPREAD").upper()
+    side = str(row.get("pick_side") or "").upper()
+
+    if market_type == "TOTAL":
+        actual_total = hs + aas
+        if side == "OVER":
+            margin = actual_total - line
+        elif side == "UNDER":
+            margin = line - actual_total
         else:
             return None
+    else:
+        if side == "HOME":
+            margin = hs + line - aas
+        elif side == "AWAY":
+            margin = aas + line - hs
+        else:
+            sel = str(row.get("selection") or "")
+            if sel.startswith(str(row.get("home_team") or "") + " "):
+                margin = hs + line - aas
+            elif sel.startswith(str(row.get("away_team") or "") + " "):
+                margin = aas + line - hs
+            else:
+                return None
 
     if margin > 0:
         return "WIN"
     if margin < 0:
         return "LOSS"
     return "PUSH"
+
 
 def _v401_grade_tracker():
     df = _v401_load_tracker()
@@ -15073,7 +15291,7 @@ def _v401_render_official_tracker():
     if not pending.empty:
         with st.expander(f"Pending official bets — {len(pending)}", expanded=True):
             show = pending[[c for c in [
-                "game_date","kickoff_et","selection","verdict","point_edge",
+                "game_date","kickoff_et","market_type","selection","verdict","point_edge",
                 "cover_probability","expected_value","reliability","model_version"
             ] if c in pending.columns]].copy()
             st.dataframe(show, use_container_width=True, hide_index=True)
@@ -15081,6 +15299,14 @@ def _v401_render_official_tracker():
     # Performance diagnostics.
     with st.expander("Performance by model version", expanded=False):
         t = _v401_split_table(df, "model_version", "Model")
+        if not t.empty:
+            for c in ["Win Rate","ROI"]:
+                t[c] = t[c].map(lambda v: f"{v:.1%}")
+            t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
+            st.dataframe(t, use_container_width=True, hide_index=True)
+
+    with st.expander("Performance by market", expanded=False):
+        t = _v401_split_table(df, "market_type", "Market")
         if not t.empty:
             for c in ["Win Rate","ROI"]:
                 t[c] = t[c].map(lambda v: f"{v:.1%}")
@@ -15097,7 +15323,7 @@ def _v401_render_official_tracker():
 
     with st.expander("Full official bet history", expanded=False):
         show = df[[c for c in [
-            "game_date","selection","odds","verdict","fair_home_spread",
+            "game_date","market_type","selection","odds","verdict","fair_home_spread","fair_total",
             "point_edge","cover_probability","expected_value","reliability",
             "result","units_result","final_away_score","final_home_score","model_version"
         ] if c in df.columns]].copy()
@@ -15126,6 +15352,112 @@ def _v401_render_official_tracker():
                 st.error(f"Could not restore tracker: {e}")
 
 
+def _v410_total_card(slate_df):
+    """Convert v4.1 independent total projections into production-card rows."""
+    if slate_df is None or slate_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, r in slate_df.iterrows():
+        side = str(r.get("fundamental_total_side") or "")
+        market_total = pd.to_numeric(pd.Series([r.get("market_total")]), errors="coerce").iloc[0]
+        fair_total = pd.to_numeric(pd.Series([r.get("fundamental_total")]), errors="coerce").iloc[0]
+        prob = pd.to_numeric(pd.Series([r.get("fundamental_total_prob")]), errors="coerce").iloc[0]
+        edge = pd.to_numeric(pd.Series([r.get("fundamental_total_edge")]), errors="coerce").iloc[0]
+        ev = pd.to_numeric(pd.Series([r.get("fundamental_total_ev")]), errors="coerce").iloc[0]
+        p_edge = pd.to_numeric(pd.Series([r.get("fundamental_total_prob_edge")]), errors="coerce").iloc[0]
+        grade_name = str(r.get("fundamental_total_grade") or "PASS")
+
+        if side not in {"OVER","UNDER"} or pd.isna(market_total):
+            continue
+
+        verdict = (
+            "BET" if grade_name in {"STRONG BET","BET"}
+            else "LEAN" if grade_name == "LEAN"
+            else "PASS"
+        )
+
+        rows.append({
+            "model_version": MODEL_VERSION,
+            "market_type": "TOTAL",
+            "game_date": r.get("game_date"),
+            "game_id": r.get("game_id"),
+            "kickoff_et": r.get("kickoff_et"),
+            "home_team": r.get("home_team"),
+            "away_team": r.get("away_team"),
+            "selection": f"{side.title()} {float(market_total):g}",
+            "pick_side": side,
+            "bet_line": float(market_total),
+            "market_display": float(market_total),
+            "fair_display": float(fair_total) if pd.notna(fair_total) else None,
+            "point_edge": float(edge) if pd.notna(edge) else None,
+            "cover_probability": float(prob) if pd.notna(prob) else None,
+            "probability_edge": float(p_edge) if pd.notna(p_edge) else None,
+            "expected_value": float(ev) if pd.notna(ev) else None,
+            "fundamental_grade": grade_name,
+            "verdict": verdict,
+            "suggested_units": 1.0 if verdict == "BET" else 0.0,
+            "model_confidence": r.get("model_confidence"),
+            "data_completeness": r.get("data_completeness"),
+            "fcs_fallback_used": r.get("fcs_fallback_used"),
+            "market_total": float(market_total),
+            "fair_total": float(fair_total) if pd.notna(fair_total) else None,
+            "odds": -110,
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    # Highest-EV official total gets BEST BET only within totals. When combined
+    # with spreads below, a single overall BEST BET is chosen.
+    return out
+
+def _v410_combine_cards(spread_card, total_card):
+    """Normalize spread + total candidates into one simple production card."""
+    frames = []
+
+    if spread_card is not None and not spread_card.empty:
+        s = spread_card.copy()
+        s["market_type"] = "SPREAD"
+        s["market_display"] = pd.to_numeric(s.get("market_home_spread_display"), errors="coerce")
+        s["fair_display"] = pd.to_numeric(s.get("fair_home_spread"), errors="coerce")
+        # Market/fair display must follow the selected side for readability.
+        away_mask = s["pick_side"].astype(str).eq("AWAY")
+        s.loc[away_mask, "market_display"] = -s.loc[away_mask, "market_display"]
+        s.loc[away_mask, "fair_display"] = -s.loc[away_mask, "fair_display"]
+        frames.append(s)
+
+    if total_card is not None and not total_card.empty:
+        frames.append(total_card.copy())
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True, sort=False)
+
+    # Reset previous per-market BEST BET labels, then choose ONE best official
+    # wager across spreads and totals by modeled EV, then probability.
+    out.loc[out["verdict"].eq("BEST BET"), "verdict"] = "BET"
+    official = out[out["verdict"].eq("BET")].copy()
+    if not official.empty:
+        official["_ev"] = pd.to_numeric(official.get("expected_value"), errors="coerce").fillna(-999)
+        official["_p"] = pd.to_numeric(official.get("cover_probability"), errors="coerce").fillna(0)
+        best_idx = official.sort_values(["_ev","_p"], ascending=[False,False]).index[0]
+        out.loc[best_idx, "verdict"] = "BEST BET"
+
+    return out
+
+def _v410_line_text(row, field):
+    try:
+        v = float(row.get(field))
+        if str(row.get("market_type")) == "TOTAL":
+            return f"{v:.1f}"
+        return f"{v:+.1f}"
+    except Exception:
+        return "—"
+
+
 def _v390_spread_text(v):
     try:
         return f"{float(v):+.1f}" if np.isfinite(float(v)) else "—"
@@ -15146,134 +15478,98 @@ def _v390_edge_text(v):
 
 def _render_v36_live_card(card, selected_date):
     """
-    v3.9 MLB-style decision presentation.
-    Official recommendation logic remains the validated selector underneath.
+    v4.1.1 single ranked slate.
+    Spreads and totals are presented together in one stack.
+    Visible actions: BEST BET / BET / LEAN. PASS stays out of the main slate.
     """
     if card is None or card.empty:
-        st.markdown(
-            """
-            <div class="edge-empty">
-              <div class="edge-eyebrow">OFFICIAL CARD</div>
-              <div class="edge-empty-title">No spread candidates available.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.info("No qualifying spread or total candidates are available.")
         return
 
     ranked = card.copy()
-    ranked["selector_score"] = pd.to_numeric(ranked["selector_score"], errors="coerce")
+    ranked["expected_value"] = pd.to_numeric(ranked.get("expected_value"), errors="coerce")
+    ranked["cover_probability"] = pd.to_numeric(ranked.get("cover_probability"), errors="coerce")
     ranked["point_edge"] = pd.to_numeric(ranked.get("point_edge"), errors="coerce")
-    ranked = ranked.sort_values(
-        ["selector_score", "point_edge"],
-        ascending=[False, False],
-        na_position="last",
-    ).reset_index(drop=True)
 
-    official = ranked[ranked["verdict"].isin(["BEST BET", "BET"])].copy()
-    nonofficial = ranked[~ranked["verdict"].isin(["BEST BET", "BET"])].copy()
+    # Main production slate excludes PASS.
+    visible = ranked[ranked["verdict"].isin(["BEST BET","BET","LEAN"])].copy()
 
-    st.markdown('<div class="edge-section-label">TODAY&#39;S CARD</div>', unsafe_allow_html=True)
-
-    if official.empty:
-        closest = ranked.iloc[0]
+    if visible.empty:
         st.markdown(
-            f"""
+            """
             <div class="edge-empty">
-              <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
+              <div class="edge-status-pass">NO PLAYS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">No official bets on this slate.</div>
-              <div class="edge-closest">
-                <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
-                <div class="edge-grid four">
-                  <div><span>Market</span><b>{_v390_spread_text(closest.get("market_home_spread_display"))}</b></div>
-                  <div><span>Fair</span><b>{_v390_spread_text(closest.get("fair_home_spread"))}</b></div>
-                  <div><span>Pts Edge</span><b>{_v390_edge_text(closest.get("point_edge"))}</b></div>
-                  <div><span>Cover</span><b>{_v390_prob_text(closest.get("cover_probability"))}</b></div>
-                </div>
-                <div class="edge-reliability">Reliability <b>{html.escape(str(closest.get("reliability","—")))}</b></div>
-              </div>
+              <div class="edge-empty-copy">No spread or total cleared the current BET / LEAN criteria.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     else:
-        for ix, r in official.iterrows():
-            is_best = str(r.get("verdict")) == "BEST BET"
-            status = "BEST BET" if is_best else "BET"
+        tier_order = {"BEST BET": 0, "BET": 1, "LEAN": 2}
+        visible["_tier"] = visible["verdict"].map(tier_order).fillna(9)
+        visible = visible.sort_values(
+            ["_tier","expected_value","cover_probability","point_edge"],
+            ascending=[True,False,False,False],
+            na_position="last",
+        ).reset_index(drop=True)
+
+        st.markdown('<div class="v420-results-head"><span>RANKED SLATE</span><em>LIVE MODEL OUTPUT</em></div>', unsafe_allow_html=True)
+
+        for i, r in visible.iterrows():
+            verdict = str(r.get("verdict") or "LEAN")
+            market_type = str(r.get("market_type") or "SPREAD").upper()
+            rank_num = i + 1
+
+            if verdict == "BEST BET":
+                cls = "best"
+            elif verdict == "BET":
+                cls = "bet"
+            else:
+                cls = "lean"
+
             st.markdown(
                 f"""
-                <div class="edge-card {'best' if is_best else ''}">
-                  <div class="edge-card-top">
-                    <span class="edge-status">{status}</span>
-                    <span class="edge-units">1.0u</span>
-                  </div>
-                  <div class="edge-pick">{html.escape(str(r.get("selection","")))}</div>
-                  <div class="edge-matchup">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
-                  <div class="edge-grid four">
-                    <div><span>Market</span><b>{_v390_spread_text(r.get("market_home_spread_display"))}</b></div>
-                    <div><span>Fair</span><b>{_v390_spread_text(r.get("fair_home_spread"))}</b></div>
-                    <div><span>Pts Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
-                    <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
-                  </div>
-                  <div class="edge-card-bottom">
-                    <span>EV <b>{_v390_prob_text(r.get("expected_value"))}</b></span>
+                <div class="v411-ranked-row {cls}">
+                  <div class="v411-rank">{rank_num}</div>
+                  <div class="v411-body">
+                    <div class="v411-topline">
+                      <span class="v411-market">{html.escape(market_type)}</span>
+                      <span class="v411-verdict {cls}">{html.escape(verdict)}</span>
+                    </div>
+                    <div class="v411-pick">{html.escape(str(r.get("selection","")))}</div>
+                    <div class="v411-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                    <div class="v420-metric-grid">
+                      <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
+                      <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
+                      <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
+                      <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
+                      <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
+                    </div>
                   </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    if len(nonofficial):
-        watch = nonofficial.copy()
-        watch["_ev"] = pd.to_numeric(watch.get("expected_value"), errors="coerce")
-        watch["_p"] = pd.to_numeric(watch.get("cover_probability"), errors="coerce")
-        watch["_edge"] = pd.to_numeric(watch.get("point_edge"), errors="coerce")
-        watch = watch.sort_values(
-            ["_ev", "_p", "_edge"],
-            ascending=[False, False, False],
-            na_position="last",
-        ).head(3)
-
-        if not watch.empty:
-            st.markdown('<div class="edge-section-label">WATCHLIST</div>', unsafe_allow_html=True)
-            for _, r in watch.iterrows():
-                st.markdown(
-                    f"""
-                    <div class="v403-watch-row">
-                      <div class="v403-watch-pick">{html.escape(str(r.get("selection","")))}</div>
-                      <div class="v403-watch-meta">
-                        {_v390_edge_text(r.get("point_edge"))}
-                        <span>•</span>
-                        {_v390_prob_text(r.get("cover_probability"))} cover
-                        <span>•</span>
-                        EV {_v390_prob_text(r.get("expected_value"))}
-                      </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-
     with st.expander("Advanced / diagnostics", expanded=False):
-        diag_cols = [c for c in [
-            "selection","pick_side","market_home_spread_display","fair_home_spread",
-            "raw_model_home_spread","adjusted_model_home_spread","spread_residual_correction",
-            "signed_home_edge","point_edge","cover_probability","probability_edge",
-            "expected_value","fundamental_grade","reliability","model_confidence",
-            "data_completeness","classifier_confidence","classifier_agreement",
-            "classifier_models","reg_strength","direction_agreement","selector_score","verdict"
-        ] if c in ranked.columns]
-        st.dataframe(ranked[diag_cols], use_container_width=True, hide_index=True)
+        diag = ranked.copy()
+        cols = [c for c in [
+            "market_type","selection","verdict","market_display","fair_display",
+            "point_edge","cover_probability","probability_edge","expected_value",
+            "fundamental_grade","model_confidence","data_completeness",
+            "reliability","selector_score"
+        ] if c in diag.columns]
+        st.dataframe(diag[cols], use_container_width=True, hide_index=True)
 
     with st.expander("Export", expanded=False):
         st.download_button(
-            "Download Daily Card",
-            data=card.to_csv(index=False).encode("utf-8"),
-            file_name=f"cfb_v390_daily_card_{selected_date}.csv",
+            "Download Ranked Slate",
+            data=ranked.to_csv(index=False).encode("utf-8"),
+            file_name=f"cfb_v411_ranked_slate_{selected_date}.csv",
             mime="text/csv",
             use_container_width=True,
-            key=f"download_v390_card_{selected_date}",
+            key=f"download_v411_ranked_{selected_date}",
         )
 
 
@@ -15947,15 +16243,28 @@ run_mode = "Full Slate" if main_view == "Slate" else "Single Game"
 
 if run_mode == "Full Slate":
     st.markdown(
-        '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
-        '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Official bets first. Everything else stays out of the way.</div></div>',
+        """
+        <div class="v420-slate-hero">
+          <div class="v420-eyebrow">DAILY EDGE CARD</div>
+          <div class="v420-hero-row">
+            <div>
+              <div class="v420-hero-title">Ranked Slate</div>
+              <div class="v420-hero-copy">Spreads + totals, ranked in one stack.</div>
+            </div>
+            <div class="v420-market-pill">ATS · O/U</div>
+          </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    slate_choice = st.selectbox(
+    st.markdown('<div class="v420-section-label">SLATE WINDOW</div>', unsafe_allow_html=True)
+    slate_choice = st.radio(
         "Slate",
         ["Early", "Midday", "Night", "All Day"],
         index=3,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="v420_slate_segment",
         help=(
             "Early = before 3:30 PM ET • Midday = 3:30 PM–6:59 PM ET • "
             "Night = 7:00 PM ET or later."
@@ -15973,21 +16282,31 @@ if run_mode == "Full Slate":
     else:
         slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
-    st.caption(
-        f"{len(slate_games)} games in the {slate_choice} production slate • No forced bets."
+    st.markdown(
+        f"""
+        <div class="v420-slate-info">
+          <span><b>{len(slate_games)}</b> games</span><i></i>
+          <span>{html.escape(str(slate_choice))}</span><i></i>
+          <span>No forced bets</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     if not slate_games:
         st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
-    include_lines = st.checkbox(
-        "Include validated market lines",
-        value=True,
-        help="Uses actual CFBD provider quotes. Never averages different spreads/totals into a synthetic betting line; badly split feeds are rejected."
-    )
+    with st.expander("Market data", expanded=False):
+        include_lines = st.checkbox(
+            "Validated sportsbook lines",
+            value=True,
+            key="v420_market_lines",
+            help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
+        )
+        st.caption("Split feeds are automatically rejected when the market is not trustworthy.")
 
-    if st.button("Run Today's Slate", type="primary", use_container_width=True, key="terminal_run_slate"):
+    if st.button("Build Ranked Slate", type="primary", use_container_width=True, key="v420_run_slate"):
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
@@ -16052,6 +16371,56 @@ if run_mode == "Full Slate":
             fundamental_grade = "NO LINE"
             fundamental_prob_edge = None
             fundamental_ev = None
+
+            # v4.1 FUNDAMENTAL TOTAL ENGINE
+            # Like spreads, the projected total is built before the sportsbook
+            # number is introduced. The market total is comparison data only.
+            fundamental_total = float(raw_total)
+            fundamental_total_sd = float(gp.get("total_sd") or BASE_TOTAL_SD)
+            fundamental_total_edge = None
+            fundamental_total_side = None
+            fundamental_total_prob = None
+            fundamental_over_prob = None
+            fundamental_under_prob = None
+            fundamental_total_grade = "NO LINE"
+            fundamental_total_prob_edge = None
+            fundamental_total_ev = None
+
+            if market.get("total") is not None:
+                _mkt_total = float(market["total"])
+                _total_delta = fundamental_total - _mkt_total
+                fundamental_total_edge = abs(_total_delta)
+
+                if _total_delta > 1e-9:
+                    fundamental_total_side = "OVER"
+                elif _total_delta < -1e-9:
+                    fundamental_total_side = "UNDER"
+
+                fundamental_over_prob = 1.0 - NormalDist(
+                    mu=fundamental_total,
+                    sigma=max(fundamental_total_sd, 1e-6),
+                ).cdf(_mkt_total)
+                fundamental_under_prob = 1.0 - fundamental_over_prob
+
+                if fundamental_total_side == "OVER":
+                    fundamental_total_prob = fundamental_over_prob
+                elif fundamental_total_side == "UNDER":
+                    fundamental_total_prob = fundamental_under_prob
+
+                if fundamental_total_prob is not None:
+                    fundamental_total_grade, fundamental_total_prob_edge, fundamental_total_ev, _ = grade(
+                        fundamental_total_prob,
+                        -110,
+                        gp["confidence"],
+                        market_type="total",
+                        projection_gap=fundamental_total_edge,
+                        week=gp["week"],
+                    )
+                    # FCS fallback remains too uncertain for an official total.
+                    fundamental_total_grade = apply_fcs_guard(
+                        fundamental_total_grade,
+                        gp.get("fcs_fallback_used", False),
+                    )
 
             if market.get("home_spread") is not None:
                 _mkt_hs = float(market["home_spread"])
@@ -16231,6 +16600,15 @@ if run_mode == "Full Slate":
                 "fundamental_grade": fundamental_grade,
                 "fundamental_prob_edge": round(float(fundamental_prob_edge), 6) if fundamental_prob_edge is not None else None,
                 "fundamental_ev": round(float(fundamental_ev), 6) if fundamental_ev is not None else None,
+                "fundamental_total": round(float(fundamental_total), 3),
+                "fundamental_total_edge": round(float(fundamental_total_edge), 3) if fundamental_total_edge is not None else None,
+                "fundamental_total_side": fundamental_total_side,
+                "fundamental_total_prob": round(float(fundamental_total_prob), 6) if fundamental_total_prob is not None else None,
+                "fundamental_over_prob": round(float(fundamental_over_prob), 6) if fundamental_over_prob is not None else None,
+                "fundamental_under_prob": round(float(fundamental_under_prob), 6) if fundamental_under_prob is not None else None,
+                "fundamental_total_grade": fundamental_total_grade,
+                "fundamental_total_prob_edge": round(float(fundamental_total_prob_edge), 6) if fundamental_total_prob_edge is not None else None,
+                "fundamental_total_ev": round(float(fundamental_total_ev), 6) if fundamental_total_ev is not None else None,
                 "adjusted_model_home_spread": round(adjusted_home_spread, 3),
                 "side_market_weight": round(side_weight, 3),
                 "side_shrink_points": round(side_shrink, 3),
@@ -16257,7 +16635,6 @@ if run_mode == "Full Slate":
         # Selected slate is both the analysis universe and the display universe.
         slate_df = pd.DataFrame(slate_rows)
 
-        st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
         market_board = _ranked_market_board(slate_df)
         st.session_state["cfb_latest_market_board"] = market_board.copy()
@@ -16274,17 +16651,19 @@ if run_mode == "Full Slate":
             st.warning(f"Locked slate selector could not run: {_v36e}")
             v36_card = pd.DataFrame()
 
-        st.session_state["cfb_v36_latest_card"] = v36_card.copy()
+        total_card = _v410_total_card(slate_df)
+        combined_card = _v410_combine_cards(v36_card, total_card)
+
+        st.session_state["cfb_v36_latest_card"] = combined_card.copy()
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # Freeze only actual v4 official BET / BEST BET recommendations before kickoff.
-        # Re-running later never rewrites the original tracked line.
-        _v36_added = _v401_track_daily_card(v36_card, selected_date)
+        # Freeze official spreads and totals independently before kickoff.
+        _v36_added = _v401_track_daily_card(combined_card, selected_date)
         if _v36_added:
             st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
 
-        _render_v36_live_card(v36_card, selected_date)
+        _render_v36_live_card(combined_card, selected_date)
 
         try:
             _v401_graded_now, _v401_df_now = _v401_grade_tracker()
@@ -16299,85 +16678,9 @@ if run_mode == "Full Slate":
         except Exception:
             pass
 
-        st.markdown('<div class="edge-section-label edge-ranking-label">SPREAD BOARD</div>', unsafe_allow_html=True)
-
-        ml_value_board = _v381_ml_value_candidates(market_board)
-        ml_by_game = {}
-        if len(ml_value_board):
-            for _, _mlr in ml_value_board.iterrows():
-                _g = str(_mlr.get("game",""))
-                if _g not in ml_by_game:
-                    ml_by_game[_g] = _mlr
-
-        if isinstance(v36_card, pd.DataFrame) and len(v36_card):
-            edge_ranked = v36_card.copy()
-            edge_ranked["point_edge"] = pd.to_numeric(edge_ranked.get("point_edge"), errors="coerce")
-            edge_ranked["cover_probability"] = pd.to_numeric(edge_ranked.get("cover_probability"), errors="coerce")
-            edge_ranked["selector_score"] = pd.to_numeric(edge_ranked.get("selector_score"), errors="coerce")
-            edge_ranked["_official_rank"] = edge_ranked["verdict"].isin(["BEST BET","BET"]).astype(int)
-            edge_ranked = edge_ranked.sort_values(
-                ["_official_rank","selector_score","point_edge"],
-                ascending=[False,False,False],
-                na_position="last",
-            )
-
-            for _, rr in edge_ranked.iterrows():
-                verdict = str(rr.get("verdict") or "PASS")
-                if verdict in ("BEST BET","BET"):
-                    state = verdict
-                    state_cls = "official"
-                elif str(rr.get("verdict")) == "LEAN":
-                    state = "WATCH"
-                    state_cls = "watch"
-                else:
-                    state = "PASS"
-                    state_cls = "pass"
-
-                game_name = f"{rr.get('away_team','')} @ {rr.get('home_team','')}"
-                ml_html = ""
-                mlr = ml_by_game.get(game_name)
-                if mlr is not None:
-                    try:
-                        _odds_txt = f"{int(float(mlr.get('odds'))):+d}"
-                    except Exception:
-                        _odds_txt = ""
-                    ml_html = f"""
-                      <div class="ml-overlay">
-                        <span>ML VALUE</span>
-                        <b>{html.escape(str(mlr.get("market","")))} {_odds_txt}</b>
-                        <em>{float(mlr.get("edge") or 0.0)*100:+.1f}% prob edge · {float(mlr.get("ev") or 0.0)*100:+.1f}% EV</em>
-                      </div>
-                    """
-
-                st.markdown(
-                    f"""
-                    <div class="edge-board-row">
-                      <div class="edge-board-main">
-                        <div class="edge-board-game">{html.escape(game_name)}</div>
-                        <div class="edge-board-pick">{html.escape(str(rr.get("selection","")))}</div>
-                        <div class="edge-board-sub">
-                          Fair {_v390_spread_text(rr.get("fair_home_spread"))}
-                          <span>•</span>
-                          {_v390_edge_text(rr.get("point_edge"))}
-                          <span>•</span>
-                          {_v390_prob_text(rr.get("cover_probability"))} cover
-                          <span>•</span>
-                          EV {_v390_prob_text(rr.get("expected_value"))}
-                        </div>
-                        {ml_html}
-                      </div>
-                      <div class="edge-board-side">
-                        <div class="slate-rank-state {state_cls}">{html.escape(state)}</div>
-                      </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.info("No spread candidates are available in this slate.")
 
         with st.expander("Research", expanded=False):
-            st.caption("Secondary market research only. The production card is spread-first; ML appears above only when the strict value overlay clears.")
+            st.caption("Advanced market research only. Spreads and totals can appear on the official card; moneyline remains secondary.")
             if len(market_board):
                 research_cols = [c for c in [
                     "game","kickoff_et","market","market_type","grade","prob","edge","ev"
@@ -16943,4 +17246,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v4.0.3 • Minimal Slate • Official bets auto-tracked.")
+st.caption("CFB Edge • v4.2 • Premium App UI • Spreads + totals ranked together.")
