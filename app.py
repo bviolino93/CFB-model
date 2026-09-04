@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.9.0-EDGE-ENGINE-SHADOW"
+MODEL_VERSION = "3.9.1-EDGE-ENGINE-LIVE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6003,7 +6003,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.9</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v3.9.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -12219,7 +12219,7 @@ def _render_v383_threshold_audit_page():
     lower = summary[summary["Threshold"] < 0.84]
     if not current.empty:
         cur = current.iloc[0]
-        st.markdown("### Current 0.84 benchmark")
+        st.markdown("### Former 0.84 benchmark")
         m1, m2, m3 = st.columns(3)
         m1.metric("Historical bets", int(cur["Bets"]))
         m2.metric("Historical ROI", _v383_fmt_pct(cur["ROI"]))
@@ -12238,7 +12238,7 @@ def _render_v383_threshold_audit_page():
     st.dataframe(bucket_show, use_container_width=True, hide_index=True)
 
     st.warning(
-        "Do not lower the production floor from this table alone. A lower threshold should only be promoted "
+        "The live production floor is 0.80. Use this table to monitor whether that choice remains stable. A lower threshold should only be promoted "
         "if it improves usable sample size while remaining profitable and stable in the untouched holdout, "
         "without materially worsening drawdown."
     )
@@ -14165,8 +14165,8 @@ def consensus_line(rows):
 
 # ===== v3.6 locked production daily card =====
 V36_VERSION = "v3.6.0-production-daily-card"
-V36_SCORE_FLOOR = 0.84
-V36_LEAN_FLOOR = 0.72
+V36_SCORE_FLOOR = 0.80
+V36_LEAN_FLOOR = 0.78
 V36_TRAIN_START = 2018
 V36_CORE_CLASSIFIERS = ("Gradient Boosting", "Extra Trees", "Logistic")
 V36_CORE_REGRESSORS = ("Gradient Boosting", "Extra Trees", "Random Forest")
@@ -14490,7 +14490,7 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
 
     # v3.9 transparency layer: attach the market/fair-line information used
     # elsewhere in the app. These fields are display/diagnostic only and do
-    # not change the locked selector verdict.
+    # not change the production selector verdict.
     if slate_df is not None and not slate_df.empty and "row_index" in card.columns:
         _lookup_cols = [
             "market_home_spread",
@@ -14533,9 +14533,9 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
         [
             card["selector_score"] >= 0.84,
             card["selector_score"] >= 0.80,
-            card["selector_score"] >= 0.76,
+            card["selector_score"] >= 0.78,
         ],
-        ["HIGH", "SOLID", "MODERATE"],
+        ["PRIME", "HIGH", "WATCH"],
         default="LOW",
     )
 
@@ -15037,7 +15037,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="edge-empty">
               <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">The model found edges, but none cleared the current production reliability standard.</div>
+              <div class="edge-empty-copy">The model found edges, but none cleared the 0.80 production standard.</div>
               <div class="edge-closest">
                 <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
                 <div class="edge-grid four">
@@ -15800,7 +15800,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Price the spread first: market line, fair line, point edge, cover probability, then reliability.</div></div>',
+        '<div class="mobile-page-sub">Price the spread first: market line, fair line, point edge, cover probability, then reliability. Official = 0.80+; Watch = 0.78–0.799.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -16115,7 +16115,7 @@ if run_mode == "Full Slate":
                 if verdict in ("BEST BET","BET"):
                     state = verdict
                     state_cls = "official"
-                elif str(rr.get("reliability")) in ("SOLID","MODERATE"):
+                elif str(rr.get("reliability")) == "WATCH":
                     state = "WATCH"
                     state_cls = "watch"
                 else:
@@ -16731,4 +16731,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.9 Edge Engine • Fair spread • Point edge • Cover probability • Reliability-backed recommendations.")
+st.caption("CFB Edge • v3.9.1 Edge Engine Live • Fair spread • Point edge • Cover probability • 0.80 production floor.")
