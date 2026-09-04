@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.0.1-OFFICIAL-TRACKER"
+MODEL_VERSION = "4.0.2-SIMPLE-CARD"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6003,7 +6003,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v4.0.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v4.0.2</span><i></i><span>Validated markets</span><i></i><span>Fundamental edge engine</span>
       </div>
     </div>
     """,
@@ -14999,7 +14999,7 @@ def _v401_render_official_tracker():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">OFFICIAL BET LEDGER</div>'
         '<div class="mobile-page-title">Tracker</div>'
-        '<div class="mobile-page-sub">Every official spread is frozen at its first qualifying line before kickoff, then automatically graded from the final score.</div></div>',
+        '<div class="mobile-page-sub">Official BET / BEST BET recommendations are frozen before kickoff and automatically graded after the final score.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -15130,7 +15130,7 @@ def _render_v36_live_card(card, selected_date):
         st.markdown(
             """
             <div class="edge-empty">
-              <div class="edge-eyebrow">TODAY'S CARD</div>
+              <div class="edge-eyebrow">OFFICIAL CARD</div>
               <div class="edge-empty-title">No spread candidates available.</div>
             </div>
             """,
@@ -15159,7 +15159,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="edge-empty">
               <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">The model found differences from market, but none produced enough probability and price-adjusted value for an official bet.</div>
+              <div class="edge-empty-copy">No official bets. Nothing on this slate cleared the betting criteria.</div>
               <div class="edge-closest">
                 <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
                 <div class="edge-grid four">
@@ -15194,8 +15194,8 @@ def _render_v36_live_card(card, selected_date):
                     <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
                   </div>
                   <div class="edge-card-bottom">
-                    <span>Reliability <b>{html.escape(str(r.get("reliability","—")))}</b></span>
-                    <span>Prob edge <b>{_v390_prob_text(r.get("probability_edge"))}</b> · EV <b>{_v390_prob_text(r.get("expected_value"))}</b></span>
+                    <span>Pregame <b>{("READY" if float(r.get("data_completeness") or 0) >= 0.70 else "CHECK")}</b></span>
+                    <span>EV <b>{_v390_prob_text(r.get("expected_value"))}</b></span>
                   </div>
                 </div>
                 """,
@@ -15214,7 +15214,7 @@ def _render_v36_live_card(card, selected_date):
     )
 
     if len(nonofficial):
-        with st.expander("Next best spread edges", expanded=False):
+        with st.expander("WATCHLIST", expanded=False):
             for _, r in nonofficial.head(5).iterrows():
                 st.markdown(
                     f"""
@@ -15229,7 +15229,7 @@ def _render_v36_live_card(card, selected_date):
                     unsafe_allow_html=True,
                 )
 
-    with st.expander("Model diagnostics", expanded=False):
+    with st.expander("Advanced model details", expanded=False):
         diag_cols = [c for c in [
             "selection","pick_side","market_home_spread_display","fair_home_spread",
             "raw_model_home_spread","adjusted_model_home_spread","spread_residual_correction",
@@ -15923,7 +15923,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Independent football projection sets the fair spread. The sportsbook line is comparison only. Cover probability + EV determine BET / WATCH / PASS; reliability is context, not a veto.</div></div>',
+        '<div class="mobile-page-sub">BET = official and tracked. WATCH = close, but no bet. PASS = no action.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -15937,7 +15937,7 @@ if run_mode == "Full Slate":
     )
 
     # v3.8.2: the selected time window IS the production universe.
-    # Each slate is ranked independently, while the 0.84 floor stays locked.
+    # Each slate is ranked independently, while the No forced bets.
     production_games = sorted(
         list(daily),
         key=lambda g: kickoff_et(g) if kickoff_et(g) is not None else pd.Timestamp.max.tz_localize("UTC"),
@@ -15948,7 +15948,7 @@ if run_mode == "Full Slate":
         slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
     st.caption(
-        f"{len(slate_games)} games in the {slate_choice} production slate • 0.84 floor stays locked."
+        f"{len(slate_games)} games in the {slate_choice} production slate • No forced bets."
     )
 
     if not slate_games:
@@ -16258,6 +16258,14 @@ if run_mode == "Full Slate":
         if _v36_added:
             st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
 
+        st.markdown(
+            """<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 16px 0">
+            <span style="padding:6px 10px;border:1px solid #245c49;border-radius:999px;font-size:.78rem"><b>BET</b> · official + tracked</span>
+            <span style="padding:6px 10px;border:1px solid #6b5a27;border-radius:999px;font-size:.78rem"><b>WATCH</b> · no bet</span>
+            <span style="padding:6px 10px;border:1px solid #26394c;border-radius:999px;font-size:.78rem"><b>PASS</b> · no action</span>
+            </div>""",
+            unsafe_allow_html=True,
+        )
         _render_v36_live_card(v36_card, selected_date)
 
         try:
@@ -16351,7 +16359,7 @@ if run_mode == "Full Slate":
         else:
             st.info("No spread candidates are available in this slate.")
 
-        with st.expander("Research markets", expanded=False):
+        with st.expander("Research only", expanded=False):
             st.caption("Secondary market research only. The production card is spread-first; ML appears above only when the strict value overlay clears.")
             if len(market_board):
                 research_cols = [c for c in [
@@ -16918,4 +16926,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v4.0.1 Fundamental Edge Engine • Automatic official bet tracking + grading.")
+st.caption("CFB Edge • v4.0.2 • Simple Card • Official bets auto-tracked.")
