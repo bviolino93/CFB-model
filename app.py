@@ -16174,25 +16174,7 @@ def _render_v36_live_card(card, selected_date):
                         </div>
                         """, unsafe_allow_html=True)
 
-    with st.expander("Advanced / diagnostics", expanded=False):
-        diag = ranked.copy()
-        cols = [c for c in [
-            "market_type","selection","verdict","market_display","fair_display",
-            "point_edge","cover_probability","probability_edge","expected_value",
-            "fundamental_grade","model_confidence","data_completeness",
-            "reliability","selector_score"
-        ] if c in diag.columns]
-        st.dataframe(diag[cols], use_container_width=True, hide_index=True)
 
-    with st.expander("Export", expanded=False):
-        st.download_button(
-            "Download Ranked Slate",
-            data=ranked.to_csv(index=False).encode("utf-8"),
-            file_name=f"gridiron_edge_ranked_slate_{selected_date}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"download_ge_ranked_{selected_date}",
-        )
 
 
 # ===== CFB v2.1 forward recommendation tracker =====
@@ -17286,14 +17268,6 @@ if run_mode == "Full Slate":
         except Exception:
             pass
 
-
-        with st.expander("Research", expanded=False):
-            st.caption("Advanced market research only. Spreads and totals can appear on the official card; moneyline remains secondary.")
-            if len(market_board):
-                research_cols = [c for c in [
-                    "game","kickoff_et","market","market_type","grade","prob","edge","ev"
-                ] if c in market_board.columns]
-                st.dataframe(market_board[research_cols], use_container_width=True, hide_index=True)
 
         with st.expander("Full slate data", expanded=False):
             if "market_board" in locals() and isinstance(market_board, pd.DataFrame) and len(market_board):
