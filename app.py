@@ -16903,7 +16903,10 @@ if run_mode == "Full Slate":
         )
         st.caption("Split feeds are automatically rejected when the market is not trustworthy.")
 
-    if st.button("Build Ranked Slate", type="primary", use_container_width=True, key="v420_run_slate"):
+    _build_clicked = st.button("Build Ranked Slate", type="primary", use_container_width=True, key="v420_run_slate")
+    if _build_clicked:
+        st.session_state["cfb_build_requested"] = True
+    if st.session_state.get("cfb_build_requested"):
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
