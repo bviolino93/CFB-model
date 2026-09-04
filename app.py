@@ -6685,11 +6685,14 @@ _ge432_view = _ge432_alias.get(
 _ge432_options = ["Slate", "Games", "Tracker", "More"]
 
 # Keep the segmented nav synchronized with navigation triggered elsewhere.
+# Only resync when the page changed OUTSIDE this widget; otherwise a user's
+# own tap gets overwritten before it can route.
 _ge432_visible_view = "Games" if _ge432_view == "Game" else _ge432_view
 if st.session_state.get("ge432_topnav") not in _ge432_options:
     st.session_state["ge432_topnav"] = _ge432_visible_view
-elif st.session_state.get("ge432_topnav") != _ge432_visible_view:
+elif st.session_state.get("_ge432_last_view") != _ge432_visible_view:
     st.session_state["ge432_topnav"] = _ge432_visible_view
+st.session_state["_ge432_last_view"] = _ge432_visible_view
 
 _ge432_choice = st.radio(
     "",
