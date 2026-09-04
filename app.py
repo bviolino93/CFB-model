@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.6.2-TRACKER-INIT-HOTFIX"
+MODEL_VERSION = "3.6.3-LIVE-LINE-INTEGRITY"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -13476,30 +13476,112 @@ def slate_bucket(g):
     return "Night"
 
 def consensus_line(rows):
+    # LIVE market integrity selector (v3.6.3).
+    # Never averages different quoted spreads/totals into a synthetic line.
     if not rows:
         return {}
-    df = pd.DataFrame(rows)
 
-    def med(col):
-        if col not in df.columns:
-            return None
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
-        if s.empty:
-            return None
-        return float(s.median())
+    clean = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        x = dict(r)
+        for c in ("home_spread", "away_spread", "total", "away_ml", "home_ml"):
+            try:
+                v = x.get(c)
+                x[c] = None if v is None else float(v)
+            except Exception:
+                x[c] = None
+        clean.append(x)
 
-    away_ml = med("away_ml")
-    home_ml = med("home_ml")
-    home_spread = med("home_spread")
-    total = med("total")
+    if not clean:
+        return {}
 
+    def _actual_consensus(field, max_unsupported_range):
+        vals = [float(r[field]) for r in clean if r.get(field) is not None]
+        if not vals:
+            return None, 0, None, None, "NO LINE"
+
+        rounded = [round(v, 4) for v in vals]
+        counts = {}
+        for v in rounded:
+            counts[v] = counts.get(v, 0) + 1
+
+        max_count = max(counts.values())
+        leaders = [v for v, n in counts.items() if n == max_count]
+        center = float(np.median(vals))
+        selected = min(leaders, key=lambda v: (abs(v - center), abs(v), v))
+        quoted_range = max(vals) - min(vals) if len(vals) > 1 else 0.0
+
+        if max_count < 2 and len(vals) >= 2 and quoted_range > float(max_unsupported_range):
+            return None, len(vals), min(vals), max(vals), "REJECTED SPLIT FEED"
+
+        return float(selected), len(vals), min(vals), max(vals), (
+            "MULTI-BOOK MODE" if max_count >= 2 else "ACTUAL QUOTE NEAREST MEDIAN"
+        )
+
+    home_spread, spread_books, spread_min, spread_max, spread_status = _actual_consensus(
+        "home_spread", 4.0
+    )
+    total, total_books, total_min, total_max, total_status = _actual_consensus(
+        "total", 3.0
+    )
+
+    chosen = None
+    if home_spread is not None:
+        matches = [
+            r for r in clean
+            if r.get("home_spread") is not None
+            and abs(float(r["home_spread"]) - float(home_spread)) < 1e-9
+        ]
+        if matches:
+            matches.sort(
+                key=lambda r: (
+                    r.get("away_ml") is None,
+                    r.get("home_ml") is None,
+                    str(r.get("provider") or "")
+                )
+            )
+            chosen = matches[0]
+
+    if chosen is None and total is not None:
+        matches = [
+            r for r in clean
+            if r.get("total") is not None
+            and abs(float(r["total"]) - float(total)) < 1e-9
+        ]
+        if matches:
+            chosen = matches[0]
+
+    if chosen is None:
+        chosen = clean[0]
+
+    def _ml(name):
+        v = chosen.get(name)
+        if v is None:
+            vals = [r.get(name) for r in clean if r.get(name) is not None]
+            if not vals:
+                return None
+            return int(round(float(np.median(vals))))
+        return int(round(float(v)))
+
+    provider_name = str(chosen.get("provider") or "Unknown")
     return {
-        "provider": "Consensus median",
-        "away_ml": int(round(away_ml)) if away_ml is not None else None,
-        "home_ml": int(round(home_ml)) if home_ml is not None else None,
+        "provider": provider_name,
+        "away_ml": _ml("away_ml"),
+        "home_ml": _ml("home_ml"),
         "home_spread": home_spread,
         "away_spread": -home_spread if home_spread is not None else None,
         "total": total,
+        "line_integrity": "OK" if home_spread is not None else spread_status,
+        "spread_consensus_status": spread_status,
+        "spread_provider_count": spread_books,
+        "spread_min_quote": spread_min,
+        "spread_max_quote": spread_max,
+        "total_consensus_status": total_status,
+        "total_provider_count": total_books,
+        "total_min_quote": total_min,
+        "total_max_quote": total_max,
     }
 
 
@@ -15028,9 +15110,9 @@ if run_mode == "Full Slate":
         st.stop()
 
     include_lines = st.checkbox(
-        "Include generic market lines",
+        "Include validated market lines",
         value=True,
-        help="Uses CFBD market lines and builds a consensus median across available providers."
+        help="Uses actual CFBD provider quotes. Never averages different spreads/totals into a synthetic betting line; badly split feeds are rejected."
     )
 
     if st.button("Analyze Slate", type="primary", use_container_width=True):
@@ -15985,4 +16067,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.6.2 Production Daily Card • Locked 0.84 spread floor • Automatic official performance tracking.")
+st.caption("CFB Edge • v3.6.3 Production Daily Card • Validated actual market lines • Locked 0.84 spread floor • Automatic official performance tracking.")
