@@ -15411,21 +15411,52 @@ def _v401_clean_tracker(df):
             x.at[idx, "status"] = "FROZEN"
     return x[V401_TRACKER_COLUMNS]
 
-def _v401_sheet():
+def _v401_sheet(return_error=False):
     """Return the tracker worksheet, or None if Sheets isn't configured."""
+    err = None
     try:
-        if "gcp_service_account" not in st.secrets:
-            return None
-        import gspread
-        sa = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
-        name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
-        book = sa.open(name)
+        import json as _json
         try:
-            return book.worksheet("tracker")
+            import gspread
         except Exception:
-            return book.add_worksheet(title="tracker", rows=2000, cols=40)
-    except Exception:
-        return None
+            err = ("gspread library is not installed. Upload the new "
+                   "requirements.txt to GitHub (it must include the gspread line).")
+            return (None, err) if return_error else None
+
+        creds = None
+        if "gcp_service_account_json" in st.secrets:
+            raw = st.secrets["gcp_service_account_json"]
+            try:
+                creds = _json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except Exception as e:
+                err = f"The pasted JSON could not be read ({e})."
+                return (None, err) if return_error else None
+        elif "gcp_service_account" in st.secrets:
+            creds = dict(st.secrets["gcp_service_account"])
+
+        if not creds:
+            err = ("No Google credentials found in Secrets. Add the "
+                   "gcp_service_account_json block.")
+            return (None, err) if return_error else None
+
+        sa = gspread.service_account_from_dict(creds)
+        name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
+        try:
+            book = sa.open(name)
+        except Exception as e:
+            err = (f"Could not open a spreadsheet named '{name}'. "
+                   f"Check the name matches exactly and that the sheet is shared "
+                   f"with {creds.get('client_email','the service account')} as Editor. ({e})")
+            return (None, err) if return_error else None
+
+        try:
+            ws = book.worksheet("tracker")
+        except Exception:
+            ws = book.add_worksheet(title="tracker", rows=2000, cols=40)
+        return (ws, None) if return_error else ws
+    except Exception as e:
+        err = f"Unexpected error connecting to Sheets: {e}"
+        return (None, err) if return_error else None
 
 def _v401_load_tracker():
     ws = _v401_sheet()
@@ -15776,13 +15807,14 @@ def _v401_render_official_tracker():
     if graded_now:
         st.success(f"Auto-graded {graded_now} completed official bet(s).")
 
-    if _v401_sheet() is not None:
+    _ws, _ws_err = _v401_sheet(return_error=True)
+    if _ws is not None:
         st.caption("Storage: Google Sheets — history is saved permanently.")
     else:
         st.warning(
-            "Storage: temporary. Bet history will be erased when the app restarts. "
-            "Connect Google Sheets to keep a permanent record."
+            "Storage: temporary. Bet history will be erased when the app restarts."
         )
+        st.error(f"Sheets connection problem: {_ws_err}")
 
     if df is None or df.empty:
         st.info("No official bets have been frozen yet. Run a slate; BET / BEST BET recommendations will be added automatically.")
