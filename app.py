@@ -6580,6 +6580,9 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
 .ge-brandmark{gap:10px!important}
 .se-goalpost-logo{width:40px;height:40px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
 .se-goalpost-logo svg{display:block}
+.ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
+.ge-shop b{color:#7fb4ff;font-size:.60rem}
+.ge-shop span{color:#7f97ae;font-weight:700}
 .ge-football-logo{width:48px;height:42px;position:relative;flex:0 0 auto}
 .ge-ball{position:absolute;width:39px;height:24px;left:2px;top:8px;border:3px solid #edf6ff;border-radius:50%;transform:rotate(-28deg);box-shadow:0 0 18px rgba(69,157,255,.13)}
 .ge-ball:before{content:"";position:absolute;width:14px;height:3px;background:#edf6ff;left:10px;top:8px;border-radius:3px}
@@ -14663,6 +14666,13 @@ if _v38_main_view == "Game":
         unsafe_allow_html=True,
     )
 
+_show_filters = _v38_main_view in ("Slate", "Game")
+if not _show_filters:
+    st.markdown(
+        '<style>div[class*="st-key-ge433_filter_row"]{display:none!important}</style>',
+        unsafe_allow_html=True,
+    )
+
 with st.container(key="ge433_filter_row"):
     top1, top2 = st.columns([1, 1], gap="small")
     with top1:
@@ -14737,7 +14747,7 @@ elif slate_filter == "All FBS":
 else:
     daily = daily_all
 
-if not daily:
+if not daily and _v38_main_view in ("Slate", "Game"):
     st.warning("No games found for that date with the selected game-level filter.")
     st.stop()
 
@@ -15361,8 +15371,60 @@ V401_TRACKER_COLUMNS = [
     "point_edge","cover_probability","probability_edge","expected_value",
     "reliability","model_confidence","data_completeness","selector_score",
     "suggested_units","frozen_at_et","status","result","units_result",
-    "final_home_score","final_away_score","graded_at"
+    "final_home_score","final_away_score","graded_at",
+    "closing_line","clv_points"
 ]
+
+def best_available_line(provider_rows, market_type, pick_side):
+    """
+    Line shopping. Returns (best_number, book, n_books, worst_number).
+
+    For a spread you want the most generous number for YOUR side; for a
+    total, Over wants the lowest number and Under the highest. Half a
+    point is worth more than most model refinements, so this is surfaced
+    on every bet.
+    """
+    mt = str(market_type or "").upper()
+    side = str(pick_side or "").upper()
+    picks = []
+    for r in provider_rows or []:
+        book = str(r.get("provider") or "").strip()
+        if not book:
+            continue
+        if mt == "TOTAL":
+            v = r.get("total")
+        else:
+            v = r.get("home_spread") if side == "HOME" else r.get("away_spread")
+        if v is None:
+            continue
+        picks.append((float(v), book))
+
+    if not picks:
+        return None, None, 0, None
+
+    if mt == "TOTAL" and side == "OVER":
+        picks.sort(key=lambda x: x[0])
+    else:
+        picks.sort(key=lambda x: -x[0])
+
+    return picks[0][0], picks[0][1], len(picks), picks[-1][0]
+
+
+def _clv_points(bet_line, closing_line, market_type, pick_side):
+    """
+    Closing line value in points. Positive means you beat the close —
+    the earliest real evidence of edge, well before win/loss says anything.
+    """
+    try:
+        b, c = float(bet_line), float(closing_line)
+    except Exception:
+        return None
+    mt = str(market_type or "").upper()
+    side = str(pick_side or "").upper()
+    if mt == "TOTAL":
+        return round(c - b, 2) if side == "OVER" else round(b - c, 2)
+    return round(b - c, 2)
+
 
 def _v401_empty_tracker():
     return pd.DataFrame(columns=V401_TRACKER_COLUMNS)
@@ -15707,6 +15769,32 @@ def _v401_result_from_final(row, final):
     return "PUSH"
 
 
+def _v401_closing_line_for(row):
+    """Consensus line at settlement, used as the closing-line proxy for CLV."""
+    try:
+        gid = int(row.get("game_id"))
+    except Exception:
+        return None
+    try:
+        raw = fetch_lines(API_KEY, game_id=gid)
+    except Exception:
+        return None
+    prov = normalize_game_lines(raw, game_id=gid)
+    if not prov:
+        return None
+    mt = str(row.get("market_type") or "").upper()
+    side = str(row.get("pick_side") or "").upper()
+    if mt == "TOTAL":
+        vals = [float(p["total"]) for p in prov if p.get("total") is not None]
+    elif side == "HOME":
+        vals = [float(p["home_spread"]) for p in prov if p.get("home_spread") is not None]
+    else:
+        vals = [float(p["away_spread"]) for p in prov if p.get("away_spread") is not None]
+    if not vals:
+        return None
+    return float(np.median(vals))
+
+
 def _v401_grade_tracker():
     df = _v401_load_tracker()
     if df.empty:
@@ -15745,6 +15833,18 @@ def _v401_grade_tracker():
         df.at[idx, "final_home_score"] = final["home_score"]
         df.at[idx, "final_away_score"] = final["away_score"]
         df.at[idx, "graded_at"] = now
+
+        # Closing line value: how the number moved after we froze it.
+        try:
+            _cl = _v401_closing_line_for(r)
+            if _cl is not None:
+                df.at[idx, "closing_line"] = _cl
+                df.at[idx, "clv_points"] = _clv_points(
+                    r.get("bet_line"), _cl,
+                    r.get("market_type"), r.get("pick_side"),
+                )
+        except Exception:
+            pass
         n += 1
 
     if n:
@@ -15877,6 +15977,31 @@ def _v401_render_official_tracker():
             ] if c in pending.columns]].copy()
 
     # How the model is performing, once bets start grading.
+    # Closing line value — the earliest real read on whether there is edge.
+    _clv = pd.to_numeric(df.get("clv_points"), errors="coerce").dropna() if "clv_points" in df.columns else pd.Series(dtype=float)
+    st.markdown("### Closing line value")
+    st.caption(
+        "Did you get a better number than the market closed at? This shows edge "
+        "far sooner than win/loss does — a few dozen bets instead of hundreds."
+    )
+    if len(_clv) == 0:
+        st.info("No graded bets yet. CLV appears once games finish.")
+    else:
+        beat = float((_clv > 0).mean())
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Average CLV", f"{_clv.mean():+.2f} pts")
+        c2.metric("Beat the close", f"{beat:.0%}")
+        c3.metric("Bets measured", f"{len(_clv):,}")
+        if _clv.mean() > 0.25 and beat > 0.55:
+            st.success("Consistently beating the close. That is real evidence of edge.")
+        elif _clv.mean() > 0:
+            st.info("Slightly positive. Promising but not yet meaningful — keep collecting.")
+        else:
+            st.warning(
+                "You are getting worse numbers than the close. Over time that alone "
+                "will make the bets unprofitable, regardless of the model."
+            )
+
     st.markdown("### How the model is doing")
     if s["graded"] == 0:
         st.info(
@@ -15983,6 +16108,58 @@ def _v410_total_card(slate_df):
     # Highest-EV official total gets BEST BET only within totals. When combined
     # with spreads below, a single overall BEST BET is chosen.
     return out
+
+V50_SHRINK = 0.25          # how much of the model's disagreement to believe
+V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
+V50_MIN_EV = 0.015         # +1.5% EV after shrinkage
+V50_MAX_OFFICIAL = 3       # hard cap per slate
+V50_FUN_COUNT = 5          # entertainment card size
+
+
+def _v50_apply_strict_selection(card):
+    """
+    Two tiers.
+
+    OFFICIAL: the honest set. The model's disagreement with the market is
+    shrunk toward the market, because walk-forward testing showed public
+    fundamentals add ~nothing on top of the spread — so a raw 4-point
+    "edge" is not a 4-point edge. Extrapolation-prone games are excluded
+    and the count is capped. Frequently empty; that is the design working.
+
+    FUN: everything else worth a look, ranked by model lean. Entertainment
+    only, and never written to the tracker, so the official record stays
+    measurable.
+    """
+    if card is None or card.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    c = card.copy()
+    mkt = pd.to_numeric(c.get("market_display"), errors="coerce")
+    fair = pd.to_numeric(c.get("fair_display"), errors="coerce")
+
+    c["shrunk_fair"] = mkt + V50_SHRINK * (fair - mkt)
+    c["shrunk_edge"] = (c["shrunk_fair"] - mkt).abs()
+    c["shrunk_ev"] = pd.to_numeric(c.get("expected_value"), errors="coerce") * V50_SHRINK
+    c["excluded"] = (mkt.abs() > V50_MAX_SPREAD).fillna(False)
+
+    qualifies = (
+        c["verdict"].isin(["BET", "BEST BET"])
+        & (~c["excluded"])
+        & (c["shrunk_ev"] >= V50_MIN_EV)
+    )
+
+    official = c[qualifies].copy()
+    if not official.empty:
+        official = official.sort_values(
+            ["shrunk_ev", "cover_probability"], ascending=[False, False]
+        ).head(V50_MAX_OFFICIAL)
+        official["verdict"] = "BET"
+        official.iloc[0, official.columns.get_loc("verdict")] = "BEST BET"
+
+    fun = c[~c.index.isin(official.index)].copy()
+    fun = fun.sort_values("shrunk_edge", ascending=False).head(V50_FUN_COUNT)
+    return official, fun
+
 
 def _v410_combine_cards(spread_card, total_card):
     """Normalize spread + total candidates into one simple production card."""
@@ -16177,6 +16354,27 @@ def _render_v36_live_card(card, selected_date):
             verdict = str(r.get("verdict") or "BET")
             market_type = str(r.get("market_type") or "SPREAD").upper()
             cls = "best" if verdict == "BEST BET" else "bet"
+
+            # Line shopping: best number available across books.
+            _shop = ""
+            try:
+                _prov = json.loads(r.get("provider_rows_json") or "[]")
+                _bv, _bk, _n, _wv = best_available_line(
+                    _prov, market_type, r.get("pick_side")
+                )
+                if _bv is not None and _n > 1:
+                    _gain = abs(float(_bv) - float(_wv))
+                    _extra = (
+                        f" · {_gain:.1f} pts better than the worst price"
+                        if _gain >= 0.5 else ""
+                    )
+                    _shop = (
+                        f'<div class="ge-shop">Best number: <b>{_bv:+.1f}</b> at '
+                        f'{html.escape(str(_bk))} <span>({_n} books{_extra})</span></div>'
+                    )
+            except Exception:
+                _shop = ""
+
             st.markdown(
                 f"""
                 <div class="ge-official-card {cls}">
@@ -16199,6 +16397,7 @@ def _render_v36_live_card(card, selected_date):
                     <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
                     <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
                   </div>
+                  {_shop}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -17210,6 +17409,7 @@ if run_mode == "Full Slate":
                 "model_version": MODEL_VERSION,
                 "game_date": str(selected_date),
                 "slate": slate_choice,
+                "provider_rows_json": json.dumps(provider_rows or []),
                 "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
                 "game_id": g.get("id"),
                 "away_team": gp["away"],
@@ -17324,17 +17524,54 @@ if run_mode == "Full Slate":
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # Show the ranked card first so results always render, even if the
-        # tracker write has a problem.
+        # Two tiers: strict official bets, plus an always-there fun card.
+        _official, _fun = _v50_apply_strict_selection(combined_card)
+
         try:
             _build_status.update(label="Slate ready", state="complete")
         except Exception:
             pass
-        _render_v36_live_card(combined_card, selected_date)
 
-        # Freeze official spreads and totals independently before kickoff.
+        if _official.empty:
+            st.info(
+                "**No official bets today.** Nothing cleared the threshold once the "
+                "model's disagreement with the market is shrunk to a realistic size. "
+                "Empty days are normal and expected."
+            )
+        else:
+            _render_v36_live_card(_official, selected_date)
+
+        if not _fun.empty:
+            st.markdown(
+                '<div class="ge-leans-head"><div>'
+                '<div class="ge-section-title">Fun Card</div>'
+                '<div class="ge-section-sub">Most interesting games on the slate. '
+                'Entertainment only — not tracked, no claimed edge.</div></div>'
+                f'<div class="ge-count amber">{len(_fun)} {"PLAY" if len(_fun)==1 else "PLAYS"}</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            for j, (_, fr) in enumerate(_fun.iterrows(), start=1):
+                st.markdown(
+                    f"""
+                    <div class="ge-lean-row">
+                      <div class="ge-lean-rank">{j}</div>
+                      <div class="ge440-lean-logo">{_ge440_pick_logo(fr, 27)}</div>
+                      <div class="ge-lean-main">
+                        <b>{html.escape(str(fr.get("selection","")))}</b>
+                        <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
+                      </div>
+                      <div class="ge-lean-stats"><span>{_v390_prob_text(fr.get("cover_probability"))}</span></div>
+                      <div class="ge-lean-pill">FUN</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # Freeze ONLY official bets. Fun plays never enter the tracker, so the
+        # measured record stays honest.
         try:
-            _v36_added = _v401_track_daily_card(combined_card, selected_date)
+            _v36_added = _v401_track_daily_card(_official, selected_date)
             if _v36_added:
                 st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
         except Exception as _trk_e:
