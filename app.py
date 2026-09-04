@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.8.2-SLATE-NATIVE-FAST"
+MODEL_VERSION = "3.8.3-SLATE-THRESHOLD-AUDIT"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -5920,7 +5920,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.8.2</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v3.8.3</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -11854,6 +11854,347 @@ def _format_validation_bets(df):
     return x
 
 
+
+V383_THRESHOLD_GRID = (0.78, 0.80, 0.82, 0.84, 0.86)
+
+def _v383_slate_name_from_hour(hour):
+    h = _v3_num(hour, np.nan)
+    if not np.isfinite(h):
+        return "Unknown"
+    if h < 15.5:
+        return "Early"
+    if h < 19.0:
+        return "Midday"
+    return "Night"
+
+def _v383_rebuild_slate_native(ranked):
+    """
+    Rebuild the live v3.8.2 selector cross-section inside each time slate.
+    No threshold is applied here; this creates the score universe used for audit.
+    """
+    if ranked is None or ranked.empty:
+        return pd.DataFrame()
+
+    x = ranked.copy()
+    required = [
+        "season","game_date_et","kickoff_hour_et",
+        "classifier_confidence","classifier_agreement","classifier_models",
+        "reg_strength","direction_agreement","data_maturity","won"
+    ]
+    missing = [c for c in required if c not in x.columns]
+    if missing:
+        raise ValueError(f"Historical selector rows are missing: {', '.join(missing)}")
+
+    x["slate_window"] = x["kickoff_hour_et"].apply(_v383_slate_name_from_hour)
+    x = x[x["slate_window"].isin(["Early","Midday","Night"])].copy()
+    if x.empty:
+        return x
+
+    rebuilt = []
+    group_cols = ["season","game_date_et","slate_window"]
+    for _, g in x.groupby(group_cols, dropna=False):
+        z = g.copy()
+        z["confidence_pct"] = pd.to_numeric(
+            z["classifier_confidence"], errors="coerce"
+        ).rank(method="average", pct=True)
+        z["regression_pct"] = pd.to_numeric(
+            z["reg_strength"], errors="coerce"
+        ).rank(method="average", pct=True)
+        z["agreement_rate"] = (
+            pd.to_numeric(z["classifier_agreement"], errors="coerce")
+            / pd.to_numeric(z["classifier_models"], errors="coerce").clip(lower=1)
+        )
+        z["selector_score_v383"] = (
+            0.40 * z["confidence_pct"]
+            + 0.20 * z["agreement_rate"]
+            + 0.20 * z["regression_pct"]
+            + 0.10 * pd.to_numeric(z["direction_agreement"], errors="coerce").fillna(0.0)
+            + 0.10 * pd.to_numeric(z["data_maturity"], errors="coerce").fillna(0.0)
+        )
+        z["slate_rank"] = z["selector_score_v383"].rank(
+            method="first", ascending=False
+        ).astype(int)
+        z["slate_size"] = int(len(z))
+        rebuilt.append(z)
+
+    return pd.concat(rebuilt, ignore_index=True) if rebuilt else pd.DataFrame()
+
+def _v383_threshold_summary(rebuilt, holdout, thresholds=V383_THRESHOLD_GRID):
+    if rebuilt is None or rebuilt.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for threshold in thresholds:
+        official = rebuilt[
+            pd.to_numeric(rebuilt["selector_score_v383"], errors="coerce") >= float(threshold)
+        ].copy()
+
+        all_m = _v34_metrics(official)
+        h = official[official["season"].astype(int) == int(holdout)].copy()
+        hm = _v34_metrics(h)
+
+        slate_days = rebuilt[["season","game_date_et","slate_window"]].drop_duplicates()
+        bet_days = official[["season","game_date_et","slate_window"]].drop_duplicates()
+        total_slates = int(len(slate_days))
+        played_slates = int(len(bet_days))
+        no_bet_slates = max(total_slates - played_slates, 0)
+
+        rows.append({
+            "Threshold": float(threshold),
+            "Bets": all_m["Bets"],
+            "Win Rate": all_m["Win Rate"],
+            "ROI": all_m["ROI"],
+            "Units": all_m["Units"],
+            "Max Drawdown": all_m["Max Drawdown"],
+            "Slates": total_slates,
+            "Slates With Bet": played_slates,
+            "No-Bet Slates": no_bet_slates,
+            "No-Bet Rate": no_bet_slates / total_slates if total_slates else np.nan,
+            "Holdout Bets": hm["Bets"],
+            "Holdout Win Rate": hm["Win Rate"],
+            "Holdout ROI": hm["ROI"],
+            "Holdout Units": hm["Units"],
+            "Holdout Max Drawdown": hm["Max Drawdown"],
+        })
+    return pd.DataFrame(rows)
+
+def _v383_threshold_by_slate(rebuilt, holdout, thresholds=V383_THRESHOLD_GRID):
+    if rebuilt is None or rebuilt.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for slate_name in ["Early","Midday","Night"]:
+        sg = rebuilt[rebuilt["slate_window"] == slate_name].copy()
+        if sg.empty:
+            continue
+        for threshold in thresholds:
+            official = sg[
+                pd.to_numeric(sg["selector_score_v383"], errors="coerce") >= float(threshold)
+            ].copy()
+            m = _v34_metrics(official)
+            h = official[official["season"].astype(int) == int(holdout)]
+            hm = _v34_metrics(h)
+
+            total_slates = sg[["season","game_date_et","slate_window"]].drop_duplicates().shape[0]
+            played_slates = official[["season","game_date_et","slate_window"]].drop_duplicates().shape[0]
+            rows.append({
+                "Slate": slate_name,
+                "Threshold": float(threshold),
+                "Bets": m["Bets"],
+                "Win Rate": m["Win Rate"],
+                "ROI": m["ROI"],
+                "Units": m["Units"],
+                "Max Drawdown": m["Max Drawdown"],
+                "No-Bet Rate": (
+                    (total_slates - played_slates) / total_slates
+                    if total_slates else np.nan
+                ),
+                "Holdout Bets": hm["Bets"],
+                "Holdout Win Rate": hm["Win Rate"],
+                "Holdout ROI": hm["ROI"],
+            })
+    return pd.DataFrame(rows)
+
+def _v383_score_buckets(rebuilt, holdout):
+    if rebuilt is None or rebuilt.empty:
+        return pd.DataFrame()
+    bins = [
+        (0.00, 0.78, "<0.78"),
+        (0.78, 0.80, "0.780–0.799"),
+        (0.80, 0.82, "0.800–0.819"),
+        (0.82, 0.84, "0.820–0.839"),
+        (0.84, 0.86, "0.840–0.859"),
+        (0.86, 1.01, "0.860+"),
+    ]
+    rows = []
+    score = pd.to_numeric(rebuilt["selector_score_v383"], errors="coerce")
+    for lo, hi, label in bins:
+        g = rebuilt[(score >= lo) & (score < hi)].copy()
+        if g.empty:
+            continue
+        m = _v34_metrics(g)
+        h = g[g["season"].astype(int) == int(holdout)]
+        hm = _v34_metrics(h)
+        rows.append({
+            "Score Bucket": label,
+            "Games": m["Bets"],
+            "Win Rate": m["Win Rate"],
+            "ROI": m["ROI"],
+            "Units": m["Units"],
+            "Holdout Games": hm["Bets"],
+            "Holdout Win Rate": hm["Win Rate"],
+            "Holdout ROI": hm["ROI"],
+        })
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _run_v383_threshold_audit(test_seasons_tuple, scope, holdout, train_start):
+    ranked, *_ = _run_v35_adaptive_daily_card(
+        tuple(sorted(set(int(s) for s in test_seasons_tuple))),
+        scope,
+        int(holdout),
+        int(train_start),
+    )
+    rebuilt = _v383_rebuild_slate_native(ranked)
+    summary = _v383_threshold_summary(rebuilt, holdout)
+    by_slate = _v383_threshold_by_slate(rebuilt, holdout)
+    buckets = _v383_score_buckets(rebuilt, holdout)
+    return rebuilt, summary, by_slate, buckets
+
+def _v383_fmt_pct(v):
+    try:
+        return f"{float(v):.1%}" if np.isfinite(float(v)) else "—"
+    except Exception:
+        return "—"
+
+def _render_v383_threshold_audit_page():
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">VALIDATION LAB</div>'
+        '<div class="mobile-page-title">Slate Threshold Audit</div>'
+        '<div class="mobile-page-sub">Rebuild the historical selector exactly as Early / Midday / Night slate-native rankings, then test fixed score floors without forcing bets.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "This audit does not optimize a threshold in-sample. It shows how fixed candidate floors "
+        "0.78 / 0.80 / 0.82 / 0.84 / 0.86 behave under the current slate-native workflow. "
+        "Keep the untouched holdout season separate when judging whether a lower floor deserves promotion."
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        seasons = st.multiselect(
+            "Historical seasons",
+            [2019, 2020, 2021, 2022, 2023, 2024, 2025],
+            default=[2021, 2022, 2023, 2024, 2025],
+            key="v383_audit_seasons",
+        )
+        scope = st.selectbox(
+            "Game universe",
+            ["Major FBS", "All FBS"],
+            index=0,
+            key="v383_audit_scope",
+        )
+    with c2:
+        holdout_default = max(seasons) if seasons else 2025
+        holdout = st.selectbox(
+            "Untouched holdout",
+            seasons if seasons else [2025],
+            index=(len(seasons)-1 if seasons else 0),
+            key="v383_audit_holdout",
+        )
+        train_start = st.selectbox(
+            "Training history begins",
+            [2015, 2016, 2017, 2018, 2019],
+            index=0,
+            key="v383_audit_train_start",
+        )
+
+    run = st.button(
+        "Run Slate Threshold Audit",
+        type="primary",
+        use_container_width=True,
+        key="run_v383_threshold_audit",
+    )
+
+    if run:
+        if not seasons:
+            st.error("Select at least one historical season.")
+            st.stop()
+        with st.spinner("Rebuilding leakage-safe historical slate rankings…"):
+            rebuilt, summary, by_slate, buckets = _run_v383_threshold_audit(
+                tuple(seasons), scope, int(holdout), int(train_start)
+            )
+        st.session_state["v383_audit_rebuilt"] = rebuilt
+        st.session_state["v383_audit_summary"] = summary
+        st.session_state["v383_audit_by_slate"] = by_slate
+        st.session_state["v383_audit_buckets"] = buckets
+        st.session_state["v383_audit_holdout_used"] = int(holdout)
+
+    summary = st.session_state.get("v383_audit_summary", pd.DataFrame())
+    by_slate = st.session_state.get("v383_audit_by_slate", pd.DataFrame())
+    buckets = st.session_state.get("v383_audit_buckets", pd.DataFrame())
+    rebuilt = st.session_state.get("v383_audit_rebuilt", pd.DataFrame())
+    holdout_used = int(st.session_state.get("v383_audit_holdout_used", holdout))
+
+    if summary is None or summary.empty:
+        st.caption("Run the audit to compare fixed score floors.")
+        return
+
+    st.markdown("### Combined slate-native results")
+    show = summary.copy()
+    for c in ["Win Rate","ROI","No-Bet Rate","Holdout Win Rate","Holdout ROI"]:
+        show[c] = show[c].map(_v383_fmt_pct)
+    for c in ["Units","Max Drawdown","Holdout Units","Holdout Max Drawdown"]:
+        show[c] = pd.to_numeric(show[c], errors="coerce").map(
+            lambda v: f"{v:+.2f}" if pd.notna(v) else "—"
+        )
+    st.dataframe(show, use_container_width=True, hide_index=True)
+
+    # Explicit comparison against the current locked 0.84 floor.
+    current = summary[np.isclose(summary["Threshold"], 0.84)]
+    lower = summary[summary["Threshold"] < 0.84]
+    if not current.empty:
+        cur = current.iloc[0]
+        st.markdown("### Current 0.84 benchmark")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Historical bets", int(cur["Bets"]))
+        m2.metric("Historical ROI", _v383_fmt_pct(cur["ROI"]))
+        m3.metric(f"{holdout_used} holdout ROI", _v383_fmt_pct(cur["Holdout ROI"]))
+
+    st.markdown("### By slate")
+    by_show = by_slate.copy()
+    for c in ["Win Rate","ROI","No-Bet Rate","Holdout Win Rate","Holdout ROI"]:
+        by_show[c] = by_show[c].map(_v383_fmt_pct)
+    st.dataframe(by_show, use_container_width=True, hide_index=True)
+
+    st.markdown("### Score buckets")
+    bucket_show = buckets.copy()
+    for c in ["Win Rate","ROI","Holdout Win Rate","Holdout ROI"]:
+        bucket_show[c] = bucket_show[c].map(_v383_fmt_pct)
+    st.dataframe(bucket_show, use_container_width=True, hide_index=True)
+
+    st.warning(
+        "Do not lower the production floor from this table alone. A lower threshold should only be promoted "
+        "if it improves usable sample size while remaining profitable and stable in the untouched holdout, "
+        "without materially worsening drawdown."
+    )
+
+    with st.expander("Downloads", expanded=False):
+        st.download_button(
+            "Download Threshold Summary",
+            data=summary.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_v383_threshold_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_v383_summary",
+        )
+        st.download_button(
+            "Download By-Slate Results",
+            data=by_slate.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_v383_threshold_by_slate.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_v383_by_slate",
+        )
+        st.download_button(
+            "Download Score Buckets",
+            data=buckets.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_v383_score_buckets.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_v383_buckets",
+        )
+        st.download_button(
+            "Download Rebuilt Selector Rows",
+            data=rebuilt.to_csv(index=False).encode("utf-8"),
+            file_name="cfb_v383_slate_native_rows.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_v383_rows",
+        )
+
+
 def _render_model_validation_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL VALIDATION</div>'
@@ -12508,6 +12849,14 @@ def _render_model_validation_page():
 
 
 app_section = "Research Lab" if st.session_state.get("cfb_research_mode", False) else "Betting Board"
+
+if st.session_state.get("cfb_threshold_audit_mode", False):
+    if st.button("Back to More", use_container_width=True, key="cfb_exit_threshold_audit"):
+        st.session_state["cfb_threshold_audit_mode"] = False
+        st.session_state["cfb_page"] = "More"
+        st.rerun()
+    _render_v383_threshold_audit_page()
+    st.stop()
 
 if st.session_state.get("cfb_validation_mode", False):
     if st.button("Back to More", use_container_width=True, key="cfb_exit_validation"):
@@ -15211,7 +15560,11 @@ def _render_more_page():
         st.metric("Recommendation", display_grade(verdict))
         st.caption(f"Edge {edge*100:+.1f}% • EV {ev*100:+.1f}% • Unit guide {units:.2f}u")
 
-    if st.button("Open Model Validation", type="primary", use_container_width=True, key="cfb_open_validation"):
+    if st.button("Open Slate Threshold Audit", type="primary", use_container_width=True, key="cfb_open_threshold_audit"):
+        st.session_state["cfb_threshold_audit_mode"] = True
+        st.rerun()
+
+    if st.button("Open Model Validation", use_container_width=True, key="cfb_open_validation"):
         st.session_state["cfb_validation_mode"] = True
         st.rerun()
 
@@ -16182,4 +16535,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.8.2 Slate Native • Spread-first • Opportunistic ML value overlay • Locked 0.84 floor.")
+st.caption("CFB Edge • v3.8.3 Slate Threshold Audit • Spread-first • Slate-native ranking • Locked 0.84 production floor.")
