@@ -6236,10 +6236,10 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
 }
 
 .ge-lean-row{
-  grid-template-columns:25px 29px minmax(0,1fr) auto auto!important;
+  grid-template-columns:25px 60px minmax(0,1fr) auto auto!important;
 }
 .ge-lean-row.compact{
-  grid-template-columns:25px 27px minmax(0,1fr) auto auto!important;
+  grid-template-columns:25px 60px minmax(0,1fr) auto auto!important;
 }
 
 .ge440-pending-row{
@@ -6255,7 +6255,7 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
 @media(max-width:520px){
   .ge440-logo-pair{width:52px;height:38px;flex-basis:52px}
   .ge-lean-row{
-    grid-template-columns:24px 28px minmax(0,1fr) auto auto!important;
+    grid-template-columns:24px 54px minmax(0,1fr) auto auto!important;
   }
 }
 
