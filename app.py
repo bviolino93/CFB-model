@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.8.3-SLATE-THRESHOLD-AUDIT"
+MODEL_VERSION = "3.9.0-EDGE-ENGINE-SHADOW"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -5835,6 +5835,89 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+st.markdown("""
+<style>
+/* ===== CFB Edge v3.9 MLB-style Edge Engine ===== */
+.edge-section-label{
+  margin:22px 2px 10px;color:#6ec5ff;font-size:.64rem;font-weight:900;
+  letter-spacing:.16em;text-transform:uppercase;
+}
+.edge-card{
+  border:1px solid rgba(78,168,255,.20);border-radius:20px;
+  background:linear-gradient(150deg,rgba(12,31,53,.98),rgba(8,20,35,.98));
+  padding:19px;margin-bottom:12px;
+}
+.edge-card.best{border-color:rgba(78,168,255,.38)}
+.edge-card-top{display:flex;justify-content:space-between;align-items:center}
+.edge-status{color:#73c2ff;font-size:.61rem;font-weight:950;letter-spacing:.14em}
+.edge-units{color:#8ea3bb;font-size:.68rem;font-weight:800}
+.edge-pick{color:#fff;font-size:1.55rem;font-weight:950;letter-spacing:-.04em;margin-top:12px}
+.edge-matchup{color:#7f94ad;font-size:.75rem;margin-top:5px}
+.edge-grid{display:grid;gap:8px;margin-top:17px}
+.edge-grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.edge-grid>div{
+  background:rgba(255,255,255,.018);border:1px solid rgba(148,163,184,.09);
+  border-radius:11px;padding:9px 7px;text-align:center
+}
+.edge-grid span{display:block;color:#667c94;font-size:.54rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.edge-grid b{display:block;color:#eef6ff;font-size:.87rem;margin-top:4px}
+.edge-card-bottom{
+  display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  margin-top:13px;color:#758ba4;font-size:.63rem
+}
+.edge-card-bottom b{color:#a9bdd1}
+.edge-status-strip{
+  display:flex;justify-content:space-between;gap:8px;color:#6f849d;
+  font-size:.62rem;font-weight:750;padding:6px 2px 2px
+}
+.edge-empty{
+  border:1px solid rgba(148,163,184,.13);border-radius:20px;
+  background:linear-gradient(180deg,rgba(12,28,48,.96),rgba(8,20,34,.96));
+  padding:20px;margin-bottom:12px
+}
+.edge-status-pass{color:#8ca0b7;font-size:.61rem;font-weight:950;letter-spacing:.14em}
+.edge-empty-title{color:#fff;font-size:1.42rem;font-weight:900;margin-top:8px;letter-spacing:-.03em}
+.edge-empty-copy{color:#8499b1;font-size:.8rem;line-height:1.48;margin-top:7px}
+.edge-closest{padding-top:15px;margin-top:16px;border-top:1px solid rgba(148,163,184,.10)}
+.edge-closest-pick{color:#f3f8ff;font-size:1rem;font-weight:900}
+.edge-reliability{color:#7489a0;font-size:.67rem;margin-top:9px}
+.edge-reliability b{color:#adbed0}
+.edge-mini-row{
+  display:flex;justify-content:space-between;gap:10px;align-items:center;
+  padding:12px 1px;border-bottom:1px solid rgba(148,163,184,.08)
+}
+.edge-mini-row>div:first-child{display:flex;flex-direction:column;gap:3px}
+.edge-mini-row b{color:#eaf2fb;font-size:.87rem}
+.edge-mini-row span{color:#6f849b;font-size:.65rem}
+.edge-mini-rel{color:#8da3b9;font-size:.61rem;font-weight:900;letter-spacing:.07em}
+.edge-ranking-label{margin-top:25px}
+.edge-board-row{
+  display:flex;justify-content:space-between;gap:12px;align-items:flex-start;
+  padding:14px 1px;border-bottom:1px solid rgba(148,163,184,.09)
+}
+.edge-board-main{min-width:0}
+.edge-board-game{color:#6e849c;font-size:.63rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.edge-board-pick{color:#f7fbff;font-size:.98rem;font-weight:900;margin-top:3px}
+.edge-board-sub{display:flex;gap:6px;flex-wrap:wrap;color:#7890a8;font-size:.64rem;margin-top:5px}
+.edge-board-side{text-align:right;flex:0 0 auto}
+.edge-board-rel{color:#a7bacd;font-size:.60rem;font-weight:900;letter-spacing:.07em;margin-top:1px}
+.edge-method{
+  border:1px solid rgba(148,163,184,.12);border-radius:16px;padding:15px;
+  background:rgba(10,23,39,.55);margin:12px 0 16px
+}
+.edge-method-title{color:#f5f9fd;font-size:.86rem;font-weight:900;margin-bottom:11px}
+.edge-method-row{display:grid;grid-template-columns:22px 72px 1fr;gap:8px;align-items:center;padding:5px 0}
+.edge-method-row b{color:#61b6ff;font-size:.66rem}
+.edge-method-row span{color:#dce8f4;font-size:.69rem;font-weight:850}
+.edge-method-row em{color:#6f849c;font-size:.65rem;font-style:normal}
+@media(max-width:640px){
+  .edge-grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .edge-pick{font-size:1.42rem}
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 /* ===== CFB Edge v3.8 Decision UI ===== */
@@ -5920,7 +6003,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.8.3</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v3.9</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -14405,6 +14488,57 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
         card["away_team"].astype(str) + " " + (-home_spread).map(lambda v: f"{v:+.1f}"),
     )
 
+    # v3.9 transparency layer: attach the market/fair-line information used
+    # elsewhere in the app. These fields are display/diagnostic only and do
+    # not change the locked selector verdict.
+    if slate_df is not None and not slate_df.empty and "row_index" in card.columns:
+        _lookup_cols = [
+            "market_home_spread",
+            "adjusted_model_home_spread",
+            "home_cover_prob",
+            "away_cover_prob",
+            "model_confidence",
+            "data_completeness",
+            "market_source",
+        ]
+        _sl = slate_df.reset_index(drop=True)
+        for _c in _lookup_cols:
+            if _c in _sl.columns:
+                card[_c] = card["row_index"].map(
+                    lambda _i: _sl.iloc[int(_i)].get(_c)
+                    if pd.notna(_i) and 0 <= int(_i) < len(_sl)
+                    else np.nan
+                )
+
+    card["fair_home_spread"] = pd.to_numeric(
+        card.get("adjusted_model_home_spread"), errors="coerce"
+    )
+    card["market_home_spread_display"] = pd.to_numeric(
+        card.get("market_home_spread"), errors="coerce"
+    )
+    card["point_edge"] = (
+        card["market_home_spread_display"] - card["fair_home_spread"]
+    ).abs()
+
+    card["cover_probability"] = np.where(
+        card["pick_side"].eq("HOME"),
+        pd.to_numeric(card.get("home_cover_prob"), errors="coerce"),
+        pd.to_numeric(card.get("away_cover_prob"), errors="coerce"),
+    )
+
+    # Reliability is an interpretable label backed by the already-validated
+    # selector confidence machinery. Numeric selector score is retained only
+    # for diagnostics / historical compatibility.
+    card["reliability"] = np.select(
+        [
+            card["selector_score"] >= 0.84,
+            card["selector_score"] >= 0.80,
+            card["selector_score"] >= 0.76,
+        ],
+        ["HIGH", "SOLID", "MODERATE"],
+        default="LOW",
+    )
+
     return card.sort_values(
         ["selector_score", "classifier_confidence"],
         ascending=[False, False]
@@ -14847,15 +14981,35 @@ def _v36_track_daily_card(card, selected_date):
     return len(new_rows)
 
 
+def _v390_spread_text(v):
+    try:
+        return f"{float(v):+.1f}" if np.isfinite(float(v)) else "—"
+    except Exception:
+        return "—"
+
+def _v390_prob_text(v):
+    try:
+        return f"{float(v):.1%}" if np.isfinite(float(v)) else "—"
+    except Exception:
+        return "—"
+
+def _v390_edge_text(v):
+    try:
+        return f"+{float(v):.1f} pts" if np.isfinite(float(v)) else "—"
+    except Exception:
+        return "—"
+
 def _render_v36_live_card(card, selected_date):
-    """v3.8 decision-first production card. Model logic is unchanged."""
+    """
+    v3.9 MLB-style decision presentation.
+    Official recommendation logic remains the validated selector underneath.
+    """
     if card is None or card.empty:
         st.markdown(
             """
-            <div class="decision-empty">
-              <div class="decision-state">TODAY'S CARD</div>
-              <div class="decision-title">Card unavailable</div>
-              <div class="decision-copy">The production selector could not build from the current slate.</div>
+            <div class="edge-empty">
+              <div class="edge-eyebrow">TODAY'S CARD</div>
+              <div class="edge-empty-title">No spread candidates available.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -14863,73 +15017,64 @@ def _render_v36_live_card(card, selected_date):
         return
 
     ranked = card.copy()
-    if "selector_score" in ranked.columns:
-        ranked["selector_score"] = pd.to_numeric(ranked["selector_score"], errors="coerce")
-        ranked = ranked.sort_values("selector_score", ascending=False, na_position="last").reset_index(drop=True)
+    ranked["selector_score"] = pd.to_numeric(ranked["selector_score"], errors="coerce")
+    ranked["point_edge"] = pd.to_numeric(ranked.get("point_edge"), errors="coerce")
+    ranked = ranked.sort_values(
+        ["selector_score", "point_edge"],
+        ascending=[False, False],
+        na_position="last",
+    ).reset_index(drop=True)
 
     official = ranked[ranked["verdict"].isin(["BEST BET", "BET"])].copy()
-    near = ranked[~ranked["verdict"].isin(["BEST BET", "BET"])].copy()
+    nonofficial = ranked[~ranked["verdict"].isin(["BEST BET", "BET"])].copy()
 
-    st.markdown('<div class="decision-section-label">TODAY&#39;S CARD</div>', unsafe_allow_html=True)
+    st.markdown('<div class="edge-section-label">TODAY&#39;S CARD</div>', unsafe_allow_html=True)
 
     if official.empty:
-        closest = near.iloc[0] if len(near) else None
-        closest_html = ""
-        if closest is not None:
-            score = float(closest.get("selector_score") or 0.0)
-            gap = max(0.0, 0.84 - score)
-            closest_html = f"""
-              <div class="closest-row">
-                <div>
-                  <span>Closest qualifier</span>
-                  <b>{html.escape(str(closest.get("selection","—")))}</b>
-                </div>
-                <div class="closest-score">{score:.3f}</div>
-              </div>
-              <div class="closest-gap">{gap:.3f} below production threshold</div>
-            """
+        closest = ranked.iloc[0]
         st.markdown(
             f"""
-            <div class="decision-empty">
-              <div class="decision-state">NO OFFICIAL PLAYS</div>
-              <div class="decision-title">Pass the slate.</div>
-              <div class="decision-copy">No spread cleared the locked 0.84 production standard.</div>
-              {closest_html}
+            <div class="edge-empty">
+              <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
+              <div class="edge-empty-title">Pass the slate.</div>
+              <div class="edge-empty-copy">The model found edges, but none cleared the current production reliability standard.</div>
+              <div class="edge-closest">
+                <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
+                <div class="edge-grid four">
+                  <div><span>Market</span><b>{_v390_spread_text(closest.get("market_home_spread_display"))}</b></div>
+                  <div><span>Fair</span><b>{_v390_spread_text(closest.get("fair_home_spread"))}</b></div>
+                  <div><span>Edge</span><b>{_v390_edge_text(closest.get("point_edge"))}</b></div>
+                  <div><span>Cover</span><b>{_v390_prob_text(closest.get("cover_probability"))}</b></div>
+                </div>
+                <div class="edge-reliability">Reliability <b>{html.escape(str(closest.get("reliability","—")))}</b></div>
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     else:
-        first = official.iloc[0]
-        score = float(first.get("selector_score") or 0.0)
-        verdict = str(first.get("verdict") or "BET")
-        st.markdown(
-            f"""
-            <div class="hero-bet">
-              <div class="hero-bet-top">
-                <span>{html.escape(verdict)}</span>
-                <span class="hero-bet-score">{score:.3f}</span>
-              </div>
-              <div class="hero-bet-pick">{html.escape(str(first.get("selection","")))}</div>
-              <div class="hero-bet-game">{html.escape(str(first.get("away_team","")))} @ {html.escape(str(first.get("home_team","")))}</div>
-              <div class="hero-bet-meta">
-                <span>1.0u</span><span>•</span>
-                <span>{int(first.get("classifier_agreement") or 0)}/{int(first.get("classifier_models") or 0)} model agreement</span>
-                <span>•</span><span>OFFICIAL</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        for _, rr in official.iloc[1:].iterrows():
+        for ix, r in official.iterrows():
+            is_best = str(r.get("verdict")) == "BEST BET"
+            status = "BEST BET" if is_best else "BET"
             st.markdown(
                 f"""
-                <div class="compact-pick-row">
-                  <div>
-                    <b>{html.escape(str(rr.get("selection","")))}</b>
-                    <span>{html.escape(str(rr.get("kickoff_et","")))}</span>
+                <div class="edge-card {'best' if is_best else ''}">
+                  <div class="edge-card-top">
+                    <span class="edge-status">{status}</span>
+                    <span class="edge-units">1.0u</span>
                   </div>
-                  <div class="compact-pick-score">{float(rr.get("selector_score") or 0.0):.3f}</div>
+                  <div class="edge-pick">{html.escape(str(r.get("selection","")))}</div>
+                  <div class="edge-matchup">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                  <div class="edge-grid four">
+                    <div><span>Market</span><b>{_v390_spread_text(r.get("market_home_spread_display"))}</b></div>
+                    <div><span>Fair</span><b>{_v390_spread_text(r.get("fair_home_spread"))}</b></div>
+                    <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
+                    <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
+                  </div>
+                  <div class="edge-card-bottom">
+                    <span>Reliability <b>{html.escape(str(r.get("reliability","—")))}</b></span>
+                    <span>Market source <b>{html.escape(str(r.get("market_source") or "Validated feed"))}</b></span>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -14937,29 +15082,48 @@ def _render_v36_live_card(card, selected_date):
 
     st.markdown(
         f"""
-        <div class="card-status-strip">
-          <span>{len(card)} games ranked</span>
+        <div class="edge-status-strip">
+          <span>{len(card)} games</span>
           <span>{len(official)} official</span>
-          <span>0.84 floor</span>
+          <span>Spread core</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if len(near):
-        with st.expander("Watchlist / near threshold", expanded=False):
-            show = near.head(5).copy()
-            cols = [c for c in ["selection","selector_score","verdict","kickoff_et"] if c in show.columns]
-            st.dataframe(show[cols], use_container_width=True, hide_index=True)
+    if len(nonofficial):
+        with st.expander("Next best spread edges", expanded=False):
+            for _, r in nonofficial.head(5).iterrows():
+                st.markdown(
+                    f"""
+                    <div class="edge-mini-row">
+                      <div>
+                        <b>{html.escape(str(r.get("selection","")))}</b>
+                        <span>{_v390_edge_text(r.get("point_edge"))} · {_v390_prob_text(r.get("cover_probability"))} cover</span>
+                      </div>
+                      <div class="edge-mini-rel">{html.escape(str(r.get("reliability","LOW")))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    with st.expander("Model diagnostics", expanded=False):
+        diag_cols = [c for c in [
+            "selection","market_home_spread_display","fair_home_spread","point_edge",
+            "cover_probability","reliability","classifier_confidence",
+            "classifier_agreement","classifier_models","reg_strength",
+            "direction_agreement","selector_score","verdict"
+        ] if c in ranked.columns]
+        st.dataframe(ranked[diag_cols], use_container_width=True, hide_index=True)
 
     with st.expander("Export official card", expanded=False):
         st.download_button(
-            "Download Locked Daily Card",
+            "Download Daily Card",
             data=card.to_csv(index=False).encode("utf-8"),
-            file_name=f"cfb_v36_daily_card_{selected_date}.csv",
+            file_name=f"cfb_v390_daily_card_{selected_date}.csv",
             mime="text/csv",
             use_container_width=True,
-            key=f"download_v36_card_{selected_date}",
+            key=f"download_v390_card_{selected_date}",
         )
 
 
@@ -15560,6 +15724,18 @@ def _render_more_page():
         st.metric("Recommendation", display_grade(verdict))
         st.caption(f"Edge {edge*100:+.1f}% • EV {ev*100:+.1f}% • Unit guide {units:.2f}u")
 
+    st.markdown(
+        """
+        <div class="edge-method">
+          <div class="edge-method-title">v3.9 decision stack</div>
+          <div class="edge-method-row"><b>1</b><span>Projection</span><em>What is the fair spread?</em></div>
+          <div class="edge-method-row"><b>2</b><span>Edge</span><em>How far is the market from fair?</em></div>
+          <div class="edge-method-row"><b>3</b><span>Reliability</span><em>How much should we trust that edge?</em></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if st.button("Open Slate Threshold Audit", type="primary", use_container_width=True, key="cfb_open_threshold_audit"):
         st.session_state["cfb_threshold_audit_mode"] = True
         st.rerun()
@@ -15624,7 +15800,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Rank the selected slate. Spreads drive the card; moneyline appears only when exceptional value clears its gate.</div></div>',
+        '<div class="mobile-page-sub">Price the spread first: market line, fair line, point edge, cover probability, then reliability.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -15857,6 +16033,8 @@ if run_mode == "Full Slate":
                 "total_residual_train_n": residual_p["total_model_n"],
                 "calibrated_margin_sd": round(cal_margin_sd, 3),
                 "calibrated_total_sd": round(cal_total_sd, 3),
+                "home_cover_prob": round(float(residual_p["home_cover_prob"]), 6) if residual_p.get("home_cover_prob") is not None else None,
+                "away_cover_prob": round(float(residual_p["away_cover_prob"]), 6) if residual_p.get("away_cover_prob") is not None else None,
                 "best_verdict": best_verdict,
                 "best_market": best_market,
                 "best_odds": best_odds,
@@ -15910,9 +16088,8 @@ if run_mode == "Full Slate":
         except Exception:
             pass
 
-        st.markdown('<div class="decision-section-label decision-list-title">SPREAD RANKING</div>', unsafe_allow_html=True)
+        st.markdown('<div class="edge-section-label edge-ranking-label">SPREAD BOARD</div>', unsafe_allow_html=True)
 
-        # Separate, conservative ML overlay. This is never part of the official spread record.
         ml_value_board = _v381_ml_value_candidates(market_board)
         ml_by_game = {}
         if len(ml_value_board):
@@ -15922,17 +16099,30 @@ if run_mode == "Full Slate":
                     ml_by_game[_g] = _mlr
 
         if isinstance(v36_card, pd.DataFrame) and len(v36_card):
-            v381_ranked = v36_card.copy()
-            v381_ranked["selector_score"] = pd.to_numeric(v381_ranked["selector_score"], errors="coerce")
-            v381_ranked = v381_ranked.sort_values("selector_score", ascending=False, na_position="last")
+            edge_ranked = v36_card.copy()
+            edge_ranked["point_edge"] = pd.to_numeric(edge_ranked.get("point_edge"), errors="coerce")
+            edge_ranked["cover_probability"] = pd.to_numeric(edge_ranked.get("cover_probability"), errors="coerce")
+            edge_ranked["selector_score"] = pd.to_numeric(edge_ranked.get("selector_score"), errors="coerce")
+            edge_ranked["_official_rank"] = edge_ranked["verdict"].isin(["BEST BET","BET"]).astype(int)
+            edge_ranked = edge_ranked.sort_values(
+                ["_official_rank","selector_score","point_edge"],
+                ascending=[False,False,False],
+                na_position="last",
+            )
 
-            for _, rr in v381_ranked.iterrows():
-                score = float(rr.get("selector_score") or 0.0)
+            for _, rr in edge_ranked.iterrows():
                 verdict = str(rr.get("verdict") or "PASS")
-                state = verdict if verdict in ("BEST BET", "BET") else ("WATCH" if score >= 0.80 else "PASS")
-                state_cls = "official" if verdict in ("BEST BET","BET") else ("watch" if state == "WATCH" else "pass")
-                game_name = f"{rr.get('away_team','')} @ {rr.get('home_team','')}"
+                if verdict in ("BEST BET","BET"):
+                    state = verdict
+                    state_cls = "official"
+                elif str(rr.get("reliability")) in ("SOLID","MODERATE"):
+                    state = "WATCH"
+                    state_cls = "watch"
+                else:
+                    state = "PASS"
+                    state_cls = "pass"
 
+                game_name = f"{rr.get('away_team','')} @ {rr.get('home_team','')}"
                 ml_html = ""
                 mlr = ml_by_game.get(game_name)
                 if mlr is not None:
@@ -15944,21 +16134,27 @@ if run_mode == "Full Slate":
                       <div class="ml-overlay">
                         <span>ML VALUE</span>
                         <b>{html.escape(str(mlr.get("market","")))} {_odds_txt}</b>
-                        <em>{float(mlr.get("edge") or 0.0)*100:+.1f}% edge · {float(mlr.get("ev") or 0.0)*100:+.1f}% EV</em>
+                        <em>{float(mlr.get("edge") or 0.0)*100:+.1f}% prob edge · {float(mlr.get("ev") or 0.0)*100:+.1f}% EV</em>
                       </div>
                     """
 
                 st.markdown(
                     f"""
-                    <div class="slate-rank-row v381-row">
-                      <div class="slate-rank-main">
-                        <div class="slate-rank-game">{html.escape(game_name)}</div>
-                        <div class="slate-rank-pick">{html.escape(str(rr.get("selection","")))}</div>
-                        <div class="slate-rank-time">{html.escape(str(rr.get("kickoff_et","")))}</div>
+                    <div class="edge-board-row">
+                      <div class="edge-board-main">
+                        <div class="edge-board-game">{html.escape(game_name)}</div>
+                        <div class="edge-board-pick">{html.escape(str(rr.get("selection","")))}</div>
+                        <div class="edge-board-sub">
+                          Fair {_v390_spread_text(rr.get("fair_home_spread"))}
+                          <span>•</span>
+                          {_v390_edge_text(rr.get("point_edge"))}
+                          <span>•</span>
+                          {_v390_prob_text(rr.get("cover_probability"))} cover
+                        </div>
                         {ml_html}
                       </div>
-                      <div class="slate-rank-side">
-                        <div class="slate-rank-score">{score:.3f}</div>
+                      <div class="edge-board-side">
+                        <div class="edge-board-rel">{html.escape(str(rr.get("reliability","LOW")))}</div>
                         <div class="slate-rank-state {state_cls}">{html.escape(state)}</div>
                       </div>
                     </div>
@@ -15966,7 +16162,7 @@ if run_mode == "Full Slate":
                     unsafe_allow_html=True,
                 )
         else:
-            st.info("No spread candidates are available in this time window.")
+            st.info("No spread candidates are available in this slate.")
 
         with st.expander("Research markets", expanded=False):
             st.caption("Secondary market research only. The production card is spread-first; ML appears above only when the strict value overlay clears.")
@@ -16535,4 +16731,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.8.3 Slate Threshold Audit • Spread-first • Slate-native ranking • Locked 0.84 production floor.")
+st.caption("CFB Edge • v3.9 Edge Engine • Fair spread • Point edge • Cover probability • Reliability-backed recommendations.")
