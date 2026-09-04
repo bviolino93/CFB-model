@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.0.2-SIMPLE-CARD"
+MODEL_VERSION = "4.0.3-MINIMAL-SLATE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -4827,6 +4827,29 @@ st.set_page_config(
 
 # ---------- Sleek mobile-first app theme ----------
 
+
+st.markdown("""
+<style>
+.v403-watch-row{
+  padding:12px 2px;
+  border-bottom:1px solid rgba(148,163,184,.09);
+}
+.v403-watch-pick{
+  color:#f3f7fb;
+  font-size:.98rem;
+  font-weight:850;
+}
+.v403-watch-meta{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  color:#7389a1;
+  font-size:.66rem;
+  margin-top:4px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 :root{
@@ -6003,7 +6026,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v4.0.2</span><i></i><span>Validated markets</span><i></i><span>Fundamental edge engine</span>
+        <span>v4.0.3</span><i></i><span>Validated markets</span><i></i><span>Fundamental edge engine</span>
       </div>
     </div>
     """,
@@ -15159,7 +15182,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="edge-empty">
               <div class="edge-status-pass">NO OFFICIAL PLAYS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">No official bets. Nothing on this slate cleared the betting criteria.</div>
+              <div class="edge-empty-copy">No official bets on this slate.</div>
               <div class="edge-closest">
                 <div class="edge-closest-pick">{html.escape(str(closest.get("selection","—")))}</div>
                 <div class="edge-grid four">
@@ -15194,7 +15217,6 @@ def _render_v36_live_card(card, selected_date):
                     <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
                   </div>
                   <div class="edge-card-bottom">
-                    <span>Pregame <b>{("READY" if float(r.get("data_completeness") or 0) >= 0.70 else "CHECK")}</b></span>
                     <span>EV <b>{_v390_prob_text(r.get("expected_value"))}</b></span>
                   </div>
                 </div>
@@ -15202,34 +15224,38 @@ def _render_v36_live_card(card, selected_date):
                 unsafe_allow_html=True,
             )
 
-    st.markdown(
-        f"""
-        <div class="edge-status-strip">
-          <span>{len(card)} games</span>
-          <span>{len(official)} official</span>
-          <span>Spread core</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     if len(nonofficial):
-        with st.expander("WATCHLIST", expanded=False):
-            for _, r in nonofficial.head(5).iterrows():
+        watch = nonofficial.copy()
+        watch["_ev"] = pd.to_numeric(watch.get("expected_value"), errors="coerce")
+        watch["_p"] = pd.to_numeric(watch.get("cover_probability"), errors="coerce")
+        watch["_edge"] = pd.to_numeric(watch.get("point_edge"), errors="coerce")
+        watch = watch.sort_values(
+            ["_ev", "_p", "_edge"],
+            ascending=[False, False, False],
+            na_position="last",
+        ).head(3)
+
+        if not watch.empty:
+            st.markdown('<div class="edge-section-label">WATCHLIST</div>', unsafe_allow_html=True)
+            for _, r in watch.iterrows():
                 st.markdown(
                     f"""
-                    <div class="edge-mini-row">
-                      <div>
-                        <b>{html.escape(str(r.get("selection","")))}</b>
-                        <span>{_v390_edge_text(r.get("point_edge"))} · {_v390_prob_text(r.get("cover_probability"))} cover · EV {_v390_prob_text(r.get("expected_value"))}</span>
+                    <div class="v403-watch-row">
+                      <div class="v403-watch-pick">{html.escape(str(r.get("selection","")))}</div>
+                      <div class="v403-watch-meta">
+                        {_v390_edge_text(r.get("point_edge"))}
+                        <span>•</span>
+                        {_v390_prob_text(r.get("cover_probability"))} cover
+                        <span>•</span>
+                        EV {_v390_prob_text(r.get("expected_value"))}
                       </div>
-                      <div class="edge-mini-rel">{html.escape(str(r.get("reliability","LOW")))}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-    with st.expander("Advanced model details", expanded=False):
+
+    with st.expander("Advanced / diagnostics", expanded=False):
         diag_cols = [c for c in [
             "selection","pick_side","market_home_spread_display","fair_home_spread",
             "raw_model_home_spread","adjusted_model_home_spread","spread_residual_correction",
@@ -15240,7 +15266,7 @@ def _render_v36_live_card(card, selected_date):
         ] if c in ranked.columns]
         st.dataframe(ranked[diag_cols], use_container_width=True, hide_index=True)
 
-    with st.expander("Export official card", expanded=False):
+    with st.expander("Export", expanded=False):
         st.download_button(
             "Download Daily Card",
             data=card.to_csv(index=False).encode("utf-8"),
@@ -15923,7 +15949,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">BET = official and tracked. WATCH = close, but no bet. PASS = no action.</div></div>',
+        '<div class="mobile-page-sub">Official bets first. Everything else stays out of the way.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -16258,14 +16284,6 @@ if run_mode == "Full Slate":
         if _v36_added:
             st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
 
-        st.markdown(
-            """<div style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 16px 0">
-            <span style="padding:6px 10px;border:1px solid #245c49;border-radius:999px;font-size:.78rem"><b>BET</b> · official + tracked</span>
-            <span style="padding:6px 10px;border:1px solid #6b5a27;border-radius:999px;font-size:.78rem"><b>WATCH</b> · no bet</span>
-            <span style="padding:6px 10px;border:1px solid #26394c;border-radius:999px;font-size:.78rem"><b>PASS</b> · no action</span>
-            </div>""",
-            unsafe_allow_html=True,
-        )
         _render_v36_live_card(v36_card, selected_date)
 
         try:
@@ -16349,7 +16367,6 @@ if run_mode == "Full Slate":
                         {ml_html}
                       </div>
                       <div class="edge-board-side">
-                        <div class="edge-board-rel">{html.escape(str(rr.get("reliability","LOW")))}</div>
                         <div class="slate-rank-state {state_cls}">{html.escape(state)}</div>
                       </div>
                     </div>
@@ -16359,7 +16376,7 @@ if run_mode == "Full Slate":
         else:
             st.info("No spread candidates are available in this slate.")
 
-        with st.expander("Research only", expanded=False):
+        with st.expander("Research", expanded=False):
             st.caption("Secondary market research only. The production card is spread-first; ML appears above only when the strict value overlay clears.")
             if len(market_board):
                 research_cols = [c for c in [
@@ -16367,7 +16384,7 @@ if run_mode == "Full Slate":
                 ] if c in market_board.columns]
                 st.dataframe(market_board[research_cols], use_container_width=True, hide_index=True)
 
-        with st.expander("Export / Full Slate Data", expanded=False):
+        with st.expander("Full slate data", expanded=False):
             if "market_board" in locals() and isinstance(market_board, pd.DataFrame) and len(market_board):
                 st.markdown("**Ranked market-level board**")
                 market_cols = [
@@ -16926,4 +16943,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v4.0.2 • Simple Card • Official bets auto-tracked.")
+st.caption("CFB Edge • v4.0.3 • Minimal Slate • Official bets auto-tracked.")
