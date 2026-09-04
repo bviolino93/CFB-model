@@ -4819,7 +4819,7 @@ def _candidate_pass_fail(candidate_df, min_bets=150, min_positive_seasons=4):
 
 
 st.set_page_config(
-    page_title="CFB Edge",
+    page_title="Saturday Edge",
     page_icon="🏈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -6088,9 +6088,9 @@ div[class*="st-key-cfb_nav_home_"],div[class*="st-key-cfb_nav_live_"],div[class*
 st.markdown("""
 <style>
 /* CFB EDGE v4.2 — premium standalone app skin */
-[data-testid="stHeader"]{height:0!important;min-height:0!important;background:transparent!important;}
-[data-testid="stToolbar"],[data-testid="stDecoration"],#MainMenu,footer{display:none!important;}
-.block-container{max-width:760px!important;padding:calc(14px + env(safe-area-inset-top)) 18px calc(108px + env(safe-area-inset-bottom))!important;}
+[data-testid="stHeader"]{display:none!important;height:0!important;min-height:0!important;background:transparent!important;}
+[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"],#MainMenu,footer{display:none!important;}
+.block-container{max-width:760px!important;padding:calc(4px + env(safe-area-inset-top)) 18px calc(108px + env(safe-area-inset-bottom))!important;}
 html,body,[data-testid="stAppViewContainer"]{
   background:radial-gradient(circle at 85% -10%,rgba(57,126,255,.14),transparent 28%),
              radial-gradient(circle at 0% 20%,rgba(40,191,255,.05),transparent 26%),#07111e!important;
@@ -6476,7 +6476,7 @@ div[class*="st-key-ge432_topnav"] svg{
 }
 
 /* ===== GRIDIRON EDGE v4.3.1 MOCKUP MATCH ===== */
-.block-container{max-width:760px!important;padding:calc(8px + env(safe-area-inset-top)) 16px 32px!important}
+.block-container{max-width:760px!important;padding:calc(4px + env(safe-area-inset-top)) 16px 32px!important}
 
 /* compact branded header */
 .ge431-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 5px;padding:4px 0 8px}
@@ -6574,6 +6574,8 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
 /* ===== GRIDIRON EDGE v4.3 brand + generated-reference layout ===== */
 .ge-appbar{padding:10px 0 18px!important;margin-bottom:15px!important}
 .ge-brandmark{gap:10px!important}
+.se-goalpost-logo{width:40px;height:40px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
+.se-goalpost-logo svg{display:block}
 .ge-football-logo{width:48px;height:42px;position:relative;flex:0 0 auto}
 .ge-ball{position:absolute;width:39px;height:24px;left:2px;top:8px;border:3px solid #edf6ff;border-radius:50%;transform:rotate(-28deg);box-shadow:0 0 18px rgba(69,157,255,.13)}
 .ge-ball:before{content:"";position:absolute;width:14px;height:3px;background:#edf6ff;left:10px;top:8px;border-radius:3px}
@@ -6644,11 +6646,17 @@ st.markdown(
     """
     <div class="ge433-header">
       <div class="ge431-brand">
-        <div class="ge-football-logo" aria-hidden="true">
-          <div class="ge-ball"><span></span><b></b><i></i></div>
+        <div class="se-goalpost-logo" aria-hidden="true">
+          <svg viewBox="0 0 44 44" width="40" height="40" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1" y="1" width="42" height="42" rx="11" fill="#0b1b2d" stroke="#22405f" stroke-width="1.5"/>
+            <line x1="22" y1="34" x2="22" y2="22" stroke="#edf6ff" stroke-width="3" stroke-linecap="round"/>
+            <line x1="10" y1="22" x2="34" y2="22" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
+            <line x1="10" y1="22" x2="10" y2="11" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
+            <line x1="34" y1="22" x2="34" y2="11" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
+          </svg>
         </div>
         <div>
-          <div class="ge-wordmark"><span>GRIDIRON</span> <strong>EDGE</strong></div>
+          <div class="ge-wordmark"><span>SATURDAY</span> <strong>EDGE</strong></div>
           <div class="ge-brand-sub">DATA DRIVEN. GAME READY.</div>
         </div>
       </div>
@@ -17828,4 +17836,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("Gridiron Edge • v4.3 • Premium App UI • Spreads + totals ranked together.")
+st.caption("Saturday Edge • v4.3 • Premium App UI • Spreads + totals ranked together.")
