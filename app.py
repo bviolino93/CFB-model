@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.0.0-FUNDAMENTAL-EDGE-ENGINE"
+MODEL_VERSION = "4.0.1-OFFICIAL-TRACKER"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6003,7 +6003,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v4.0</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v4.0.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -14637,439 +14637,470 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
 
 
 # v3.6 tracker path must not depend on the legacy tracker constant being defined later.
-V36_TRACKER_PATH = Path(".cfb_edge_tracker") / "cfb_v36_forward_tracker.csv"
+V36_TRACKER_PATH = Path(".cfb_edge_tracker") / "cfb_official_bet_tracker.csv"
+V36_LEGACY_TRACKER_PATH = Path(".cfb_edge_tracker") / "cfb_v36_forward_tracker.csv"
 
+V401_TRACKER_COLUMNS = [
+    "record_key","model_version","game_date","game_id","kickoff_et",
+    "home_team","away_team","selection","pick_side","bet_line","odds",
+    "verdict","fundamental_grade","fair_home_spread","market_home_spread",
+    "point_edge","cover_probability","probability_edge","expected_value",
+    "reliability","model_confidence","data_completeness","selector_score",
+    "suggested_units","frozen_at_et","status","result","units_result",
+    "final_home_score","final_away_score","graded_at"
+]
 
-def _v361_american_profit(odds, stake=1.0):
+def _v401_empty_tracker():
+    return pd.DataFrame(columns=V401_TRACKER_COLUMNS)
+
+def _v401_clean_tracker(df):
+    if df is None or df.empty:
+        return _v401_empty_tracker()
+    x = df.copy()
+
+    # Legacy v3.6 migration.
+    legacy_map = {
+        "game_date":"game_date","game_id":"game_id","kickoff_et":"kickoff_et",
+        "home_team":"home_team","away_team":"away_team","selection":"selection",
+        "verdict":"verdict","selector_score":"selector_score",
+        "suggested_units":"suggested_units","status":"status","result":"result",
+        "units_result":"units_result","final_home_score":"final_home_score",
+        "final_away_score":"final_away_score","graded_at":"graded_at",
+        "model_version":"model_version",
+    }
+    for c in V401_TRACKER_COLUMNS:
+        if c not in x.columns:
+            x[c] = None
+
+    # Infer side/line from frozen selection for old rows.
+    for idx, r in x.iterrows():
+        sel = str(r.get("selection") or "")
+        if not r.get("record_key"):
+            x.at[idx, "record_key"] = f"{r.get('game_date')}|{r.get('game_id')}|SPREAD"
+        if not r.get("pick_side"):
+            ht = str(r.get("home_team") or "")
+            at = str(r.get("away_team") or "")
+            if sel.startswith(ht + " "):
+                x.at[idx, "pick_side"] = "HOME"
+            elif sel.startswith(at + " "):
+                x.at[idx, "pick_side"] = "AWAY"
+        if pd.isna(pd.to_numeric(pd.Series([r.get("bet_line")]), errors="coerce").iloc[0]):
+            m = re.search(r"([+-]\d+(?:\.\d+)?)\s*$", sel)
+            if m:
+                x.at[idx, "bet_line"] = float(m.group(1))
+        if pd.isna(pd.to_numeric(pd.Series([r.get("odds")]), errors="coerce").iloc[0]):
+            x.at[idx, "odds"] = -110
+        if not r.get("status"):
+            x.at[idx, "status"] = "FROZEN"
+    return x[V401_TRACKER_COLUMNS]
+
+def _v401_load_tracker():
+    # Prefer the new unified tracker. If absent, migrate the old forward tracker.
     try:
-        odds = float(odds)
-        stake = float(stake)
+        if V36_TRACKER_PATH.exists():
+            return _v401_clean_tracker(pd.read_csv(V36_TRACKER_PATH))
+        if V36_LEGACY_TRACKER_PATH.exists():
+            old = _v401_clean_tracker(pd.read_csv(V36_LEGACY_TRACKER_PATH))
+            V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            old.to_csv(V36_TRACKER_PATH, index=False)
+            return old
+    except Exception:
+        pass
+    return _v401_empty_tracker()
+
+def _v401_save_tracker(df):
+    try:
+        x = _v401_clean_tracker(df)
+        V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = V36_TRACKER_PATH.with_suffix(".tmp")
+        x.to_csv(tmp, index=False)
+        tmp.replace(V36_TRACKER_PATH)
+        return True
+    except Exception:
+        return False
+
+def _v401_american_profit(odds, stake=1.0):
+    try:
+        o = float(odds)
+        s = float(stake)
     except Exception:
         return None
-    if odds > 0:
-        return stake * (odds / 100.0)
-    if odds < 0:
-        return stake * (100.0 / abs(odds))
-    return 0.0
+    if o > 0:
+        return s * (o / 100.0)
+    if o < 0:
+        return s * (100.0 / abs(o))
+    return None
 
-
-def _v361_parse_selection_line(selection):
-    """
-    Parse the frozen spread from strings like 'Georgia -7.5' or 'Florida +3.0'.
-    Returns (team_name, spread) or (selection, None) if not parseable.
-    """
-    s = str(selection or "").strip()
-    m = re.match(r"^(.*)\s([+-]\d+(?:\.\d+)?)$", s)
-    if not m:
-        return s, None
-    return m.group(1).strip(), float(m.group(2))
-
-
-def _v361_result_from_final(home_team, away_team, home_score, away_score, selection):
-    team, spread = _v361_parse_selection_line(selection)
-    if spread is None:
-        return "", ""
-
+def _v401_kickoff_has_started(kickoff_et, selected_date=None):
+    """Best-effort pregame freeze guard. Unknown kickoff is treated as not started."""
+    if kickoff_et is None or str(kickoff_et).strip() == "":
+        return False
     try:
-        hs = float(home_score)
-        a_s = float(away_score)
-    except Exception:
-        return "", ""
-
-    if team == str(home_team):
-        ats_margin = (hs - a_s) + spread
-    elif team == str(away_team):
-        ats_margin = (a_s - hs) + spread
-    else:
-        return "", ""
-
-    if ats_margin > 1e-9:
-        return "WIN", ats_margin
-    if ats_margin < -1e-9:
-        return "LOSS", ats_margin
-    return "PUSH", 0.0
-
-
-def _v361_fetch_final_scores_for_dates(dates):
-    """
-    Fetch completed games for the dates represented in the tracker.
-    Uses the same CFBD games endpoint already used elsewhere in the app.
-    """
-    out = {}
-    for d in sorted(set(str(x) for x in dates if str(x).strip())):
-        try:
-            # CFBD games are season/week based, so use app's date helper if available.
-            # Fallback: infer year and scan schedule results already cached in app helpers.
-            dt = pd.to_datetime(d)
-            season = int(dt.year)
-        except Exception:
-            continue
-
-        games = []
-        # Prefer an existing date-aware helper if the app defines one.
-        try:
-            if "_cfbd_games_by_date" in globals():
-                games = _cfbd_games_by_date(d) or []
-        except Exception:
-            games = []
-
-        if not games:
-            try:
-                # Fall back to season schedule and filter by calendar date.
-                if "_v3_historical_games" in globals():
-                    season_games = _v3_historical_games(season) or []
-                elif "_cfbd_games" in globals():
-                    season_games = _cfbd_games(season) or []
-                else:
-                    season_games = []
-
-                for g in season_games:
-                    start = g.get("start_date") or g.get("startDate") or g.get("start_date_time")
-                    if not start:
-                        continue
-                    try:
-                        gd = pd.to_datetime(start, utc=True).tz_convert("US/Eastern").date().isoformat()
-                    except Exception:
-                        try:
-                            gd = pd.to_datetime(start).date().isoformat()
-                        except Exception:
-                            continue
-                    if gd == d:
-                        games.append(g)
-            except Exception:
-                games = []
-
-        for g in games:
-            gid = str(g.get("id") or "")
-            if not gid:
-                continue
-
-            hs = g.get("home_points")
-            if hs is None:
-                hs = g.get("homePoints")
-            as_ = g.get("away_points")
-            if as_ is None:
-                as_ = g.get("awayPoints")
-
-            completed = g.get("completed")
-            if completed is None:
-                completed = (hs is not None and as_ is not None)
-
-            if not completed or hs is None or as_ is None:
-                continue
-
-            out[gid] = {
-                "home_team": g.get("home_team") or g.get("homeTeam"),
-                "away_team": g.get("away_team") or g.get("awayTeam"),
-                "home_score": hs,
-                "away_score": as_,
-            }
-    return out
-
-
-def _v361_grade_forward_tracker():
-    """
-    Auto-grade frozen official plays once final scores are available.
-    Original recommendation fields are never overwritten.
-    """
-    if not V36_TRACKER_PATH.exists():
-        return 0, pd.DataFrame()
-
-    try:
-        df = pd.read_csv(V36_TRACKER_PATH)
-    except Exception:
-        return 0, pd.DataFrame()
-
-    if df.empty:
-        return 0, df
-
-    # Ensure schema can evolve safely.
-    defaults = {
-        "status": "FROZEN",
-        "result": "",
-        "units_result": "",
-        "final_home_score": "",
-        "final_away_score": "",
-        "graded_at": "",
-        "closing_status": "",
-    }
-    for c, v in defaults.items():
-        if c not in df.columns:
-            df[c] = v
-
-    pending_mask = ~df["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])
-    pending = df[pending_mask].copy()
-    if pending.empty:
-        return 0, df
-
-    finals = _v361_fetch_final_scores_for_dates(pending["game_date"].tolist())
-    if not finals:
-        return 0, df
-
-    graded = 0
-    now = pd.Timestamp.now(tz="US/Eastern").isoformat()
-
-    for idx, r in pending.iterrows():
-        gid = str(r.get("game_id") or "")
-        final = finals.get(gid)
-        if not final:
-            continue
-
-        result, _ = _v361_result_from_final(
-            r.get("home_team"),
-            r.get("away_team"),
-            final["home_score"],
-            final["away_score"],
-            r.get("selection"),
-        )
-        if not result:
-            continue
-
-        stake = float(r.get("suggested_units") or 1.0)
-        # Historical research used -110 flat spread economics.
-        win_profit = _v361_american_profit(-110, stake) or 0.0
-
-        if result == "WIN":
-            units_result = win_profit
-        elif result == "LOSS":
-            units_result = -stake
+        k = pd.to_datetime(kickoff_et, errors="coerce")
+        if pd.isna(k):
+            # Time-only string fallback.
+            if selected_date is not None:
+                k = pd.to_datetime(f"{selected_date} {kickoff_et}", errors="coerce")
+        if pd.isna(k):
+            return False
+        if getattr(k, "tzinfo", None) is None:
+            k = k.tz_localize("America/New_York")
         else:
-            units_result = 0.0
+            k = k.tz_convert("America/New_York")
+        now = pd.Timestamp.now(tz="America/New_York")
+        return now >= k
+    except Exception:
+        return False
 
-        df.at[idx, "result"] = result
-        df.at[idx, "units_result"] = round(float(units_result), 6)
-        df.at[idx, "status"] = "FINAL"
-        df.at[idx, "final_home_score"] = final["home_score"]
-        df.at[idx, "final_away_score"] = final["away_score"]
-        df.at[idx, "graded_at"] = now
-        graded += 1
-
-    if graded:
-        df.to_csv(V36_TRACKER_PATH, index=False)
-
-    return graded, df
-
-
-def _v361_tracker_summary(df):
-    if df is None or df.empty:
-        return {
-            "official": 0, "graded": 0, "pending": 0, "wins": 0,
-            "losses": 0, "pushes": 0, "win_rate": 0.0,
-            "units": 0.0, "roi": 0.0,
-        }
-
-    x = df.copy()
-    res = x["result"].astype(str).str.upper()
-    graded = res.isin(["WIN", "LOSS", "PUSH"])
-    decided = res.isin(["WIN", "LOSS"])
-    wins = int((res == "WIN").sum())
-    losses = int((res == "LOSS").sum())
-    pushes = int((res == "PUSH").sum())
-    pending = int((~graded).sum())
-
-    units = pd.to_numeric(x.get("units_result"), errors="coerce").fillna(0.0).sum()
-    risked = pd.to_numeric(
-        x.loc[graded, "suggested_units"], errors="coerce"
-    ).fillna(0.0).sum()
-
-    return {
-        "official": int(len(x)),
-        "graded": int(graded.sum()),
-        "pending": pending,
-        "wins": wins,
-        "losses": losses,
-        "pushes": pushes,
-        "win_rate": (wins / max(wins + losses, 1)),
-        "units": float(units),
-        "roi": (float(units) / risked) if risked > 0 else 0.0,
-    }
-
-
-def _v361_tracker_splits(df):
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    x = df.copy()
-    x["result"] = x["result"].astype(str).str.upper()
-    x["units_result"] = pd.to_numeric(x["units_result"], errors="coerce").fillna(0.0)
-    x["suggested_units"] = pd.to_numeric(x["suggested_units"], errors="coerce").fillna(0.0)
-    x["selector_score"] = pd.to_numeric(x["selector_score"], errors="coerce")
-    x["graded"] = x["result"].isin(["WIN", "LOSS", "PUSH"])
-
-    rows = []
-    for verdict, g in x.groupby("verdict", dropna=False):
-        dec = g[g["result"].isin(["WIN", "LOSS"])]
-        grd = g[g["graded"]]
-        wins = int((dec["result"] == "WIN").sum())
-        losses = int((dec["result"] == "LOSS").sum())
-        pushes = int((g["result"] == "PUSH").sum())
-        risked = grd["suggested_units"].sum()
-        units = grd["units_result"].sum()
-        rows.append({
-            "Tier": verdict,
-            "Official Bets": int(len(g)),
-            "Record": f"{wins}-{losses}-{pushes}",
-            "Win Rate": wins / max(wins + losses, 1),
-            "Units": units,
-            "ROI": units / risked if risked > 0 else 0.0,
-        })
-    return pd.DataFrame(rows)
-
-
-def _v361_render_tracker():
-    graded_n, df = _v361_grade_forward_tracker()
-
-    st.markdown(
-        '<div class="section-kicker">OFFICIAL PERFORMANCE TRACKER</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "Every locked Best Bet / Bet is frozen before kickoff, then automatically graded "
-        "from final scores. Original lines and recommendations are never rewritten."
-    )
-
-    if graded_n:
-        st.success(f"Auto-graded {graded_n} completed official bet(s).")
-
-    if df is None or df.empty:
-        st.info("No v3.6 official recommendations have been frozen yet.")
-        return
-
-    s = _v361_tracker_summary(df)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Record", f"{s['wins']}-{s['losses']}-{s['pushes']}")
-    c2.metric("Win Rate", f"{s['win_rate']:.1%}")
-    c3.metric("Units", f"{s['units']:+.2f}u")
-    c4.metric("ROI", f"{s['roi']:+.1%}")
-
-    if s["pending"]:
-        st.caption(f"{s['pending']} official bet(s) are still pending.")
-
-    # Cumulative units chart.
-    graded = df[df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
-    if not graded.empty:
-        graded["graded_at_sort"] = pd.to_datetime(
-            graded.get("graded_at"), errors="coerce"
-        )
-        graded["game_date_sort"] = pd.to_datetime(
-            graded.get("game_date"), errors="coerce"
-        )
-        graded = graded.sort_values(["game_date_sort", "graded_at_sort"], na_position="last")
-        graded["units_result"] = pd.to_numeric(
-            graded["units_result"], errors="coerce"
-        ).fillna(0.0)
-        graded["Cumulative Units"] = graded["units_result"].cumsum()
-        chart_df = graded[["game_date_sort", "Cumulative Units"]].dropna()
-        if not chart_df.empty:
-            st.line_chart(
-                chart_df.set_index("game_date_sort"),
-                use_container_width=True,
-            )
-
-    split_df = _v361_tracker_splits(df)
-    if not split_df.empty:
-        with st.expander("Performance by tier", expanded=False):
-            show = split_df.copy()
-            show["Win Rate"] = show["Win Rate"].map(lambda v: f"{v:.1%}")
-            show["Units"] = show["Units"].map(lambda v: f"{v:+.2f}")
-            show["ROI"] = show["ROI"].map(lambda v: f"{v:+.1%}")
-            st.dataframe(show, use_container_width=True, hide_index=True)
-
-    pending = df[~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
-    if not pending.empty:
-        with st.expander(f"Pending official bets — {len(pending)}", expanded=True):
-            cols = [c for c in [
-                "game_date","kickoff_et","selection","verdict",
-                "selector_score","suggested_units"
-            ] if c in pending.columns]
-            st.dataframe(pending[cols], use_container_width=True, hide_index=True)
-
-    with st.expander("Full official bet history", expanded=False):
-        cols = [c for c in [
-            "game_date","selection","verdict","selector_score","result",
-            "units_result","final_away_score","final_home_score","model_version"
-        ] if c in df.columns]
-        st.dataframe(df[cols].sort_values("game_date", ascending=False), use_container_width=True, hide_index=True)
-
-    st.download_button(
-        "Download Official Performance Tracker",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="cfb_v36_forward_tracker.csv",
-        mime="text/csv",
-        use_container_width=True,
-        key="download_v361_performance_tracker",
-    )
-
-
-def _v36_track_daily_card(card, selected_date):
+def _v401_track_daily_card(card, selected_date):
+    """
+    Freeze the FIRST official v4 spread recommendation for a game.
+    Later line moves / reruns never rewrite the original tracked wager.
+    """
     if card is None or card.empty:
         return 0
 
-    official = card[card["verdict"].isin(["BEST BET", "BET"])].copy()
+    official = card[card["verdict"].isin(["BEST BET","BET"])].copy()
     if official.empty:
         return 0
 
-    cols = [
-        "model_version","game_date","game_id","kickoff_et",
-        "home_team","away_team","selection","verdict","selector_score",
-        "classifier_confidence","classifier_agreement","classifier_models",
-        "reg_side","reg_agreement","reg_strength","direction_agreement",
-        "suggested_units","status","result","units_result",
-    ]
+    tracker = _v401_load_tracker()
+    # One official spread record per game/date, regardless of later model reruns/version changes.
+    existing = set(
+        tracker["record_key"].astype(str)
+    ) if not tracker.empty else set()
 
-    existing = pd.DataFrame(columns=cols)
-    try:
-        if V36_TRACKER_PATH.exists():
-            existing = pd.read_csv(V36_TRACKER_PATH)
-    except Exception:
-        existing = pd.DataFrame(columns=cols)
-
-    new_rows = []
-    existing_keys = set()
-    if not existing.empty:
-        for _, er in existing.iterrows():
-            existing_keys.add(
-                (str(er.get("game_date")), str(er.get("game_id")), str(er.get("selection")))
-            )
+    rows = []
+    now = pd.Timestamp.now(tz="America/New_York").isoformat()
 
     for _, r in official.iterrows():
-        key = (str(selected_date), str(r.get("game_id")), str(r.get("selection")))
-        if key in existing_keys:
+        gid = str(r.get("game_id") or "")
+        if not gid:
             continue
-        new_rows.append({
+        key = f"{selected_date}|{gid}|SPREAD"
+        if key in existing:
+            continue
+        if _v401_kickoff_has_started(r.get("kickoff_et"), selected_date):
+            continue
+
+        try:
+            bet_line = float(
+                r.get("market_home_spread_display")
+                if str(r.get("pick_side")) == "HOME"
+                else -float(r.get("market_home_spread_display"))
+            )
+        except Exception:
+            m = re.search(r"([+-]\d+(?:\.\d+)?)\s*$", str(r.get("selection") or ""))
+            bet_line = float(m.group(1)) if m else None
+
+        def fnum(name):
+            try:
+                v = float(r.get(name))
+                return v if np.isfinite(v) else None
+            except Exception:
+                return None
+
+        rows.append({
+            "record_key": key,
             "model_version": MODEL_VERSION,
             "game_date": str(selected_date),
-            "game_id": r.get("game_id"),
+            "game_id": gid,
             "kickoff_et": r.get("kickoff_et"),
             "home_team": r.get("home_team"),
             "away_team": r.get("away_team"),
             "selection": r.get("selection"),
+            "pick_side": r.get("pick_side"),
+            "bet_line": bet_line,
+            "odds": -110,
             "verdict": r.get("verdict"),
-            "selector_score": round(float(r.get("selector_score")), 6),
-            "classifier_confidence": round(float(r.get("classifier_confidence")), 6),
-            "classifier_agreement": int(r.get("classifier_agreement")),
-            "classifier_models": int(r.get("classifier_models")),
-            "reg_side": r.get("reg_side"),
-            "reg_agreement": int(r.get("reg_agreement")),
-            "reg_strength": round(float(r.get("reg_strength")), 6),
-            "direction_agreement": float(r.get("direction_agreement")),
+            "fundamental_grade": r.get("fundamental_grade"),
+            "fair_home_spread": fnum("fair_home_spread"),
+            "market_home_spread": fnum("market_home_spread_display"),
+            "point_edge": fnum("point_edge"),
+            "cover_probability": fnum("cover_probability"),
+            "probability_edge": fnum("probability_edge"),
+            "expected_value": fnum("expected_value"),
+            "reliability": r.get("reliability"),
+            "model_confidence": fnum("model_confidence"),
+            "data_completeness": fnum("data_completeness"),
+            "selector_score": fnum("selector_score"),
             "suggested_units": 1.0,
+            "frozen_at_et": now,
             "status": "FROZEN",
             "result": "",
-            "units_result": "",
+            "units_result": None,
+            "final_home_score": None,
+            "final_away_score": None,
+            "graded_at": None,
         })
+        existing.add(key)
 
-    if not new_rows:
+    if not rows:
         return 0
 
-    out = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True)
+    out = pd.concat([tracker, pd.DataFrame(rows)], ignore_index=True)
+    _v401_save_tracker(out)
+    return len(rows)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _v401_fetch_finals(date_strings):
+    out = {}
+    years = set()
+    dates = set()
+    for d in date_strings:
+        try:
+            dt = pd.Timestamp(str(d))
+            dates.add(dt.strftime("%Y-%m-%d"))
+            years.add(int(dt.year))
+        except Exception:
+            pass
+
+    for y in sorted(years):
+        try:
+            games = get_backtest_games(y)
+        except Exception:
+            games = []
+        for g in games or []:
+            if g.get("completed") is not True:
+                continue
+            gid = str(g.get("id") or "")
+            if not gid:
+                continue
+            start = str(g.get("startDate") or g.get("start_date") or "")[:10]
+            if dates and start and start not in dates:
+                continue
+            if g.get("homePoints") is None or g.get("awayPoints") is None:
+                continue
+            out[gid] = {
+                "home_score": float(g.get("homePoints")),
+                "away_score": float(g.get("awayPoints")),
+            }
+    return out
+
+def _v401_result_from_final(row, final):
     try:
-        V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        out.to_csv(V36_TRACKER_PATH, index=False)
+        line = float(row.get("bet_line"))
+        hs = float(final["home_score"])
+        aas = float(final["away_score"])
     except Exception:
-        return 0
-    return len(new_rows)
+        return None
+
+    side = str(row.get("pick_side") or "")
+    if side == "HOME":
+        margin = hs + line - aas
+    elif side == "AWAY":
+        margin = aas + line - hs
+    else:
+        # Legacy fallback via selection text.
+        sel = str(row.get("selection") or "")
+        if sel.startswith(str(row.get("home_team") or "") + " "):
+            margin = hs + line - aas
+        elif sel.startswith(str(row.get("away_team") or "") + " "):
+            margin = aas + line - hs
+        else:
+            return None
+
+    if margin > 0:
+        return "WIN"
+    if margin < 0:
+        return "LOSS"
+    return "PUSH"
+
+def _v401_grade_tracker():
+    df = _v401_load_tracker()
+    if df.empty:
+        return 0, df
+
+    pending = ~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])
+    if not pending.any():
+        return 0, df
+
+    finals = _v401_fetch_finals(df.loc[pending, "game_date"].tolist())
+    if not finals:
+        return 0, df
+
+    n = 0
+    now = pd.Timestamp.now(tz="America/New_York").isoformat()
+    for idx, r in df.loc[pending].iterrows():
+        final = finals.get(str(r.get("game_id") or ""))
+        if not final:
+            continue
+        result = _v401_result_from_final(r, final)
+        if result is None:
+            continue
+
+        stake = float(r.get("suggested_units") or 1.0)
+        odds = float(r.get("odds") or -110)
+        if result == "WIN":
+            units = _v401_american_profit(odds, stake) or 0.0
+        elif result == "LOSS":
+            units = -stake
+        else:
+            units = 0.0
+
+        df.at[idx, "result"] = result
+        df.at[idx, "units_result"] = round(float(units), 6)
+        df.at[idx, "status"] = "FINAL"
+        df.at[idx, "final_home_score"] = final["home_score"]
+        df.at[idx, "final_away_score"] = final["away_score"]
+        df.at[idx, "graded_at"] = now
+        n += 1
+
+    if n:
+        _v401_save_tracker(df)
+    return n, df
+
+def _v401_summary(df):
+    if df is None or df.empty:
+        return {
+            "bets":0,"graded":0,"pending":0,"wins":0,"losses":0,"pushes":0,
+            "win_rate":0.0,"units":0.0,"roi":0.0
+        }
+    x = df.copy()
+    res = x["result"].astype(str).str.upper()
+    graded = res.isin(["WIN","LOSS","PUSH"])
+    wins = int((res=="WIN").sum())
+    losses = int((res=="LOSS").sum())
+    pushes = int((res=="PUSH").sum())
+    units = pd.to_numeric(x.get("units_result"), errors="coerce").fillna(0.0).sum()
+    risked = pd.to_numeric(
+        x.loc[graded, "suggested_units"], errors="coerce"
+    ).fillna(0.0).sum()
+    return {
+        "bets":int(len(x)),
+        "graded":int(graded.sum()),
+        "pending":int((~graded).sum()),
+        "wins":wins,"losses":losses,"pushes":pushes,
+        "win_rate":wins / max(wins+losses,1),
+        "units":float(units),
+        "roi":float(units)/risked if risked>0 else 0.0,
+    }
+
+def _v401_split_table(df, field, label):
+    if df is None or df.empty or field not in df.columns:
+        return pd.DataFrame()
+    rows = []
+    for key, g in df.groupby(field, dropna=False):
+        s = _v401_summary(g)
+        rows.append({
+            label: str(key),
+            "Bets": s["bets"],
+            "Record": f'{s["wins"]}-{s["losses"]}-{s["pushes"]}',
+            "Win Rate": s["win_rate"],
+            "Units": s["units"],
+            "ROI": s["roi"],
+        })
+    return pd.DataFrame(rows)
+
+def _v401_render_official_tracker():
+    graded_now, df = _v401_grade_tracker()
+    s = _v401_summary(df)
+
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">OFFICIAL BET LEDGER</div>'
+        '<div class="mobile-page-title">Tracker</div>'
+        '<div class="mobile-page-sub">Every official spread is frozen at its first qualifying line before kickoff, then automatically graded from the final score.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    if graded_now:
+        st.success(f"Auto-graded {graded_now} completed official bet(s).")
+
+    if df is None or df.empty:
+        st.info("No official bets have been frozen yet. Run a slate; BET / BEST BET recommendations will be added automatically.")
+        return
+
+    # All-time headline.
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Record", f'{s["wins"]}-{s["losses"]}-{s["pushes"]}')
+    c2.metric("Win Rate", f'{s["win_rate"]:.1%}')
+    c3.metric("Units", f'{s["units"]:+.2f}u')
+    c4.metric("ROI", f'{s["roi"]:+.1%}')
+
+    st.caption(
+        f'{s["bets"]} frozen official bets • {s["graded"]} graded • {s["pending"]} pending • '
+        '1.0u flat risk • frozen line never rewritten'
+    )
+
+    # Current v4.0.1+ architecture performance separated from migrated legacy history.
+    current = df[df["model_version"].astype(str).str.startswith("4.")].copy()
+    if not current.empty:
+        cs = _v401_summary(current)
+        st.markdown('<div class="section-kicker">V4 FUNDAMENTAL ENGINE</div>', unsafe_allow_html=True)
+        d1,d2,d3,d4 = st.columns(4)
+        d1.metric("Record", f'{cs["wins"]}-{cs["losses"]}-{cs["pushes"]}')
+        d2.metric("Bets", cs["bets"])
+        d3.metric("Units", f'{cs["units"]:+.2f}u')
+        d4.metric("ROI", f'{cs["roi"]:+.1%}')
+
+    # Cumulative performance.
+    graded = df[df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
+    if not graded.empty:
+        graded["_date"] = pd.to_datetime(graded["game_date"], errors="coerce")
+        graded["_graded"] = pd.to_datetime(graded["graded_at"], errors="coerce")
+        graded = graded.sort_values(["_date","_graded"], na_position="last")
+        graded["_units"] = pd.to_numeric(graded["units_result"], errors="coerce").fillna(0)
+        graded["Cumulative Units"] = graded["_units"].cumsum()
+        chart = graded[["_date","Cumulative Units"]].dropna()
+        if not chart.empty:
+            st.line_chart(chart.set_index("_date"), use_container_width=True)
+
+    # Pending.
+    pending = df[~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
+    if not pending.empty:
+        with st.expander(f"Pending official bets — {len(pending)}", expanded=True):
+            show = pending[[c for c in [
+                "game_date","kickoff_et","selection","verdict","point_edge",
+                "cover_probability","expected_value","reliability","model_version"
+            ] if c in pending.columns]].copy()
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+    # Performance diagnostics.
+    with st.expander("Performance by model version", expanded=False):
+        t = _v401_split_table(df, "model_version", "Model")
+        if not t.empty:
+            for c in ["Win Rate","ROI"]:
+                t[c] = t[c].map(lambda v: f"{v:.1%}")
+            t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
+            st.dataframe(t, use_container_width=True, hide_index=True)
+
+    with st.expander("Performance by reliability", expanded=False):
+        t = _v401_split_table(df, "reliability", "Reliability")
+        if not t.empty:
+            for c in ["Win Rate","ROI"]:
+                t[c] = t[c].map(lambda v: f"{v:.1%}")
+            t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
+            st.dataframe(t, use_container_width=True, hide_index=True)
+
+    with st.expander("Full official bet history", expanded=False):
+        show = df[[c for c in [
+            "game_date","selection","odds","verdict","fair_home_spread",
+            "point_edge","cover_probability","expected_value","reliability",
+            "result","units_result","final_away_score","final_home_score","model_version"
+        ] if c in df.columns]].copy()
+        st.dataframe(show.sort_values("game_date", ascending=False), use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "Download Official Bet Tracker",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="cfb_official_bet_tracker.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="download_v401_official_tracker",
+    )
+
+    with st.expander("Tracker backup / restore", expanded=False):
+        up = st.file_uploader("Restore official tracker CSV", type=["csv"], key="v401_tracker_restore")
+        if st.button("Merge Tracker Backup", disabled=(up is None), use_container_width=True, key="v401_tracker_merge"):
+            try:
+                incoming = _v401_clean_tracker(pd.read_csv(up))
+                merged = pd.concat([df,incoming], ignore_index=True)
+                merged = merged.drop_duplicates("record_key", keep="first")
+                _v401_save_tracker(merged)
+                st.success(f"Tracker restored: {len(merged)} official records.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not restore tracker: {e}")
 
 
 def _v390_spread_text(v):
@@ -15820,7 +15851,7 @@ def _render_more_page():
     st.markdown(
         """
         <div class="edge-method">
-          <div class="edge-method-title">v3.9 decision stack</div>
+          <div class="edge-method-title">v4.0 production stack</div>
           <div class="edge-method-row"><b>1</b><span>Projection</span><em>SP+/SRS + talent + returning production + matchup + HFA build an independent fair line.</em></div>
           <div class="edge-method-row"><b>2</b><span>Edge</span><em>Sportsbook spread is compared with fair only after projection.</em></div>
           <div class="edge-method-row"><b>3</b><span>Decision</span><em>Cover probability + price EV grade the bet; ensemble agreement is reliability context.</em></div>
@@ -15847,7 +15878,6 @@ def _render_more_page():
         with st.expander("Latest single-game projection export", expanded=False):
             ios_save_button("Save Latest Projection CSV", latest_csv, latest_filename)
 
-    _v361_render_tracker()
 
     latest_board = st.session_state.get("cfb_latest_market_board")
     if isinstance(latest_board, pd.DataFrame) and not latest_board.empty:
@@ -15881,7 +15911,7 @@ _cfb_nav_button("Tracker", "tracker")
 _cfb_nav_button("More", "more")
 
 if main_view == "Tracker":
-    _render_cfb_tracker_page(daily, selected_date)
+    _v401_render_official_tracker()
     st.stop()
 if main_view == "More":
     _render_more_page()
@@ -16222,23 +16252,23 @@ if run_mode == "Full Slate":
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # The floor remains locked. This freezes only actual qualifiers;
-        # no play is created simply because a slate was run.
-        _v36_added = _v36_track_daily_card(v36_card, selected_date)
+        # Freeze only actual v4 official BET / BEST BET recommendations before kickoff.
+        # Re-running later never rewrites the original tracked line.
+        _v36_added = _v401_track_daily_card(v36_card, selected_date)
         if _v36_added:
-            st.toast(f"Tracker froze {_v36_added} new qualifying recommendation(s).")
+            st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
 
         _render_v36_live_card(v36_card, selected_date)
 
         try:
-            _v361_graded_now, _v361_df_now = _v361_grade_forward_tracker()
-            _v361_sum_now = _v361_tracker_summary(_v361_df_now)
-            if _v361_sum_now["official"] > 0:
+            _v401_graded_now, _v401_df_now = _v401_grade_tracker()
+            _v401_sum_now = _v401_summary(_v401_df_now)
+            if _v401_sum_now["bets"] > 0:
                 st.caption(
-                    f"Tracker: {_v361_sum_now['wins']}-{_v361_sum_now['losses']}-{_v361_sum_now['pushes']} "
-                    f"• {_v361_sum_now['units']:+.2f}u "
-                    f"• {_v361_sum_now['roi']:+.1%} ROI "
-                    f"• {_v361_sum_now['pending']} pending"
+                    f"Official tracker: {_v401_sum_now['wins']}-{_v401_sum_now['losses']}-{_v401_sum_now['pushes']} "
+                    f"• {_v401_sum_now['units']:+.2f}u "
+                    f"• {_v401_sum_now['roi']:+.1%} ROI "
+                    f"• {_v401_sum_now['pending']} pending"
                 )
         except Exception:
             pass
@@ -16888,4 +16918,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v4.0 Fundamental Edge Engine • Independent fair line → edge → cover probability → EV.")
+st.caption("CFB Edge • v4.0.1 Fundamental Edge Engine • Automatic official bet tracking + grading.")
