@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.3.1-MOCKUP-MATCH"
+MODEL_VERSION = "4.3.2-NAV-FIX"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6190,6 +6190,76 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
 }
 
 
+
+/* ===== v4.3.2 FIXED HORIZONTAL PRIMARY NAV ===== */
+div[class*="st-key-ge432_topnav"]{
+  width:100%!important;
+  margin:2px 0 10px!important;
+}
+div[class*="st-key-ge432_topnav"] [role="radiogroup"]{
+  display:grid!important;
+  grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  width:100%!important;
+  gap:4px!important;
+  padding:4px!important;
+  margin:0!important;
+  border-radius:14px!important;
+  background:#0a1b2d!important;
+  border:1px solid rgba(105,145,181,.13)!important;
+}
+div[class*="st-key-ge432_topnav"] label{
+  width:100%!important;
+  min-width:0!important;
+  min-height:38px!important;
+  margin:0!important;
+  padding:0 4px!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  border-radius:10px!important;
+  background:transparent!important;
+  cursor:pointer!important;
+}
+div[class*="st-key-ge432_topnav"] label p{
+  margin:0!important;
+  color:#758ea6!important;
+  font-size:.58rem!important;
+  line-height:1!important;
+  font-weight:850!important;
+  text-align:center!important;
+  white-space:nowrap!important;
+}
+div[class*="st-key-ge432_topnav"] label:has(input:checked){
+  background:linear-gradient(145deg,#174676,#10345a)!important;
+  border:1px solid rgba(66,148,239,.26)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035)!important;
+}
+div[class*="st-key-ge432_topnav"] label:has(input:checked) p{
+  color:#f7fbff!important;
+}
+div[class*="st-key-ge432_topnav"] input,
+div[class*="st-key-ge432_topnav"] [data-baseweb="radio"],
+div[class*="st-key-ge432_topnav"] svg{
+  display:none!important;
+  visibility:hidden!important;
+  width:0!important;
+  height:0!important;
+  min-width:0!important;
+  margin:0!important;
+  padding:0!important;
+}
+@media(max-width:520px){
+  div[class*="st-key-ge432_topnav"] [role="radiogroup"]{
+    grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  }
+  div[class*="st-key-ge432_topnav"] label{
+    min-height:37px!important;
+  }
+  div[class*="st-key-ge432_topnav"] label p{
+    font-size:.56rem!important;
+  }
+}
+
 /* ===== GRIDIRON EDGE v4.3.1 MOCKUP MATCH ===== */
 .block-container{max-width:760px!important;padding:calc(8px + env(safe-area-inset-top)) 16px 32px!important}
 
@@ -6204,10 +6274,6 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
 .ge-brand-sub{font-size:.40rem!important;margin-top:4px!important;letter-spacing:.14em!important}
 .v420-live{padding:6px 9px!important;font-size:.49rem!important}
 
-/* top nav */
-div[class*="st-key-ge431_topnav_"]{margin-bottom:4px!important}
-div[class*="st-key-ge431_topnav_"] button{height:38px!important;min-height:38px!important;padding:4px 5px!important;border-radius:11px!important;border:1px solid transparent!important;background:transparent!important;color:#7b93a9!important;font-size:.58rem!important;font-weight:850!important;box-shadow:none!important}
-div[class*="st-key-ge431_topnav_"][class*="_active"] button{background:linear-gradient(145deg,#163e69,#0f2d4d)!important;border-color:rgba(64,144,233,.27)!important;color:#fff!important}
 
 /* dark side-by-side filters */
 div[class*="st-key-v420_game_date"] [data-baseweb="input"],
@@ -6380,19 +6446,34 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# v4.3.1 top navigation
+# v4.3.2 native-style horizontal navigation
 if "cfb_page" not in st.session_state:
     st.session_state["cfb_page"] = "Slate"
-_ge431_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
-_ge431_view = _ge431_alias.get(st.session_state.get("cfb_page", "Slate"), st.session_state.get("cfb_page", "Slate"))
 
-_ge431_cols = st.columns(4, gap="small")
-for _col, _label, _slug in zip(_ge431_cols, ["Slate","Game","Tracker","More"], ["slate","game","tracker","more"]):
-    with _col:
-        _active = _ge431_view == _label
-        if st.button(_label, key=f"ge431_topnav_{_slug}_{'active' if _active else 'idle'}", use_container_width=True):
-            st.session_state["cfb_page"] = _label
-            st.rerun()
+_ge432_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
+_ge432_view = _ge432_alias.get(
+    st.session_state.get("cfb_page", "Slate"),
+    st.session_state.get("cfb_page", "Slate"),
+)
+_ge432_options = ["Slate", "Game", "Tracker", "More"]
+
+# Keep the segmented nav synchronized with navigation triggered elsewhere.
+if st.session_state.get("ge432_topnav") not in _ge432_options:
+    st.session_state["ge432_topnav"] = _ge432_view
+elif st.session_state.get("ge432_topnav") != _ge432_view:
+    st.session_state["ge432_topnav"] = _ge432_view
+
+_ge432_choice = st.radio(
+    "Navigation",
+    _ge432_options,
+    horizontal=True,
+    label_visibility="collapsed",
+    key="ge432_topnav",
+)
+
+if _ge432_choice != _ge432_view:
+    st.session_state["cfb_page"] = _ge432_choice
+    st.rerun()
 
 
 
