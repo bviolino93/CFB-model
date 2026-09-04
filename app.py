@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.3.0-GRIDIRON-EDGE"
+MODEL_VERSION = "4.3.1-MOCKUP-MATCH"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -6189,6 +6189,107 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
   .v420-metric-grid b{font-size:.61rem}
 }
 
+
+/* ===== GRIDIRON EDGE v4.3.1 MOCKUP MATCH ===== */
+.block-container{max-width:760px!important;padding:calc(8px + env(safe-area-inset-top)) 16px 32px!important}
+
+/* compact branded header */
+.ge431-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 5px;padding:4px 0 8px}
+.ge431-brand{display:flex;align-items:center;gap:9px}
+.ge431-header-right{display:flex;align-items:center;gap:9px}
+.ge431-cfb{color:#8fa7bd;font-size:.54rem;font-weight:950;letter-spacing:.12em}
+.ge-football-logo{width:40px!important;height:35px!important}
+.ge-ball{width:34px!important;height:21px!important;top:6px!important}
+.ge-wordmark span,.ge-wordmark strong{font-size:.96rem!important}
+.ge-brand-sub{font-size:.40rem!important;margin-top:4px!important;letter-spacing:.14em!important}
+.v420-live{padding:6px 9px!important;font-size:.49rem!important}
+
+/* top nav */
+div[class*="st-key-ge431_topnav_"]{margin-bottom:4px!important}
+div[class*="st-key-ge431_topnav_"] button{height:38px!important;min-height:38px!important;padding:4px 5px!important;border-radius:11px!important;border:1px solid transparent!important;background:transparent!important;color:#7b93a9!important;font-size:.58rem!important;font-weight:850!important;box-shadow:none!important}
+div[class*="st-key-ge431_topnav_"][class*="_active"] button{background:linear-gradient(145deg,#163e69,#0f2d4d)!important;border-color:rgba(64,144,233,.27)!important;color:#fff!important}
+
+/* dark side-by-side filters */
+div[class*="st-key-v420_game_date"] [data-baseweb="input"],
+div[class*="st-key-v420_game_level"] [data-baseweb="select"]>div{min-height:45px!important;border-radius:14px!important;background:#0d2035!important;border:1px solid rgba(108,148,184,.15)!important;box-shadow:none!important}
+div[class*="st-key-v420_game_date"] input{color:#eef5fb!important;-webkit-text-fill-color:#eef5fb!important;font-size:.71rem!important;font-weight:850!important}
+div[class*="st-key-v420_game_level"] [data-baseweb="select"] *{color:#edf4fa!important;font-size:.71rem!important;font-weight:850!important}
+
+.ge431-filter-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:7px 0 9px}
+.ge431-date-chip{padding:8px 10px;border-radius:12px;background:#0c2035;border:1px solid rgba(108,148,184,.13);color:#d7e3ef;font-size:.56rem;font-weight:850}
+.ge431-games{color:#8aa2b8;font-size:.56rem;font-weight:850}
+
+/* remove bulky old header cards */
+.v420-slate-hero,.v420-day-summary,.v420-section-label,.v420-hero-row,.v420-eyebrow,.v420-market-pill{display:none!important}
+
+/* exact segmented feel */
+div[class*="st-key-v420_slate_segment"] [role="radiogroup"]{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:3px!important;padding:3px!important;border-radius:14px!important;background:#0d2035!important;border:1px solid rgba(108,148,184,.14)!important}
+div[class*="st-key-v420_slate_segment"] label{min-height:40px!important;margin:0!important;padding:0 4px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:11px!important}
+div[class*="st-key-v420_slate_segment"] label p{margin:0!important;color:#8ca3b8!important;font-size:.59rem!important;font-weight:850!important}
+div[class*="st-key-v420_slate_segment"] label:has(input:checked){background:linear-gradient(145deg,#2c8bfb,#1767cb)!important;box-shadow:0 6px 16px rgba(28,105,214,.25)!important}
+div[class*="st-key-v420_slate_segment"] label:has(input:checked) p{color:#fff!important}
+div[class*="st-key-v420_slate_segment"] input,
+div[class*="st-key-v420_slate_segment"] [data-baseweb="radio"],
+div[class*="st-key-v420_slate_segment"] svg{display:none!important;visibility:hidden!important;width:0!important;height:0!important;margin:0!important;padding:0!important}
+
+.ge431-slate-meta{display:flex;align-items:center;gap:8px;color:#7d95ac;font-size:.54rem;margin:7px 2px 9px}
+.ge431-slate-meta span:not(:last-child)::after{content:"";display:inline-block;width:3px;height:3px;border-radius:50%;background:#405a72;margin-left:8px;vertical-align:middle}
+.ge431-slate-meta b{color:#dbe7f0}
+
+/* compact settings and build button */
+div[data-testid="stExpander"]{border-radius:14px!important;background:#0c1f33!important;border:1px solid rgba(108,148,184,.12)!important}
+div[data-testid="stExpander"] summary{min-height:42px!important}
+div[class*="st-key-v420_run_slate"] button{min-height:48px!important;border-radius:14px!important;background:linear-gradient(135deg,#246cf0,#3a8bff)!important;font-size:.74rem!important;font-weight:850!important;box-shadow:0 11px 24px rgba(35,108,228,.22)!important}
+
+/* connected official module */
+.ge-official-head{margin:17px 0 0!important;padding:12px 13px!important;border-radius:17px 17px 0 0!important;background:#0d2137!important;border:1px solid rgba(108,148,184,.14)!important}
+.ge-check{width:29px!important;height:29px!important;border-radius:9px!important}
+.ge-section-title{font-size:.81rem!important}
+.ge-section-sub{font-size:.51rem!important}
+.ge-count{font-size:.43rem!important;padding:5px 7px!important}
+.ge-official-card{margin:0!important;padding:14px!important;border-radius:0!important;border-top:0!important;background:linear-gradient(150deg,#0c2036,#09192b)!important}
+.ge-official-card:last-of-type{border-radius:0 0 17px 17px!important}
+.ge-official-card.best{background:radial-gradient(circle at 90% 0%,rgba(37,132,255,.20),transparent 33%),linear-gradient(145deg,#143960,#0c2949)!important}
+.ge-rank{width:31px!important;height:31px!important}
+.ge-verdict{font-size:.43rem!important;padding:5px 8px!important}
+.ge431-pickline{display:flex;align-items:center;gap:10px;margin:11px 0 0 37px}
+.ge431-team-mark{width:33px;height:33px;flex:0 0 auto;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#102b48;border:1px solid rgba(85,148,205,.18);color:#8cc5ff;font-size:.55rem;font-weight:950}
+.ge431-pickcopy{min-width:0}
+.ge-pick{margin:0!important;font-size:1rem!important}
+.ge-game{margin:3px 0 0!important;font-size:.52rem!important}
+.ge-metric-grid{margin-top:12px!important;gap:4px!important}
+.ge-metric-grid>div{padding:7px 2px!important;border-radius:9px!important}
+.ge-metric-grid span{font-size:.37rem!important}
+.ge-metric-grid b{font-size:.58rem!important}
+
+/* connected lean module */
+.ge-leans-head{margin-top:15px!important;padding:11px 12px!important;border-radius:17px 17px 0 0!important;background:#0d2137!important}
+.ge-lean-row{border-radius:0!important;background:#09192b!important;padding:10px 11px!important}
+.ge-lean-row:last-of-type{border-radius:0 0 17px 17px!important}
+.ge-lean-rank{width:25px!important;height:25px!important}
+.ge-lean-main b{font-size:.60rem!important}
+.ge-lean-main small{font-size:.44rem!important}
+.ge-lean-stats{font-size:.45rem!important;gap:6px!important}
+.ge-lean-pill{font-size:.39rem!important;padding:4px 6px!important}
+
+/* tracker */
+.ge-tracker-card{margin-top:16px!important;padding:12px!important;border-radius:17px!important}
+.ge-tracker-grid{padding:8px 2px!important;margin-top:8px!important}
+.ge-tracker-grid b{font-size:.66rem!important}
+.ge-tracker-grid span{font-size:.39rem!important}
+
+/* old nav gone */
+div[class*="st-key-cfb_nav_"]{display:none!important}
+
+@media(max-width:520px){
+  .block-container{padding-left:13px!important;padding-right:13px!important}
+  .ge-wordmark span,.ge-wordmark strong{font-size:.89rem!important}
+  .ge-brand-sub{font-size:.37rem!important}
+  .ge431-team-mark{width:30px;height:30px}
+  .ge431-pickline{margin-left:35px}
+  .ge-lean-stats{gap:5px!important}
+}
+
 /* ===== GRIDIRON EDGE v4.3 brand + generated-reference layout ===== */
 .ge-appbar{padding:10px 0 18px!important;margin-bottom:15px!important}
 .ge-brandmark{gap:10px!important}
@@ -6260,8 +6361,8 @@ div[class*="st-key-cfb_nav_more_"] button::before{-webkit-mask-image:url("data:i
 
 st.markdown(
     """
-    <div class="v420-appbar ge-appbar">
-      <div class="v420-brandmark ge-brandmark">
+    <div class="ge431-header">
+      <div class="ge431-brand">
         <div class="ge-football-logo" aria-hidden="true">
           <div class="ge-ball"><span></span><b></b><i></i></div>
         </div>
@@ -6270,14 +6371,29 @@ st.markdown(
           <div class="ge-brand-sub">DATA DRIVEN. GAME READY.</div>
         </div>
       </div>
-      <div class="ge-right">
-        <div class="ge-cfb">CFB</div>
+      <div class="ge431-header-right">
+        <span class="ge431-cfb">CFB⌄</span>
         <div class="v420-live"><i></i><span>LIVE</span></div>
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
+# v4.3.1 top navigation
+if "cfb_page" not in st.session_state:
+    st.session_state["cfb_page"] = "Slate"
+_ge431_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
+_ge431_view = _ge431_alias.get(st.session_state.get("cfb_page", "Slate"), st.session_state.get("cfb_page", "Slate"))
+
+_ge431_cols = st.columns(4, gap="small")
+for _col, _label, _slug in zip(_ge431_cols, ["Slate","Game","Tracker","More"], ["slate","game","tracker","more"]):
+    with _col:
+        _active = _ge431_view == _label
+        if st.button(_label, key=f"ge431_topnav_{_slug}_{'active' if _active else 'idle'}", use_container_width=True):
+            st.session_state["cfb_page"] = _label
+            st.rerun()
+
 
 
 try:
@@ -14231,7 +14347,6 @@ if _v38_main_view == "Game":
 
 top1, top2 = st.columns([1, 1])
 with top1:
-    st.markdown('<div class="v420-section-label">DATE</div>', unsafe_allow_html=True)
     selected_date = st.date_input(
         "Game date",
         value=date.today(),
@@ -14276,7 +14391,6 @@ def is_major_team(g, side):
     )
 
 with top2:
-    st.markdown('<div class="v420-section-label">UNIVERSE</div>', unsafe_allow_html=True)
     slate_filter = st.selectbox(
         "Game level",
         ["Major FBS", "All FBS", "All college games"],
@@ -14310,18 +14424,14 @@ if not daily:
 
 st.markdown(
     f"""
-    <div class="v420-day-summary">
-      <div>
-        <span class="v420-day-kicker">{selected_date:%A}</span>
-        <b>{selected_date:%B %d}</b>
-      </div>
-      <div class="v420-day-meta">
-        <span>{len(daily)} games</span><i></i><span>{html.escape(str(slate_filter))}</span>
-      </div>
+    <div class="ge431-filter-summary">
+      <span class="ge431-date-chip">▣ {selected_date:%a, %b %d, %Y}</span>
+      <span class="ge431-games">{len(daily)} Games</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
 
 
 def kickoff_et(g):
@@ -15621,8 +15731,13 @@ def _render_v36_live_card(card, selected_date):
                     <span class="ge-market">{html.escape(market_type)}</span>
                     <span class="ge-verdict {cls}">{'★ ' if cls == 'best' else ''}{html.escape(verdict)}</span>
                   </div>
-                  <div class="ge-pick">{html.escape(str(r.get("selection","")))}</div>
-                  <div class="ge-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                  <div class="ge431-pickline">
+                    <div class="ge431-team-mark">{html.escape(str((r.get("home_team") if r.get("pick_side")=="HOME" else r.get("away_team")) or "?")[:2].upper())}</div>
+                    <div class="ge431-pickcopy">
+                      <div class="ge-pick">{html.escape(str(r.get("selection","")))}</div>
+                      <div class="ge-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                    </div>
+                  </div>
                   <div class="ge-metric-grid">
                     <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
                     <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
@@ -16360,10 +16475,6 @@ def _cfb_nav_button(label, slug):
         st.session_state["cfb_page"] = label
         st.rerun()
 
-_cfb_nav_button("Slate", "slate")
-_cfb_nav_button("Game", "game")
-_cfb_nav_button("Tracker", "tracker")
-_cfb_nav_button("More", "more")
 
 if main_view == "Tracker":
     _v401_render_official_tracker()
@@ -16375,22 +16486,6 @@ if main_view == "More":
 run_mode = "Full Slate" if main_view == "Slate" else "Single Game"
 
 if run_mode == "Full Slate":
-    st.markdown(
-        """
-        <div class="v420-slate-hero">
-          <div class="v420-eyebrow">DAILY EDGE CARD</div>
-          <div class="v420-hero-row">
-            <div>
-              <div class="v420-hero-title">Ranked Slate</div>
-              <div class="v420-hero-copy">Spreads + totals, ranked in one stack.</div>
-            </div>
-            <div class="v420-market-pill">ATS · O/U</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="v420-section-label">SLATE WINDOW</div>', unsafe_allow_html=True)
     slate_choice = st.radio(
         "Slate",
         ["Early", "Midday", "Night", "All Day"],
@@ -16416,21 +16511,16 @@ if run_mode == "Full Slate":
         slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
     st.markdown(
-        f"""
-        <div class="v420-slate-info">
-          <span><b>{len(slate_games)}</b> games</span><i></i>
-          <span>{html.escape(str(slate_choice))}</span><i></i>
-          <span>No forced bets</span>
-        </div>
-        """,
+        f'<div class="ge431-slate-meta"><span><b>{len(slate_games)}</b> Games</span><span>{html.escape(str(slate_choice))}</span><span>No forced bets</span></div>',
         unsafe_allow_html=True,
     )
+
 
     if not slate_games:
         st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
-    with st.expander("Market data", expanded=False):
+    with st.expander("Market Data", expanded=False):
         include_lines = st.checkbox(
             "Validated sportsbook lines",
             value=True,
