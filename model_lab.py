@@ -166,10 +166,19 @@ def closing_spreads(year):
 
 
 def build_season(year):
-    """Assemble one modelling row per completed game with a market spread."""
-    feats = feature_frame(year)
+    """
+    Assemble one modelling row per completed game with a market spread.
+
+    LEAKAGE NOTE: SP+ and SRS for season Y are computed FROM season Y's
+    results, so using them to predict season Y games leaks the outcome.
+    We use season Y-1 ratings, which genuinely exist before kickoff.
+    Talent and returning production are preseason measures and are safe
+    to take from the current year.
+    """
+    feats = feature_frame(year - 1)
+    feats_now = feature_frame(year)
     spreads = closing_spreads(year)
-    if feats.empty or not spreads:
+    if feats.empty or feats_now.empty or not spreads:
         return pd.DataFrame()
 
     rows = []
@@ -187,8 +196,11 @@ def build_season(year):
         away = str(g.get("awayTeam") or "").strip().lower()
         if home not in feats.index or away not in feats.index:
             continue
+        if home not in feats_now.index or away not in feats_now.index:
+            continue
 
         h, a = feats.loc[home], feats.loc[away]
+        hn, an = feats_now.loc[home], feats_now.loc[away]
         # CFBD spread convention is home-negative when the home team is favoured.
         market = spreads[int(gid)]
 
@@ -201,10 +213,10 @@ def build_season(year):
             "margin": hp - ap,                      # actual home margin
             "market_home_margin": -market,          # market's implied home margin
             "neutral": 1.0 if g.get("neutralSite") else 0.0,
-            "sp_diff": float(h["sp_z"] - a["sp_z"]),
-            "srs_diff": float(h["srs_z"] - a["srs_z"]),
-            "talent_diff": float(h["talent_z"] - a["talent_z"]),
-            "returning_diff": float(h["returning_z"] - a["returning_z"]),
+            "sp_diff": float(h["sp_z"] - a["sp_z"]),          # PRIOR season
+            "srs_diff": float(h["srs_z"] - a["srs_z"]),       # PRIOR season
+            "talent_diff": float(hn["talent_z"] - an["talent_z"]),
+            "returning_diff": float(hn["returning_z"] - an["returning_z"]),
         })
 
     return pd.DataFrame(rows)
