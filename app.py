@@ -16983,9 +16983,11 @@ if run_mode == "Full Slate":
     if _build_clicked:
         st.session_state["cfb_build_requested"] = True
     if st.session_state.get("cfb_build_requested"):
+        _build_status = st.status("Building ranked slate…", expanded=False)
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
+            _build_status.update(label="Build failed", state="error")
             st.error(f"CFBD model-data request failed: {e}")
             st.stop()
 
@@ -17334,12 +17336,21 @@ if run_mode == "Full Slate":
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # Freeze official spreads and totals independently before kickoff.
-        _v36_added = _v401_track_daily_card(combined_card, selected_date)
-        if _v36_added:
-            st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
-
+        # Show the ranked card first so results always render, even if the
+        # tracker write has a problem.
+        try:
+            _build_status.update(label="Slate ready", state="complete")
+        except Exception:
+            pass
         _render_v36_live_card(combined_card, selected_date)
+
+        # Freeze official spreads and totals independently before kickoff.
+        try:
+            _v36_added = _v401_track_daily_card(combined_card, selected_date)
+            if _v36_added:
+                st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
+        except Exception as _trk_e:
+            st.warning(f"Bets are shown above, but saving them to the tracker failed: {_trk_e}")
 
         try:
             _v401_graded_now, _v401_df_now = _v401_grade_tracker()
