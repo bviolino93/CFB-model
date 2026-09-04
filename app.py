@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "3.8.0-DECISION-UI"
+MODEL_VERSION = "3.8.1-SPREAD-CORE-ML-VALUE"
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1754,6 +1754,51 @@ def _slate_rank_score(verdict, prob, edge, ev, confidence):
         + c * 0.10
     )
 
+
+
+# ===== v3.8.1 opportunistic moneyline overlay =====
+# ML remains secondary to the validated spread production model.
+# These rules only decide whether an ML deserves to be surfaced in the UI.
+# They do NOT make it an official tracked recommendation.
+V381_ML_MIN_EDGE = 0.05
+V381_ML_MIN_EV = 0.08
+V381_ML_MIN_PROB = 0.45
+V381_ML_MIN_CONFIDENCE = 0.70
+V381_ML_MIN_ODDS = -200
+V381_ML_MAX_ODDS = 250
+
+def _v381_ml_value_candidates(market_board):
+    if market_board is None or market_board.empty:
+        return pd.DataFrame()
+
+    x = market_board.copy()
+    x["market_type_norm"] = x["market_type"].astype(str).str.upper()
+    for c in ["edge", "ev", "prob", "confidence", "odds"]:
+        x[c] = pd.to_numeric(x[c], errors="coerce")
+
+    keep = (
+        x["market_type_norm"].eq("MONEYLINE")
+        & x["edge"].ge(V381_ML_MIN_EDGE)
+        & x["ev"].ge(V381_ML_MIN_EV)
+        & x["prob"].ge(V381_ML_MIN_PROB)
+        & x["confidence"].ge(V381_ML_MIN_CONFIDENCE)
+        & x["odds"].ge(V381_ML_MIN_ODDS)
+        & x["odds"].le(V381_ML_MAX_ODDS)
+        & (~x["fcs_fallback_used"].fillna(False).astype(bool))
+    )
+    out = x.loc[keep].copy()
+    if len(out):
+        out["ml_value_score"] = (
+            0.45 * out["edge"].clip(lower=0)
+            + 0.35 * out["ev"].clip(lower=0)
+            + 0.20 * (out["prob"] - 0.50).clip(lower=0)
+        )
+        out = out.sort_values(
+            ["ml_value_score", "ev", "edge"],
+            ascending=False,
+            na_position="last",
+        )
+    return out
 
 def _ranked_market_board(slate_df):
     rows = []
@@ -5771,6 +5816,25 @@ div[data-testid="stExpander"] summary p{
 
 
 
+
+st.markdown("""
+<style>
+/* ===== v3.8.1 Spread Core + ML Value ===== */
+.ml-overlay{
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+  margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.08);
+}
+.ml-overlay span{
+  color:#91efc2;font-size:.52rem;font-weight:950;letter-spacing:.10em;
+  border:1px solid rgba(66,211,146,.24);border-radius:999px;
+  padding:3px 6px;background:rgba(66,211,146,.05)
+}
+.ml-overlay b{color:#cce8db;font-size:.70rem;font-weight:850}
+.ml-overlay em{color:#6f8e81;font-size:.61rem;font-style:normal}
+.v381-row{align-items:flex-start}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 /* ===== CFB Edge v3.8 Decision UI ===== */
@@ -5856,7 +5920,7 @@ st.markdown(
         <div class="terminal-status"><span></span> LIVE</div>
       </div>
       <div class="terminal-meta">
-        <span>v3.7</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
+        <span>v3.8.1</span><i></i><span>Validated markets</span><i></i><span>0.84 production floor</span>
       </div>
     </div>
     """,
@@ -15207,7 +15271,7 @@ if run_mode == "Full Slate":
     st.markdown(
         '<div class="mobile-page-head terminal-page-head v38-head"><div class="mobile-page-kicker">DAILY CARD</div>'
         '<div class="mobile-page-title">Slate</div>'
-        '<div class="mobile-page-sub">Run the day once. Bet only what clears production.</div></div>',
+        '<div class="mobile-page-sub">Spreads drive the card. Moneyline appears only when exceptional value clears a separate gate.</div></div>',
         unsafe_allow_html=True,
     )
     slate_choice = st.selectbox(
@@ -15220,20 +15284,23 @@ if run_mode == "Full Slate":
         ),
     )
 
-    if slate_choice == "All Day":
-        slate_games = list(daily)
-    else:
-        slate_games = [g for g in daily if slate_bucket(g) == slate_choice]
-
-    slate_games = sorted(
-        slate_games,
+    # v3.8.1: every time-window view is a FILTER of the same full-day
+    # spread production run. We never fall back to a different ML/total board.
+    production_games = sorted(
+        list(daily),
         key=lambda g: kickoff_et(g) if kickoff_et(g) is not None else pd.Timestamp.max.tz_localize("UTC"),
     )
+    if slate_choice == "All Day":
+        slate_games = list(production_games)
+    else:
+        slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
-    st.caption(f"{len(slate_games)} games in the {slate_choice} slate.")
+    st.caption(
+        f"{len(slate_games)} games shown • production ranks all {len(production_games)} games together."
+    )
 
     if not slate_games:
-        st.warning("No games are in this slate with the current game-level filter.")
+        st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
     include_lines = st.checkbox(
@@ -15252,7 +15319,7 @@ if run_mode == "Full Slate":
         # Efficiently pull all line data by unique week rather than one request per game.
         line_cache = {}
         if include_lines:
-            weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
+            weeks = sorted({g.get("week") for g in production_games if g.get("week") is not None})
             for wk in weeks:
                 try:
                     raw = fetch_lines(API_KEY, year=year, week=int(wk))
@@ -15262,7 +15329,7 @@ if run_mode == "Full Slate":
 
         slate_rows = []
 
-        for g in slate_games:
+        for g in production_games:
             gp = project_game(g, model_data_s, hfa=2.5)
             k = kickoff_et(g)
 
@@ -15442,10 +15509,20 @@ if run_mode == "Full Slate":
                 "market_grades_json": json.dumps(market_grades),
             })
 
-        slate_df = pd.DataFrame(slate_rows)
+        production_slate_df = pd.DataFrame(slate_rows)
+
+        # Display subset uses kickoff bucket only; production remains all-day.
+        if slate_choice == "All Day":
+            slate_df = production_slate_df.copy()
+        else:
+            _display_ids = {str(g.get("id")) for g in slate_games}
+            slate_df = production_slate_df[
+                production_slate_df["game_id"].astype(str).isin(_display_ids)
+            ].copy()
 
         st.markdown(f'<div class="section-kicker">{slate_choice} Slate</div>', unsafe_allow_html=True)
 
+        # Research board is scoped to the visible window only.
         market_board = _ranked_market_board(slate_df)
         st.session_state["cfb_latest_market_board"] = market_board.copy()
         st.session_state["cfb_latest_slate_df"] = slate_df.copy()
@@ -15453,53 +15530,99 @@ if run_mode == "Full Slate":
         st.session_state["cfb_latest_slate_date"] = str(selected_date)
 
         v36_card = pd.DataFrame()
-        if slate_choice == "All Day":
-            try:
-                v36_card = _v36_live_daily_card(daily, slate_df, scope="Major FBS")
-            except Exception as _v36e:
-                st.warning(f"Locked daily selector could not run: {_v36e}")
-                v36_card = pd.DataFrame()
+        v36_display_card = pd.DataFrame()
+        try:
+            # Always rank the complete day together.
+            v36_card = _v36_live_daily_card(daily, production_slate_df, scope="Major FBS")
+        except Exception as _v36e:
+            st.warning(f"Locked daily selector could not run: {_v36e}")
+            v36_card = pd.DataFrame()
 
-            st.session_state["cfb_v36_latest_card"] = v36_card.copy()
-            st.session_state["cfb_v36_latest_date"] = str(selected_date)
+        st.session_state["cfb_v36_latest_card"] = v36_card.copy()
+        st.session_state["cfb_v36_latest_date"] = str(selected_date)
 
-            _v36_added = _v36_track_daily_card(v36_card, selected_date)
-            if _v36_added:
-                st.toast(f"Forward tracker froze {_v36_added} new locked recommendation(s).")
+        # Freeze official recommendations from the all-day card only.
+        _v36_added = _v36_track_daily_card(v36_card, selected_date)
+        if _v36_added:
+            st.toast(f"Forward tracker froze {_v36_added} new locked recommendation(s).")
 
-            _render_v36_live_card(v36_card, selected_date)
+        # Filter the SAME production card for Early / Midday / Night.
+        if len(v36_card):
+            if slate_choice == "All Day":
+                v36_display_card = v36_card.copy()
+            else:
+                _visible_pairs = {
+                    (str(g.get("awayTeam") or g.get("away_team") or ""),
+                     str(g.get("homeTeam") or g.get("home_team") or ""))
+                    for g in slate_games
+                }
+                _mask = v36_card.apply(
+                    lambda r: (str(r.get("away_team","")), str(r.get("home_team",""))) in _visible_pairs,
+                    axis=1,
+                )
+                v36_display_card = v36_card.loc[_mask].copy()
 
-            try:
-                _v361_graded_now, _v361_df_now = _v361_grade_forward_tracker()
-                _v361_sum_now = _v361_tracker_summary(_v361_df_now)
-                if _v361_sum_now["official"] > 0:
-                    st.caption(
-                        f"Tracker: {_v361_sum_now['wins']}-{_v361_sum_now['losses']}-{_v361_sum_now['pushes']} "
-                        f"• {_v361_sum_now['units']:+.2f}u "
-                        f"• {_v361_sum_now['roi']:+.1%} ROI "
-                        f"• {_v361_sum_now['pending']} pending"
-                    )
-            except Exception:
-                pass
+        _render_v36_live_card(v36_display_card, selected_date)
 
-        st.markdown('<div class="decision-section-label decision-list-title">SLATE RANKING</div>', unsafe_allow_html=True)
+        try:
+            _v361_graded_now, _v361_df_now = _v361_grade_forward_tracker()
+            _v361_sum_now = _v361_tracker_summary(_v361_df_now)
+            if _v361_sum_now["official"] > 0:
+                st.caption(
+                    f"Tracker: {_v361_sum_now['wins']}-{_v361_sum_now['losses']}-{_v361_sum_now['pushes']} "
+                    f"• {_v361_sum_now['units']:+.2f}u "
+                    f"• {_v361_sum_now['roi']:+.1%} ROI "
+                    f"• {_v361_sum_now['pending']} pending"
+                )
+        except Exception:
+            pass
 
-        if slate_choice == "All Day" and isinstance(v36_card, pd.DataFrame) and len(v36_card):
-            v38_ranked = v36_card.copy()
-            v38_ranked["selector_score"] = pd.to_numeric(v38_ranked["selector_score"], errors="coerce")
-            v38_ranked = v38_ranked.sort_values("selector_score", ascending=False, na_position="last")
-            for _, rr in v38_ranked.iterrows():
+        st.markdown('<div class="decision-section-label decision-list-title">SPREAD RANKING</div>', unsafe_allow_html=True)
+
+        # Separate, conservative ML overlay. This is never part of the official spread record.
+        ml_value_board = _v381_ml_value_candidates(market_board)
+        ml_by_game = {}
+        if len(ml_value_board):
+            for _, _mlr in ml_value_board.iterrows():
+                _g = str(_mlr.get("game",""))
+                if _g not in ml_by_game:
+                    ml_by_game[_g] = _mlr
+
+        if isinstance(v36_display_card, pd.DataFrame) and len(v36_display_card):
+            v381_ranked = v36_display_card.copy()
+            v381_ranked["selector_score"] = pd.to_numeric(v381_ranked["selector_score"], errors="coerce")
+            v381_ranked = v381_ranked.sort_values("selector_score", ascending=False, na_position="last")
+
+            for _, rr in v381_ranked.iterrows():
                 score = float(rr.get("selector_score") or 0.0)
                 verdict = str(rr.get("verdict") or "PASS")
                 state = verdict if verdict in ("BEST BET", "BET") else ("WATCH" if score >= 0.80 else "PASS")
                 state_cls = "official" if verdict in ("BEST BET","BET") else ("watch" if state == "WATCH" else "pass")
+                game_name = f"{rr.get('away_team','')} @ {rr.get('home_team','')}"
+
+                ml_html = ""
+                mlr = ml_by_game.get(game_name)
+                if mlr is not None:
+                    try:
+                        _odds_txt = f"{int(float(mlr.get('odds'))):+d}"
+                    except Exception:
+                        _odds_txt = ""
+                    ml_html = f"""
+                      <div class="ml-overlay">
+                        <span>ML VALUE</span>
+                        <b>{html.escape(str(mlr.get("market","")))} {_odds_txt}</b>
+                        <em>{float(mlr.get("edge") or 0.0)*100:+.1f}% edge · {float(mlr.get("ev") or 0.0)*100:+.1f}% EV</em>
+                      </div>
+                    """
+
                 st.markdown(
                     f"""
-                    <div class="slate-rank-row">
+                    <div class="slate-rank-row v381-row">
                       <div class="slate-rank-main">
-                        <div class="slate-rank-game">{html.escape(str(rr.get("away_team","")))} @ {html.escape(str(rr.get("home_team","")))}</div>
+                        <div class="slate-rank-game">{html.escape(game_name)}</div>
                         <div class="slate-rank-pick">{html.escape(str(rr.get("selection","")))}</div>
                         <div class="slate-rank-time">{html.escape(str(rr.get("kickoff_et","")))}</div>
+                        {ml_html}
                       </div>
                       <div class="slate-rank-side">
                         <div class="slate-rank-score">{score:.3f}</div>
@@ -15509,33 +15632,11 @@ if run_mode == "Full Slate":
                     """,
                     unsafe_allow_html=True,
                 )
-        elif len(market_board):
-            best_by_game = (
-                market_board.sort_values(
-                    ["grade_rank","rank_score","ev","edge"],
-                    ascending=[False,False,False,False],
-                    na_position="last",
-                )
-                .groupby("game", sort=False)
-                .head(1)
-            )
-            for _, rr in best_by_game.iterrows():
-                st.markdown(
-                    f"""
-                    <div class="slate-rank-row">
-                      <div class="slate-rank-main">
-                        <div class="slate-rank-game">{html.escape(str(rr.get("game","")))}</div>
-                        <div class="slate-rank-pick">{html.escape(str(rr.get("market","")))}</div>
-                        <div class="slate-rank-time">{html.escape(str(rr.get("kickoff_et","")))}</div>
-                      </div>
-                      <div class="slate-rank-side"><div class="slate-rank-state pass">RESEARCH</div></div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+        else:
+            st.info("No spread candidates are available in this time window.")
 
         with st.expander("Research markets", expanded=False):
-            st.caption("Spread, moneyline and total rankings are retained for research context. They are not the official production card.")
+            st.caption("Secondary market research only. The production card is spread-first; ML appears above only when the strict value overlay clears.")
             if len(market_board):
                 research_cols = [c for c in [
                     "game","kickoff_et","market","market_type","grade","prob","edge","ev"
@@ -16101,4 +16202,4 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("CFB Edge • v3.8 Decision UI • Validated actual market lines • Locked 0.84 spread floor • Automatic official performance tracking.")
+st.caption("CFB Edge • v3.8.1 Spread Core • Validated spreads • Opportunistic ML value overlay • Locked 0.84 spread floor.")
