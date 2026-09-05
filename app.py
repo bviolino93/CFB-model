@@ -14714,9 +14714,12 @@ _slate_done = (
 )
 if not _show_filters or _slate_done:
     st.markdown(
-        '<style>div[class*="st-key-ge433_filter_row"]{display:none!important}'
-        'div[class*="st-key-v420_slate_segment"]{display:none!important}'
-        'div[class*="st-key-v420_market_lines_wrap"]{display:none!important}</style>',
+        '<style>div[class*="st-key-ge433_filter_row"],'
+        'div[class*="st-key-se_line_settings"],'
+        'div[class*="st-key-v420_slate_segment"]{'
+        'display:none!important;height:0!important;min-height:0!important;'
+        'margin:0!important;padding:0!important;overflow:hidden!important}'
+        '</style>',
         unsafe_allow_html=True,
     )
 
@@ -17417,7 +17420,7 @@ if run_mode == "Full Slate":
         st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
-    with st.expander("Line settings", expanded=False):
+    with st.container(key="se_line_settings"), st.expander("Line settings", expanded=False):
         include_lines = st.checkbox(
             "Use live sportsbook lines",
             value=True,
@@ -17428,7 +17431,7 @@ if run_mode == "Full Slate":
 
     # Collapsed summary + a way back to the controls.
     if _slate_done:
-        _sc1, _sc2 = st.columns([3, 1])
+        _sc1, _sc2 = st.columns([2.6, 1], vertical_alignment="center")
         with _sc1:
             st.markdown(
                 f'<div class="se-filter-summary">'
