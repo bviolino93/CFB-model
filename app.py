@@ -6724,6 +6724,12 @@ div[class*="st-key-v420_run_slate"] button{
 .se-mini-time.lost{color:#f2748a}
 .se-mini-time.push{color:#f2c14e}
 .se-mini-time.big{font-size:.72rem;margin-top:6px}
+.se-mini-time.live{color:#4ae0aa}
+.se-mini-time.soon{color:#f2c14e}
+.se-meta{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px}
+.se-meta span{font-size:.62rem;color:#8fa6bd;font-weight:600}
+.se-meta b{color:#dbe7f5;font-weight:800}
+.se-meta .cov{color:#7fb4ff;font-weight:800}
 .se-mini .se-conv{margin-top:8px}
 .se-hero-bet-copy small em{font-style:normal;color:#7fb4ff;font-weight:700}
 .se-ability{margin:2px 0 22px}
@@ -17532,6 +17538,50 @@ try:
 except Exception:
     pass
 
+def _se_card_meta(row, now, day=None):
+    """Fair vs market, cover probability, and time to kickoff."""
+    if str(row.get("result", "") or "").strip():
+        return _se_result_badge(row)
+
+    bits = []
+    try:
+        _is_tot = str(row.get("market_type", "")).upper() == "TOTAL"
+        mk = float(row.get("market_total") if _is_tot else row.get("market_home_spread"))
+        fa = float(row.get("fair_total") if _is_tot else row.get("fair_home_spread"))
+        bits.append(f'<span>fair <b>{fa:+.1f}</b> vs <b>{mk:+.1f}</b></span>'
+                    if not _is_tot else
+                    f'<span>fair <b>{fa:.1f}</b> vs <b>{mk:.1f}</b></span>')
+    except Exception:
+        pass
+    try:
+        cp = float(row.get("cover_probability"))
+        bits.append(f'<span class="cov">{cp*100:.1f}% cover</span>')
+    except Exception:
+        pass
+
+    label, state = _se_time_to_kick(row, now, day)
+    return (f'<div class="se-meta">{"".join(bits)}</div>'
+            f'<div class="se-mini-time {state}">{html.escape(label)}</div>')
+
+
+def _se_time_to_kick(row, now, day=None):
+    """Human countdown to kickoff, or the game's state once it has started."""
+    if str(row.get("result", "") or "").strip():
+        return "final", "final"
+    kd = _se_kick_dt(row, day)
+    if kd is None:
+        return "TBD", "wait"
+    m = (kd - now).total_seconds() / 60.0
+    if m <= -210:
+        return "final", "final"
+    if m <= 0:
+        return "live now", "live"
+    if m < 60:
+        return f"in {int(m)}m", "soon"
+    h, mm = divmod(int(m), 60)
+    return (f"in {h}h {mm}m" if mm else f"in {h}h"), "wait"
+
+
 def _se_kick_dt(row, day=None):
     """
     Parse a tracker kickoff into a tz-aware timestamp. The field may be a full
@@ -17839,7 +17889,7 @@ def _render_home_page():
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
-            f'{_se_result_badge(_h, big=True)}</div>'
+            f'{_se_card_meta(_h, _now, _today)}</div>'
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
             f'</div>'
@@ -17894,7 +17944,7 @@ def _render_home_page():
                             f'<b>{html.escape(str(r.get("selection","")))}</b>'
                             f'<small>{html.escape(str(r.get("away_team","")))} @ '
                             f'{html.escape(str(r.get("home_team","")))}</small>'
-                            f'{_se_result_badge(r)}'
+                            f'{_se_card_meta(r, _now, _today)}'
                             f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
                             f'</div>',
                             unsafe_allow_html=True,
