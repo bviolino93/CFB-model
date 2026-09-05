@@ -16400,7 +16400,9 @@ V50_MIN_EV = 0.040         # +4.0% EV after shrinkage — the ONLY volume contro
 V50_FUN_COUNT = 5          # watch list size
 
 
-V50_FUN_MAX_SPREAD = 14.0  # fun bets should stay competitive into the 4th
+V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
+# just miss the official threshold still surface somewhere rather than
+# vanishing between the two tiers.
 
 
 def _v50_apply_strict_selection(card):
@@ -17644,42 +17646,54 @@ def _se_slate_map_svg(points, w=680, h=380):
             f'xmlns="http://www.w3.org/2000/svg" role="img">{grid}{"".join(dots)}</svg>')
 
 
-def _se_edge_scatter_svg(rows, thresh, w=680, h=320):
+def _se_edge_scatter_svg(rows, thresh, w=680, h=250):
     """
-    The whole board at once: market number against the model's edge. Shows
-    where the model disagrees and how few of those clear the bar.
+    Every market on the slate, placed by EV alone. Spreads and totals cannot
+    share a market-number axis (-10.5 vs 55.5 are not comparable), so this
+    plots the one quantity that applies to both, with the threshold marked.
+    Dots are jittered vertically so overlaps stay visible.
     """
     if not rows:
         return ""
-    xs = [r["mkt"] for r in rows]
-    ys = [r["ev"] for r in rows]
-    x0, x1 = min(xs + [-30]), max(xs + [30])
-    y0, y1 = min(ys + [-0.05]), max(ys + [thresh * 2])
-    pad_l, pad_b, pad_t, pad_r = 34, 26, 12, 10
-    def px(v): return pad_l + (v - x0) / (x1 - x0 or 1) * (w - pad_l - pad_r)
-    def py(v): return pad_t + (y1 - v) / (y1 - y0 or 1) * (h - pad_t - pad_b)
+    evs = [r["ev"] for r in rows]
+    lo = min(min(evs), -0.02)
+    hi = max(max(evs), thresh * 1.35)
+    pad_l, pad_r, pad_t, pad_b = 16, 16, 34, 40
+    iw, ih = w - pad_l - pad_r, h - pad_t - pad_b
+    def px(v): return pad_l + (v - lo) / (hi - lo or 1) * iw
 
-    pts = "".join(
-        f'<circle cx="{px(r["mkt"]):.1f}" cy="{py(r["ev"]):.1f}" '
-        f'r="{5.2 if r["bet"] else 3.0}" '
-        f'fill="{"#4ae0aa" if r["bet"] else "#7f97ae"}" '
-        f'opacity="{".95" if r["bet"] else ".34"}"/>'
-        for r in sorted(rows, key=lambda x: x["bet"])
-    )
+    band = [
+        f'<rect x="{px(thresh):.1f}" y="{pad_t}" '
+        f'width="{max(px(hi)-px(thresh),1):.1f}" height="{ih}" '
+        f'fill="#4ae0aa" opacity=".07"/>'
+    ]
+    ticks = []
+    for v in (0.0, thresh):
+        ticks.append(
+            f'<line x1="{px(v):.1f}" y1="{pad_t}" x2="{px(v):.1f}" y2="{pad_t+ih}" '
+            f'stroke="{"#f2c14e" if v == thresh else "rgba(120,154,188,.28)"}" '
+            f'stroke-width="{2 if v == thresh else 1}" '
+            f'{"stroke-dasharray=\"5 5\"" if v == thresh else ""}/>'
+        )
+    dots = []
+    for i, r in enumerate(sorted(rows, key=lambda x: x["bet"])):
+        y = pad_t + 14 + ((i * 37) % max(ih - 28, 1))
+        dots.append(
+            f'<circle cx="{px(r["ev"]):.1f}" cy="{y:.1f}" '
+            f'r="{5.4 if r["bet"] else 3.2}" '
+            f'fill="{"#4ae0aa" if r["bet"] else "#7f97ae"}" '
+            f'opacity="{".95" if r["bet"] else ".42"}"/>'
+        )
     return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
-  <line x1="{pad_l}" y1="{py(0):.1f}" x2="{w-pad_r}" y2="{py(0):.1f}"
-        stroke="rgba(120,154,188,.22)" stroke-width="1"/>
-  <line x1="{px(0):.1f}" y1="{pad_t}" x2="{px(0):.1f}" y2="{h-pad_b}"
-        stroke="rgba(120,154,188,.14)" stroke-width="1"/>
-  <line x1="{pad_l}" y1="{py(thresh):.1f}" x2="{w-pad_r}" y2="{py(thresh):.1f}"
-        stroke="#f2c14e" stroke-width="1.8" stroke-dasharray="5 5"/>
-  <text x="{w-pad_r}" y="{py(thresh)-6:.1f}" fill="#f2c14e" font-size="10.5"
-        font-family="sans-serif" text-anchor="end">bet threshold {thresh:.1%}</text>
-  {pts}
-  <text x="{pad_l}" y="{h-7}" fill="#7f97ae" font-size="10.5"
-        font-family="sans-serif">market spread \u2192</text>
-  <text x="{pad_l-6}" y="{pad_t+9}" fill="#7f97ae" font-size="10.5"
-        font-family="sans-serif" text-anchor="end" transform="rotate(-90 {pad_l-6} {pad_t+9})">EV</text>
+  {"".join(band)}{"".join(ticks)}{"".join(dots)}
+  <text x="{px(0):.1f}" y="{pad_t-10}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif" text-anchor="middle">0%</text>
+  <text x="{px(thresh):.1f}" y="{pad_t-10}" fill="#f2c14e" font-size="11"
+        font-family="sans-serif" text-anchor="middle">bet threshold {thresh:.0%}</text>
+  <text x="{pad_l}" y="{h-14}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif">\u2190 model likes the other side</text>
+  <text x="{w-pad_r}" y="{h-14}" fill="#4ae0aa" font-size="10.5"
+        font-family="sans-serif" text-anchor="end">stronger edge \u2192</text>
 </svg>'''
 
 
@@ -18151,7 +18165,7 @@ def _render_home_page():
         if _sc or _pts:
             st.markdown('<div class="se-sec">THE WHOLE BOARD</div>',
                         unsafe_allow_html=True)
-            _t1, _t2 = st.tabs(["Model vs market", "Map"])
+            _t1, _t2 = st.tabs(["Edge spread", "Map"])
             with _t1:
                 if _sc:
                     st.markdown(
@@ -18160,21 +18174,34 @@ def _render_home_page():
                     )
                     _n_bet = sum(1 for r in _sc if r["bet"])
                     st.caption(
-                        f"Every market on today's slate. {len(_sc)} priced, "
-                        f"{_n_bet} above the threshold. Most sit near zero \u2014 "
-                        "the model agrees with the market almost everywhere."
+                        f"All {len(_sc)} markets on today's slate, placed by "
+                        f"expected value. {_n_bet} clear the threshold. The pile-up "
+                        "near zero is the model agreeing with the market \u2014 "
+                        "which is what an honest model does most of the time."
                     )
                 else:
                     st.caption("Build a slate to see the board.")
             with _t2:
                 if _pts:
-                    st.markdown(
-                        f'<div class="se-curve">{_se_slate_map_svg(_pts)}</div>',
-                        unsafe_allow_html=True,
+                    _mdf = pd.DataFrame(_pts)
+                    _mdf["size"] = [
+                        (28000 + min(45000, abs(p.get("ev", 0)) * 420000))
+                        if p["bet"] else 9000
+                        for p in _pts
+                    ]
+                    _mdf["color"] = [
+                        "#4ae0aa" if p["bet"] else "#5a7086" for p in _pts
+                    ]
+                    st.map(
+                        _mdf.rename(columns={"lat": "latitude", "lon": "longitude"}),
+                        latitude="latitude", longitude="longitude",
+                        size="size", color="color",
                     )
+                    _nb = sum(1 for p in _pts if p["bet"])
                     st.caption(
-                        f"{len(_pts)} games plotted by venue. Green dots are "
-                        "official bets, sized by expected value."
+                        f"The {len(_pts)} games in today's slate. Green marks the "
+                        f"{_nb} official bet(s), sized by expected value. "
+                        "Pinch to zoom."
                     )
                 else:
                     st.caption("No venue locations available for today's games.")
