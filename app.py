@@ -6899,7 +6899,7 @@ elif st.session_state.get("_ge432_last_view") != _ge432_visible_view:
 st.session_state["_ge432_last_view"] = _ge432_visible_view
 
 _ge432_choice = st.radio(
-    "",
+    "Main navigation",
     _ge432_options,
     horizontal=True,
     label_visibility="collapsed",
@@ -17553,13 +17553,8 @@ def _se_save_board(card, day):
         x["game_date"] = str(day)
         keep = [c for c in SE_BOARD_COLS if c in x.columns]
         x = x[keep].dropna(subset=["expected_value"])
-        try:
-            old = pd.DataFrame(ws.get_all_records())
-            if not old.empty and "game_date" in old.columns:
-                old = old[old["game_date"].astype(str) != str(day)]
-                x = pd.concat([old, x], ignore_index=True)
-        except Exception:
-            pass
+        # Write only today's board. Reading the whole sheet first added
+        # another round trip, and history is not needed for a "today" view.
         body = [list(x.columns)] + x.astype(object).where(pd.notna(x), "").values.tolist()
         ws.clear()
         ws.update(body, value_input_option="RAW")
@@ -18319,7 +18314,7 @@ run_mode = "Full Slate" if main_view == "Slate" else "Single Game"
 
 if run_mode == "Full Slate":
     slate_choice = st.radio(
-        "",
+        "Kickoff window",
         ["Early", "Midday", "Night", "All Day"],
         index=3,
         horizontal=True,
@@ -18762,10 +18757,17 @@ if run_mode == "Full Slate":
                 if _col in _official.columns:
                     _stored.loc[_official.index, _col] = _official[_col]
         st.session_state["cfb_v36_latest_card"] = _stored
-        try:
-            _se_save_board(_stored, selected_date)
-        except Exception:
-            pass
+        # Board snapshot is a nicety for the front-page visuals, not core.
+        # Skip it if we already saved this date recently — repeated rebuilds
+        # were stacking Sheets writes and hitting Google's rate limit, which
+        # makes gspread retry with backoff for minutes.
+        _bkey = f"se_board_saved_{selected_date}"
+        if not st.session_state.get(_bkey):
+            try:
+                if _se_save_board(_stored, selected_date):
+                    st.session_state[_bkey] = True
+            except Exception:
+                pass
 
         try:
             _build_status.update(label="Slate ready", state="complete")
