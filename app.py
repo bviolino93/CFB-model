@@ -6707,8 +6707,12 @@ div[class*="st-key-v420_run_slate"] button{
 .se-hero-ev{text-align:right}
 .se-hero-ev b{display:block;font-size:1.24rem;color:#4ae0aa;font-weight:800}
 .se-hero-ev span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
+div[class*="st-key-se_pair"]{margin-bottom:9px}
+div[class*="st-key-se_pair"] [data-testid="stColumn"]{display:flex}
+div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-mini{
-  padding:12px 12px 11px;border-radius:14px;height:100%;
+  padding:12px 12px 11px;border-radius:14px;
+  display:flex;flex-direction:column;min-height:132px;
   background:rgba(12,26,44,.6);border:1px solid rgba(120,154,188,.13);
 }
 .se-mini-top{display:flex;align-items:center;gap:7px;margin-bottom:8px}
@@ -6728,6 +6732,15 @@ div[class*="st-key-v420_run_slate"] button{
 .se-mini-time.lost{color:#f2748a}
 .se-mini-time.push{color:#f2c14e}
 .se-mini-time.big{font-size:.72rem;margin-top:6px}
+.se-extra{display:flex;align-items:center;gap:10px;padding:9px 4px;
+  border-bottom:1px solid rgba(120,154,188,.08)}
+.se-extra:last-child{border-bottom:none}
+.se-extra-rank{width:20px;font-size:.62rem;color:#7f97ae;font-weight:800;text-align:center}
+.se-extra-main{flex:1;min-width:0}
+.se-extra-main b{display:block;font-size:.82rem;color:#eef4fb;font-weight:800}
+.se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-extra-ev{color:#4ae0aa;font-size:.8rem;font-weight:800;white-space:nowrap}
 .se-mini-time.live{color:#4ae0aa}
 .se-mini-time.soon{color:#f2c14e}
 .se-meta{margin-top:6px;line-height:1.55}
@@ -18254,14 +18267,17 @@ def _render_home_page():
         _rest_df = _top.iloc[1:].copy()
         _mt = _rest_df["market_type"].astype(str).str.upper() \
             if "market_type" in _rest_df.columns else pd.Series("", index=_rest_df.index)
-        _spreads = _rest_df[_mt != "TOTAL"].head(5)
-        _totals = _rest_df[_mt == "TOTAL"].head(5)
+        _all_spreads = _rest_df[_mt != "TOTAL"]
+        _all_totals = _rest_df[_mt == "TOTAL"]
+        _spreads, _totals = _all_spreads.head(5), _all_totals.head(5)
 
         _rest = []
         if not _spreads.empty:
-            _rest.append(("TOP SPREADS", list(_spreads.iterrows())))
+            _rest.append(("TOP SPREADS", list(_spreads.iterrows()),
+                          list(_all_spreads.iloc[5:].iterrows())))
         if not _totals.empty:
-            _rest.append(("TOP TOTALS", list(_totals.iterrows())))
+            _rest.append(("TOP TOTALS", list(_totals.iterrows()),
+                          list(_all_totals.iloc[5:].iterrows())))
         st.markdown(
             '<style>'
             'div[class*="st-key-se_pair"] [data-testid="stHorizontalBlock"]{'
@@ -18272,7 +18288,7 @@ def _render_home_page():
             '</style>',
             unsafe_allow_html=True,
         )
-        for _grp_name, _grp in _rest:
+        for _grp_name, _grp, _extra in _rest:
             st.markdown(
                 f'<div class="se-sec">{_grp_name} \u00b7 {len(_grp)}</div>',
                 unsafe_allow_html=True,
@@ -18298,6 +18314,24 @@ def _render_home_page():
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
+
+            if _extra:
+                _lbl = _grp_name.replace("TOP ", "").lower()
+                with st.expander(f"Show {len(_extra)} more {_lbl}", expanded=False):
+                    for _j, (_, r) in enumerate(_extra, start=6):
+                        st.markdown(
+                            f'<div class="se-extra">'
+                            f'<span class="se-extra-rank">{_j}</span>'
+                            f'{_pick_logo_html(r, 22)}'
+                            f'<div class="se-extra-main">'
+                            f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                            f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                            f'{html.escape(str(r.get("home_team","")))}</small></div>'
+                            f'<span class="se-extra-ev">'
+                            f'{_v390_prob_text(r.get("expected_value"))}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
 
 
     # --- record ------------------------------------------------------------
