@@ -18026,6 +18026,17 @@ def _render_home_page():
             _coords = _se_venue_coords()
             _gv = {str(g.get("id")): str(g.get("venueId") or g.get("venue_id") or "")
                    for g in _tg}
+            # The tracker always carries the real pick name ("Over 56.5"),
+            # unlike older board snapshots. Prefer it for official bets.
+            _seltxt = {}
+            try:
+                for _, _tr in _off.iterrows():
+                    _sv = str(_tr.get("selection", "") or "").strip()
+                    if _sv:
+                        _seltxt[str(_tr.get("game_id"))] = _sv
+            except Exception:
+                pass
+
             _gmeta = {}
             for g in _tg:
                 _k = kickoff_et(g)
@@ -18052,7 +18063,8 @@ def _render_home_page():
                         "lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet,
                         "matchup": _gm.get("matchup", ""),
                         "kick": _gm.get("kick", ""),
-                        "pick": _se_pick_label(_b, _isbet),
+                        "pick": _seltxt.get(str(_b.get("game_id")), "")
+                                or _se_pick_label(_b, _isbet),
                         "evtxt": f"{_ev*100:+.1f}% EV",
                         "verdict": str(_b.get("verdict", "") or "PASS"),
                     })
