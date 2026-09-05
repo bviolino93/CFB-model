@@ -6700,6 +6700,10 @@ div[class*="st-key-v420_run_slate"] button{
 .se-hero-bet-copy{flex:1;min-width:0}
 .se-hero-bet-copy b{display:block;font-size:1.18rem;color:#fff;font-weight:800;letter-spacing:-.01em}
 .se-hero-bet-copy small{display:block;font-size:.72rem;color:#9db4cb;margin-top:2px}
+.se-hero-meta{margin-top:6px;font-size:.7rem;color:#8fa6bd;font-weight:600}
+.se-hero-meta b{color:#dbe7f5;font-weight:800}
+.se-hero-meta .soon{color:#f2c14e;font-weight:800}
+.se-hero-meta .live{color:#4ae0aa;font-weight:800}
 .se-hero-ev{text-align:right}
 .se-hero-ev b{display:block;font-size:1.24rem;color:#4ae0aa;font-weight:800}
 .se-hero-ev span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
@@ -17678,7 +17682,7 @@ def _se_edge_scatter_svg(rows, thresh, w=680, h=250):
         )
     return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
   {"".join(band)}{"".join(ticks)}{"".join(dots)}
-  <text x="{px(0):.1f}" y="{pad_t-10}" fill="#7f97ae" font-size="10.5"
+  <text x="{px(0):.1f}" y="{h-26}" fill="#7f97ae" font-size="10"
         font-family="sans-serif" text-anchor="middle">0%</text>
   <text x="{px(thresh):.1f}" y="{pad_t-10}" fill="#f2c14e" font-size="11"
         font-family="sans-serif" text-anchor="middle">bet threshold {thresh:.0%}</text>
@@ -17710,6 +17714,29 @@ def _se_pick_label(row, is_bet):
     except Exception:
         pass
     return "Official bet" if is_bet else "No bet"
+
+
+def _se_hero_meta(row, now, day=None):
+    """Compact one-line meta for the hero card, which lays out horizontally."""
+    if str(row.get("result", "") or "").strip():
+        return _se_result_badge(row, big=True)
+    bits = []
+    try:
+        _is_tot = str(row.get("market_type", "")).upper() == "TOTAL"
+        mk = float(row.get("market_total") if _is_tot else row.get("market_home_spread"))
+        fa = float(row.get("fair_total") if _is_tot else row.get("fair_home_spread"))
+        if not _is_tot and str(row.get("pick_side", "")).strip().upper() == "AWAY":
+            mk, fa = -mk, -fa
+        bits.append(f"fair <b>{fa:{'.1f' if _is_tot else '+.1f'}}</b>")
+    except Exception:
+        pass
+    try:
+        bits.append(f"<b>{float(row.get('cover_probability'))*100:.1f}%</b> cover")
+    except Exception:
+        pass
+    label, state = _se_time_to_kick(row, now, day)
+    bits.append(f"<span class='{state}'>{html.escape(label)}</span>")
+    return f'<div class="se-hero-meta">{" &middot; ".join(bits)}</div>'
 
 
 def _se_card_meta(row, now, day=None, lean=False):
@@ -18068,6 +18095,30 @@ def _render_home_page():
                     "matchup": f'{g.get("awayTeam","")} @ {g.get("homeTeam","")}',
                     "kick": _k.strftime("%-I:%M %p") if _k is not None else "TBD",
                 }
+            # Grey context dots come from the last built board; green dots come
+            # from the TRACKER so every official bet today is shown, not just
+            # the window that happens to be loaded.
+            _betgames = set()
+            for _, _t in _off.iterrows():
+                try:
+                    _ev = float(_t.get("expected_value"))
+                except Exception:
+                    _ev = 0.0
+                _gid = str(_t.get("game_id"))
+                _betgames.add(_gid)
+                _vid = _gv.get(_gid, "")
+                if _vid and _vid in _coords:
+                    _la, _lo = _coords[_vid]
+                    _gm = _gmeta.get(_gid, {})
+                    _pts.append({
+                        "lat": _la, "lon": _lo, "ev": _ev, "bet": True,
+                        "matchup": _gm.get("matchup", ""),
+                        "kick": _se_kick_label(_t),
+                        "pick": str(_t.get("selection", "") or "Official bet"),
+                        "evtxt": f"{_ev*100:+.1f}% EV",
+                        "verdict": str(_t.get("verdict", "") or "BET"),
+                    })
+
             for _, _b in _board.iterrows():
                 try:
                     _ev = float(_b.get("expected_value"))
@@ -18079,16 +18130,18 @@ def _render_home_page():
                                 "ev": _ev, "bet": _isbet})
                 except Exception:
                     pass
-                _vid = _gv.get(str(_b.get("game_id")), "")
+                _gid = str(_b.get("game_id"))
+                if _gid in _betgames:
+                    continue                      # already plotted from tracker
+                _vid = _gv.get(_gid, "")
                 if _vid and _vid in _coords:
                     _la, _lo = _coords[_vid]
-                    _gm = _gmeta.get(str(_b.get("game_id")), {})
+                    _gm = _gmeta.get(_gid, {})
                     _pts.append({
-                        "lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet,
+                        "lat": _la, "lon": _lo, "ev": _ev, "bet": False,
                         "matchup": _gm.get("matchup", ""),
                         "kick": _gm.get("kick", ""),
-                        "pick": _seltxt.get(str(_b.get("game_id")), "")
-                                or _se_pick_label(_b, _isbet),
+                        "pick": _se_pick_label(_b, False),
                         "evtxt": f"{_ev*100:+.1f}% EV",
                         "verdict": str(_b.get("verdict", "") or "PASS"),
                     })
@@ -18132,8 +18185,8 @@ def _render_home_page():
             ), height=330)
             _nb = sum(1 for p in _pts if p["bet"])
             st.caption(
-                f"The {len(_pts)} games in today's slate. Green marks the "
-                f"{_nb} official bet(s), sized by expected value. Tap a dot for detail."
+                f"Green marks all {_nb} official bet(s) today, sized by expected "
+                f"value. Grey dots are other games on the board. Tap for detail."
             )
 
         # Soonest upcoming bet across the whole board, not just the hero.
@@ -18181,7 +18234,7 @@ def _render_home_page():
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
-            f'{_se_card_meta(_h, _now, _today)}</div>'
+            f'{_se_hero_meta(_h, _now, _today)}</div>'
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
             f'</div>'
@@ -18196,12 +18249,19 @@ def _render_home_page():
                 "is where this bet covers."
             )
 
-        if len(_top) > 1:
-            st.markdown(
-                f'<div class="se-sec">ALSO ON THE BOARD \u00b7 {len(_top)-1}</div>',
-                unsafe_allow_html=True,
-            )
-        _rest = list(_top.iloc[1:].iterrows())
+        # Split the rest into spreads and totals, top five of each, so one
+        # market type cannot crowd the other off the page.
+        _rest_df = _top.iloc[1:].copy()
+        _mt = _rest_df["market_type"].astype(str).str.upper() \
+            if "market_type" in _rest_df.columns else pd.Series("", index=_rest_df.index)
+        _spreads = _rest_df[_mt != "TOTAL"].head(5)
+        _totals = _rest_df[_mt == "TOTAL"].head(5)
+
+        _rest = []
+        if not _spreads.empty:
+            _rest.append(("TOP SPREADS", list(_spreads.iterrows())))
+        if not _totals.empty:
+            _rest.append(("TOP TOTALS", list(_totals.iterrows())))
         st.markdown(
             '<style>'
             'div[class*="st-key-se_pair"] [data-testid="stHorizontalBlock"]{'
@@ -18212,29 +18272,32 @@ def _render_home_page():
             '</style>',
             unsafe_allow_html=True,
         )
-        for _pair_start in range(0, len(_rest), 2):
-            _pc = st.container(key=f"se_pair_{_pair_start}")
-            with _pc:
-                _cols = st.columns(2, gap="small")
-                for _c, _idx in zip(_cols, range(_pair_start, min(_pair_start + 2, len(_rest)))):
-                    _i = _idx + 2
-                    r = _rest[_idx][1]
-                    with _c:
-                        st.markdown(
-                            f'<div class="se-mini">'
-                            f'<div class="se-mini-top">'
-                            f'<span class="se-mini-rank">{_i}</span>'
-                            f'{_pick_logo_html(r, 26)}'
-                            f'<span class="se-mini-ev">'
-                            f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
-                            f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                            f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                            f'{html.escape(str(r.get("home_team","")))}</small>'
-                            f'{_se_card_meta(r, _now, _today, lean=True)}'
-
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
+        for _grp_name, _grp in _rest:
+            st.markdown(
+                f'<div class="se-sec">{_grp_name} \u00b7 {len(_grp)}</div>',
+                unsafe_allow_html=True,
+            )
+            for _ps in range(0, len(_grp), 2):
+                _pc = st.container(key=f"se_pair_{_grp_name}_{_ps}")
+                with _pc:
+                    _cols = st.columns(2, gap="small")
+                    for _c, _idx in zip(_cols, range(_ps, min(_ps + 2, len(_grp)))):
+                        r = _grp[_idx][1]
+                        with _c:
+                            st.markdown(
+                                f'<div class="se-mini">'
+                                f'<div class="se-mini-top">'
+                                f'<span class="se-mini-rank">{_idx + 1}</span>'
+                                f'{_pick_logo_html(r, 26)}'
+                                f'<span class="se-mini-ev">'
+                                f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
+                                f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                                f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                                f'{html.escape(str(r.get("home_team","")))}</small>'
+                                f'{_se_card_meta(r, _now, _today, lean=True)}'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
 
 
     # --- record ------------------------------------------------------------
