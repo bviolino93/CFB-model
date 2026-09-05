@@ -15570,6 +15570,14 @@ def _v401_load_tracker():
 
 def _v401_save_tracker(df):
     x = _v401_clean_tracker(df)
+    # Safety net: never persist two records for the same game + market type,
+    # regardless of tier. Keep the first (earliest frozen) one.
+    try:
+        if not x.empty and "record_key" in x.columns:
+            _base = x["record_key"].astype(str).str.replace(r"\|W$", "", regex=True)
+            x = x[~_base.duplicated(keep="first")].copy()
+    except Exception:
+        pass
     ws = _v401_sheet()
     if ws is not None:
         try:
@@ -15653,7 +15661,12 @@ def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
             continue
         market_type = str(r.get("market_type") or "SPREAD").upper()
         key = f"{selected_date}|{gid}|{market_type}"
-        if key in existing:
+        # Dedup on the BASE key, ignoring tier. A game+market is frozen once,
+        # ever — whichever tier catches it first. Without this, a bet that
+        # moves between Official and Watch on later builds gets stored twice.
+        if key in existing or f"{key}|W" in existing:
+            continue
+        if any(rr.get("record_key") in (key, f"{key}|W") for rr in rows):
             continue
         if _v401_kickoff_has_started(r.get("kickoff_et"), selected_date):
             continue
