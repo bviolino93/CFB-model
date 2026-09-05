@@ -6919,6 +6919,15 @@ except Exception:
     st.error("Missing CFBD_API_KEY in Streamlit Secrets.")
     st.stop()
 
+@st.cache_data(ttl=900, show_spinner=False)
+def get_week_lines(year, week):
+    """
+    Cached per-week line fetch. This was the one uncached network call in the
+    build path, so every rebuild re-downloaded the same data from CFBD.
+    """
+    return fetch_lines(API_KEY, year=int(year), week=int(week))
+
+
 @st.cache_data(ttl=1800)
 def get_games(year):
     return fetch_games(API_KEY, year)
@@ -18406,7 +18415,7 @@ if run_mode == "Full Slate":
             weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
             for wk in weeks:
                 try:
-                    raw = fetch_lines(API_KEY, year=year, week=int(wk))
+                    raw = get_week_lines(year, int(wk))
                     line_cache[int(wk)] = raw
                 except Exception:
                     line_cache[int(wk)] = []
