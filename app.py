@@ -17539,6 +17539,98 @@ try:
 except Exception:
     pass
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _se_venue_coords():
+    """venueId -> (lat, lon), cached for the day."""
+    out = {}
+    try:
+        for v in (fetch_venues(API_KEY) or []):
+            vid = v.get("id")
+            loc = _loc_fields(v)
+            if vid is not None and loc.get("latitude") and loc.get("longitude"):
+                out[str(vid)] = (float(loc["latitude"]), float(loc["longitude"]))
+    except Exception:
+        pass
+    return out
+
+
+def _se_slate_map_svg(points, w=680, h=380):
+    """
+    Today's board, geographically. Every game is a dot; the ones that became
+    official bets are larger and brighter. Continental US only.
+    """
+    if not points:
+        return ""
+    LON0, LON1, LAT0, LAT1 = -125.0, -66.5, 24.0, 49.5
+    pad = 14
+    def px(lon): return pad + (min(max(lon, LON0), LON1) - LON0) / (LON1 - LON0) * (w - 2*pad)
+    def py(lat): return pad + (LAT1 - min(max(lat, LAT0), LAT1)) / (LAT1 - LAT0) * (h - 2*pad)
+
+    dots = []
+    for p in sorted(points, key=lambda x: x["bet"]):
+        x, y = px(p["lon"]), py(p["lat"])
+        if p["bet"]:
+            r = 5 + min(6.0, abs(p.get("ev", 0)) * 55)
+            dots.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r+5:.1f}" fill="#2f6bff" opacity=".16"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="#4ae0aa" opacity=".92"/>'
+            )
+        else:
+            dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.4" '
+                        f'fill="#7f97ae" opacity=".34"/>')
+
+    grid = "".join(
+        f'<line x1="{px(v):.1f}" y1="{pad}" x2="{px(v):.1f}" y2="{h-pad}" '
+        f'stroke="rgba(120,154,188,.10)" stroke-width="1"/>'
+        for v in range(-120, -65, 10)
+    ) + "".join(
+        f'<line x1="{pad}" y1="{py(v):.1f}" x2="{w-pad}" y2="{py(v):.1f}" '
+        f'stroke="rgba(120,154,188,.10)" stroke-width="1"/>'
+        for v in range(25, 50, 5)
+    )
+    return (f'<svg viewBox="0 0 {w} {h}" width="100%" '
+            f'xmlns="http://www.w3.org/2000/svg" role="img">{grid}{"".join(dots)}</svg>')
+
+
+def _se_edge_scatter_svg(rows, thresh, w=680, h=320):
+    """
+    The whole board at once: market number against the model's edge. Shows
+    where the model disagrees and how few of those clear the bar.
+    """
+    if not rows:
+        return ""
+    xs = [r["mkt"] for r in rows]
+    ys = [r["ev"] for r in rows]
+    x0, x1 = min(xs + [-30]), max(xs + [30])
+    y0, y1 = min(ys + [-0.05]), max(ys + [thresh * 2])
+    pad_l, pad_b, pad_t, pad_r = 34, 26, 12, 10
+    def px(v): return pad_l + (v - x0) / (x1 - x0 or 1) * (w - pad_l - pad_r)
+    def py(v): return pad_t + (y1 - v) / (y1 - y0 or 1) * (h - pad_t - pad_b)
+
+    pts = "".join(
+        f'<circle cx="{px(r["mkt"]):.1f}" cy="{py(r["ev"]):.1f}" '
+        f'r="{5.2 if r["bet"] else 3.0}" '
+        f'fill="{"#4ae0aa" if r["bet"] else "#7f97ae"}" '
+        f'opacity="{".95" if r["bet"] else ".34"}"/>'
+        for r in sorted(rows, key=lambda x: x["bet"])
+    )
+    return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
+  <line x1="{pad_l}" y1="{py(0):.1f}" x2="{w-pad_r}" y2="{py(0):.1f}"
+        stroke="rgba(120,154,188,.22)" stroke-width="1"/>
+  <line x1="{px(0):.1f}" y1="{pad_t}" x2="{px(0):.1f}" y2="{h-pad_b}"
+        stroke="rgba(120,154,188,.14)" stroke-width="1"/>
+  <line x1="{pad_l}" y1="{py(thresh):.1f}" x2="{w-pad_r}" y2="{py(thresh):.1f}"
+        stroke="#f2c14e" stroke-width="1.8" stroke-dasharray="5 5"/>
+  <text x="{w-pad_r}" y="{py(thresh)-6:.1f}" fill="#f2c14e" font-size="10.5"
+        font-family="sans-serif" text-anchor="end">bet threshold {thresh:.1%}</text>
+  {pts}
+  <text x="{pad_l}" y="{h-7}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif">market spread \u2192</text>
+  <text x="{pad_l-6}" y="{pad_t+9}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif" text-anchor="end" transform="rotate(-90 {pad_l-6} {pad_t+9})">EV</text>
+</svg>'''
+
+
 def _se_card_meta(row, now, day=None, lean=False):
     """
     Time to kickoff, plus the supporting numbers. lean=True drops the detail
@@ -17975,6 +18067,63 @@ def _render_home_page():
             _t = _t[_t["bet_tier"].astype(str).str.upper() != "WATCH"]
     except Exception:
         _t = pd.DataFrame()
+
+    # --- the whole board, two ways ----------------------------------------
+    _board = st.session_state.get("cfb_v36_latest_card")
+    if isinstance(_board, pd.DataFrame) and not _board.empty:
+        _bet_ids = set(_off["record_key"].astype(str)) if "record_key" in _off.columns else set()
+        _coords = _se_venue_coords()
+        _gv = {str(g.get("id")): str(g.get("venueId") or g.get("venue_id") or "")
+               for g in _tg}
+
+        _pts, _sc = [], []
+        for _, _b in _board.iterrows():
+            try:
+                _ev = float(_b.get("expected_value"))
+            except Exception:
+                continue
+            _isbet = str(_b.get("verdict", "")) in ("BET", "BEST BET")
+            try:
+                _mk = float(_b.get("market_display"))
+            except Exception:
+                _mk = None
+            if _mk is not None:
+                _sc.append({"mkt": _mk, "ev": _ev, "bet": _isbet})
+            _vid = _gv.get(str(_b.get("game_id")), "")
+            if _vid and _vid in _coords:
+                _la, _lo = _coords[_vid]
+                _pts.append({"lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet})
+
+        if _sc or _pts:
+            st.markdown('<div class="se-sec">THE WHOLE BOARD</div>',
+                        unsafe_allow_html=True)
+            _t1, _t2 = st.tabs(["Model vs market", "Map"])
+            with _t1:
+                if _sc:
+                    st.markdown(
+                        f'<div class="se-curve">{_se_edge_scatter_svg(_sc, V50_MIN_EV)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _n_bet = sum(1 for r in _sc if r["bet"])
+                    st.caption(
+                        f"Every market on today's slate. {len(_sc)} priced, "
+                        f"{_n_bet} above the threshold. Most sit near zero \u2014 "
+                        "the model agrees with the market almost everywhere."
+                    )
+                else:
+                    st.caption("Build a slate to see the board.")
+            with _t2:
+                if _pts:
+                    st.markdown(
+                        f'<div class="se-curve">{_se_slate_map_svg(_pts)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        f"{len(_pts)} games plotted by venue. Green dots are "
+                        "official bets, sized by expected value."
+                    )
+                else:
+                    st.caption("No venue locations available for today's games.")
 
     # --- what the model can actually do -----------------------------------
     with st.expander("How good is this model?", expanded=False):
