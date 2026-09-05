@@ -6611,6 +6611,14 @@ div[class*="st-key-v420_run_slate"] button{
   border-radius:15px!important;
 }
 
+.se-filter-summary{
+  display:flex;align-items:center;flex-wrap:wrap;gap:9px;
+  padding:12px 14px;border-radius:13px;
+  background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13);
+  font-size:.78rem;color:#8fa6bd;
+}
+.se-filter-summary b{color:#e8eef6;font-weight:800}
+.se-filter-summary span:not(:last-child):after{content:"";}
 .market-card.plain{padding:13px 15px!important}
 .market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
@@ -14696,9 +14704,19 @@ if _v38_main_view == "Game":
     )
 
 _show_filters = _v38_main_view in ("Slate", "Game")
-if not _show_filters:
+
+# Once a slate is built, collapse the controls to a summary line. They are
+# CSS-hidden rather than skipped, so every downstream value stays defined.
+_slate_done = (
+    _v38_main_view == "Slate"
+    and st.session_state.get("cfb_build_requested")
+    and not st.session_state.get("se_edit_filters")
+)
+if not _show_filters or _slate_done:
     st.markdown(
-        '<style>div[class*="st-key-ge433_filter_row"]{display:none!important}</style>',
+        '<style>div[class*="st-key-ge433_filter_row"]{display:none!important}'
+        'div[class*="st-key-v420_slate_segment"]{display:none!important}'
+        'div[class*="st-key-v420_market_lines_wrap"]{display:none!important}</style>',
         unsafe_allow_html=True,
     )
 
@@ -17408,7 +17426,31 @@ if run_mode == "Full Slate":
         )
         st.caption("Unreliable or conflicting line feeds are ignored automatically.")
 
-    _build_clicked = st.button("Build Ranked Slate", type="primary", use_container_width=True, key="v420_run_slate")
+    # Collapsed summary + a way back to the controls.
+    if _slate_done:
+        _sc1, _sc2 = st.columns([3, 1])
+        with _sc1:
+            st.markdown(
+                f'<div class="se-filter-summary">'
+                f'<b>{selected_date:%a, %b %-d}</b>'
+                f'<span>{html.escape(str(slate_choice))}</span>'
+                f'<span>{html.escape(str(slate_filter))}</span>'
+                f'<span>{len(slate_games)} games</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with _sc2:
+            if st.button("Change", use_container_width=True, key="se_edit_btn"):
+                st.session_state["se_edit_filters"] = True
+                st.rerun()
+    else:
+        if st.session_state.get("se_edit_filters"):
+            if st.button("Done", use_container_width=True, key="se_edit_done"):
+                st.session_state["se_edit_filters"] = False
+                st.rerun()
+
+    _build_label = "Rebuild Slate" if _slate_done else "Build Ranked Slate"
+    _build_clicked = st.button(_build_label, type="primary", use_container_width=True, key="v420_run_slate")
     if _build_clicked:
         st.session_state["cfb_build_requested"] = True
     if st.session_state.get("cfb_build_requested"):
