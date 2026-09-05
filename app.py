@@ -16205,15 +16205,28 @@ def _v50_apply_strict_selection(card):
         official["cover_probability"] = 0.5 + V50_SHRINK * (_p - 0.5)
 
     # Fun card: watchable games first, then the model's lean within them.
-    # A 34-point FCS blowout is over by halftime; a one-score game keeps you
-    # in it. Spreads are capped; totals are always eligible.
+    # Rank by distance from a coin flip, NOT by points — totals are larger
+    # numbers than spreads and would otherwise dominate every slot.
     fun_pool = c[~c.index.isin(official.index)].copy()
     _is_total = fun_pool["market_type"].astype(str).str.upper().eq("TOTAL")
     _competitive = pd.to_numeric(fun_pool.get("market_display"), errors="coerce").abs() <= V50_FUN_MAX_SPREAD
-    fun = fun_pool[_is_total | _competitive.fillna(False)].copy()
-    if fun.empty:
-        fun = fun_pool.copy()
-    fun = fun.sort_values("shrunk_edge", ascending=False).head(V50_FUN_COUNT)
+    eligible = fun_pool[_is_total | _competitive.fillna(False)].copy()
+    if eligible.empty:
+        eligible = fun_pool.copy()
+
+    _p = pd.to_numeric(eligible.get("cover_probability"), errors="coerce").fillna(0.5)
+    eligible["lean_strength"] = (_p - 0.5).abs()
+    eligible = eligible.sort_values("lean_strength", ascending=False)
+
+    # Guarantee a mix: at least two spreads and two totals where available.
+    _et = eligible["market_type"].astype(str).str.upper()
+    spreads = eligible[_et != "TOTAL"]
+    totals = eligible[_et == "TOTAL"]
+    picked = pd.concat([spreads.head(2), totals.head(2)])
+    rest = eligible[~eligible.index.isin(picked.index)]
+    fun = pd.concat([picked, rest]).head(V50_FUN_COUNT)
+    fun = fun.sort_values("lean_strength", ascending=False)
+
     if not fun.empty:
         _pf = pd.to_numeric(fun.get("cover_probability"), errors="coerce")
         fun["cover_probability"] = 0.5 + V50_SHRINK * (_pf - 0.5)
