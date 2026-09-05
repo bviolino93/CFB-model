@@ -17726,32 +17726,44 @@ def _render_home_page():
                 '<div class="se-sec">ALSO ON THE BOARD</div>', unsafe_allow_html=True
             )
         _rest = list(_top.iloc[1:].iterrows())
+        st.markdown(
+            '<style>'
+            'div[class*="st-key-se_pair"] [data-testid="stHorizontalBlock"]{'
+            'display:flex!important;flex-direction:row!important;'
+            'flex-wrap:nowrap!important;gap:8px!important}'
+            'div[class*="st-key-se_pair"] [data-testid="stColumn"]{'
+            'width:50%!important;flex:1 1 50%!important;min-width:0!important}'
+            '</style>',
+            unsafe_allow_html=True,
+        )
         for _pair_start in range(0, len(_rest), 2):
-            _cols = st.columns(2, gap="small")
-            for _c, _idx in zip(_cols, range(_pair_start, min(_pair_start + 2, len(_rest)))):
-                _i = _idx + 2
-                r = _rest[_idx][1]
-                with _c:
-                    try:
-                        _ev_v = float(r.get("expected_value"))
-                        _ev_max = float(_top["_ev"].max()) or 1.0
-                        _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
-                    except Exception:
-                        _pct = 12
-                    st.markdown(
-                        f'<div class="se-mini">'
-                        f'<div class="se-mini-top">'
-                        f'<span class="se-mini-rank">{_i}</span>'
-                        f'{_pick_logo_html(r, 26)}'
-                        f'<span class="se-mini-ev">'
-                        f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
-                        f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                        f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                        f'{html.escape(str(r.get("home_team","")))}</small>'
-                        f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
+            _pc = st.container(key=f"se_pair_{_pair_start}")
+            with _pc:
+                _cols = st.columns(2, gap="small")
+                for _c, _idx in zip(_cols, range(_pair_start, min(_pair_start + 2, len(_rest)))):
+                    _i = _idx + 2
+                    r = _rest[_idx][1]
+                    with _c:
+                        try:
+                            _ev_v = float(r.get("expected_value"))
+                            _ev_max = float(_top["_ev"].max()) or 1.0
+                            _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
+                        except Exception:
+                            _pct = 12
+                        st.markdown(
+                            f'<div class="se-mini">'
+                            f'<div class="se-mini-top">'
+                            f'<span class="se-mini-rank">{_i}</span>'
+                            f'{_pick_logo_html(r, 26)}'
+                            f'<span class="se-mini-ev">'
+                            f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
+                            f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                            f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                            f'{html.escape(str(r.get("home_team","")))}</small>'
+                            f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
 
         if _total > 5:
             if st.button(f"See all {_total} bets", use_container_width=True,
