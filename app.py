@@ -6554,10 +6554,16 @@ div[class*="st-key-v420_slate_segment"] label > div:first-child{
   display:none!important;
 }
 div[class*="st-key-ge432_topnav"] [data-testid="stRadio"] > div{
-  flex-wrap:nowrap!important;justify-content:space-between!important;
+  display:flex!important;flex-wrap:nowrap!important;
+  justify-content:space-between!important;gap:2px!important;width:100%!important;
 }
-div[class*="st-key-ge432_topnav"] label{padding:8px 7px!important}
-div[class*="st-key-ge432_topnav"] label p{font-size:.72rem!important}
+div[class*="st-key-ge432_topnav"] label{
+  padding:8px 4px!important;flex:1 1 0!important;min-width:0!important;
+  justify-content:center!important;text-align:center!important;
+}
+div[class*="st-key-ge432_topnav"] label p{
+  font-size:.68rem!important;letter-spacing:-.01em!important;
+}
 div[class*="st-key-ge432_topnav"] label,
 div[class*="st-key-v420_slate_segment"] label{
   padding:9px 13px!important;border-radius:11px!important;
@@ -6625,7 +6631,7 @@ div[class*="st-key-v420_run_slate"] button{
 .se-filter-summary b{color:#e8eef6;font-weight:800}
 .se-filter-summary span:not(:last-child):after{content:"";}
 .se-stat-strip{
-  display:flex;gap:0;padding:14px 8px;border-radius:14px;
+  display:flex;gap:0;margin-bottom:14px;padding:14px 8px;border-radius:14px;
   background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13);
 }
 .se-stat-strip > div{
@@ -17432,10 +17438,15 @@ def _render_home_page():
             st.session_state["cfb_page"] = "Slate"
             st.rerun()
     else:
+        try:
+            _slate_n = int(_card["game_id"].nunique())
+        except Exception:
+            _slate_n = len(_tg)
+        _bet_word = "bet" if _off_today == 1 else "bets"
         st.success(
             f"**Today's slate is built.** "
-            + (f"{_off_today} official bet(s) from {len(_tg)} games."
-               if _off_today else f"No bets qualified from {len(_tg)} games today.")
+            + (f"{_off_today} official {_bet_word} from {_slate_n} games."
+               if _off_today else f"No bets qualified from {_slate_n} games.")
         )
         if st.button("Open today's slate", use_container_width=True, key="home_open_slate"):
             st.session_state["cfb_page"] = "Slate"
