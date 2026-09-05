@@ -17431,11 +17431,27 @@ def _render_home_page():
     except Exception:
         _tg = []
 
-    _built = st.session_state.get("cfb_v36_latest_date") == _today
-    _card = st.session_state.get("cfb_v36_latest_card")
-    _off = pd.DataFrame()
-    if isinstance(_card, pd.DataFrame) and not _card.empty and _built:
-        _off = _card[_card["verdict"].isin(["BET", "BEST BET"])]
+    # Read today's frozen bets from the TRACKER, which survives restarts,
+    # rather than session state, which is wiped on every redeploy.
+    _trk_today = pd.DataFrame()
+    try:
+        _all = _v401_load_tracker()
+        if not _all.empty:
+            _m = _all["game_date"].astype(str) == _today
+            if "bet_tier" in _all.columns:
+                _m &= _all["bet_tier"].astype(str).str.upper() != "WATCH"
+            _trk_today = _all[_m]
+    except Exception:
+        pass
+
+    _built = (not _trk_today.empty) or \
+        st.session_state.get("cfb_v36_latest_date") == _today
+
+    _off = _trk_today
+    if _off.empty:
+        _card = st.session_state.get("cfb_v36_latest_card")
+        if isinstance(_card, pd.DataFrame) and not _card.empty and _built:
+            _off = _card[_card["verdict"].isin(["BET", "BEST BET"])]
 
     # Next kickoff, so the header carries live information.
     _ks = [k for k in (kickoff_et(g) for g in _tg) if k is not None and k > _now]
@@ -17456,11 +17472,12 @@ def _render_home_page():
     if not _tg:
         st.info("Nothing on the board today.")
     elif not _built:
+        st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
+        st.caption("No bets frozen yet today.")
         if st.button("Build today's slate", type="primary",
                      use_container_width=True, key="home_go_slate"):
             st.session_state["cfb_page"] = "Slate"
             st.rerun()
-        st.caption("Today's slate has not been built yet.")
     elif _off.empty:
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
         st.info("No bets qualified today. Empty days are normal.")
@@ -17478,7 +17495,8 @@ def _render_home_page():
                 f'<small>{html.escape(str(r.get("away_team","")))} @ '
                 f'{html.escape(str(r.get("home_team","")))}</small></div>'
                 f'<div class="se-home-bet-num">'
-                f'<b>{_v390_prob_text(r.get("expected_value"))}</b><span>EV</span></div>'
+                f'<b>{_v390_prob_text(r.get("expected_value"))}</b>'
+                f'<span>{"EV" if pd.notna(r.get("expected_value")) else ""}</span></div>'
                 f'<div class="se-home-bet-tag">{_star}{html.escape(str(r.get("verdict","")))}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
