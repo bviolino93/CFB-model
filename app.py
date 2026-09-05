@@ -6735,7 +6735,7 @@ st.markdown(
 if "cfb_page" not in st.session_state:
     st.session_state["cfb_page"] = "Home"
 
-_ge432_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
+_ge432_alias = {"Bets": "Slate", "Live": "Slate"}
 _ge432_view = _ge432_alias.get(
     st.session_state.get("cfb_page", "Slate"),
     st.session_state.get("cfb_page", "Slate"),
