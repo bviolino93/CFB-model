@@ -6602,6 +6602,65 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
 .ge-brandmark{gap:10px!important}
 .se-goalpost-logo{width:40px;height:40px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
 .se-goalpost-logo svg{display:block}
+/* ===== Brand-matched alert boxes =====
+   Streamlit's stock green/yellow/blue clash with the navy palette and
+   appear on every page, so they are restyled to the app's own language. */
+[data-testid="stAlert"]{
+  border-radius:14px!important;
+  border:1px solid rgba(120,154,188,.16)!important;
+  box-shadow:0 10px 26px rgba(2,10,22,.30)!important;
+  padding:14px 16px!important;
+}
+[data-testid="stAlert"] p{font-size:.86rem!important;line-height:1.5!important;margin:0!important}
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"]{color:#dbe7f5!important}
+
+/* success — qualifying bet */
+[data-testid="stAlert"]:has(svg[title="check-circle"]),
+div[data-baseweb="notification"][kind="positive"],
+.stAlert-success{
+  background:linear-gradient(180deg,rgba(24,201,140,.13),rgba(24,201,140,.05))!important;
+  border-color:rgba(24,201,140,.34)!important;
+}
+/* info — neutral guidance */
+[data-testid="stAlert"]:has(svg[title="info"]),
+div[data-baseweb="notification"][kind="info"]{
+  background:linear-gradient(180deg,rgba(47,107,255,.13),rgba(47,107,255,.05))!important;
+  border-color:rgba(47,107,255,.32)!important;
+}
+/* warning — watch list / attention */
+[data-testid="stAlert"]:has(svg[title="warning"]),
+div[data-baseweb="notification"][kind="warning"]{
+  background:linear-gradient(180deg,rgba(232,178,58,.13),rgba(232,178,58,.05))!important;
+  border-color:rgba(232,178,58,.34)!important;
+}
+/* error — urgent */
+[data-testid="stAlert"]:has(svg[title="error"]),
+div[data-baseweb="notification"][kind="negative"]{
+  background:linear-gradient(180deg,rgba(240,90,102,.13),rgba(240,90,102,.05))!important;
+  border-color:rgba(240,90,102,.34)!important;
+}
+
+/* Tighter, quieter captions — they were reading as walls of grey text */
+[data-testid="stCaptionContainer"] p{
+  font-size:.76rem!important;line-height:1.45!important;color:#7f97ae!important;
+}
+
+/* Section headings sit closer to their content */
+h4{margin-top:1.1rem!important;margin-bottom:.35rem!important;letter-spacing:-.01em}
+
+.se-footer{
+  margin-top:34px;padding:20px 0 8px;text-align:center;
+  border-top:1px solid rgba(120,154,188,.10);
+}
+.se-footer-mark{
+  display:block;font-style:italic;font-weight:800;letter-spacing:.02em;
+  font-size:.95rem;color:#8fa6bd;
+}
+.se-footer-mark b{color:#4d84ff}
+.se-footer-sub{
+  display:block;margin-top:4px;font-size:.6rem;letter-spacing:.16em;
+  text-transform:uppercase;color:#5c748c;
+}
 .market-card.plain{padding:13px 15px!important}
 .market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
@@ -17227,6 +17286,47 @@ def _cfb_nav_button(label, slug):
         st.rerun()
 
 
+# --- Slate reminder -------------------------------------------------------
+# Streamlit cannot push notifications, so this checks on open instead:
+# are there games today that have not been frozen yet, and is kickoff close?
+try:
+    _today = pd.Timestamp.now(tz="America/New_York")
+    _today_str = _today.strftime("%Y-%m-%d")
+    _built = st.session_state.get("cfb_v36_latest_date") == _today_str
+    if not _built:
+        _trk_chk = _v401_load_tracker()
+        if not _trk_chk.empty:
+            _built = (_trk_chk["game_date"].astype(str) == _today_str).any()
+    if not _built:
+        _today_games = [
+            g for g in (get_games(_today.year) or [])
+            if str(g.get("startDate", ""))[:10] == _today_str
+        ]
+        if _today_games:
+            _kicks = []
+            for _g in _today_games:
+                _k = kickoff_et(_g)
+                if _k is not None:
+                    _kicks.append(_k)
+            _upcoming = [k for k in _kicks if k > _today]
+            if _upcoming:
+                _first = min(_upcoming)
+                _hrs = (_first - _today).total_seconds() / 3600.0
+                if _hrs <= 6:
+                    st.error(
+                        f"**Today's slate has not been built.** First kickoff is in "
+                        f"{_hrs:.1f} hours ({_first.strftime('%-I:%M %p')} ET). "
+                        "Build it now or these bets will not be recorded."
+                    )
+                else:
+                    st.warning(
+                        f"**Today's slate has not been built** — "
+                        f"{len(_today_games)} games, first kickoff "
+                        f"{_first.strftime('%-I:%M %p')} ET."
+                    )
+except Exception:
+    pass
+
 if main_view == "Tracker":
     _v401_render_official_tracker()
     st.stop()
@@ -18475,4 +18575,10 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         )
 
 st.divider()
-st.caption("Saturday Edge • v4.3 • Premium App UI • Spreads + totals ranked together.")
+st.markdown(
+    '<div class="se-footer">'
+    '<span class="se-footer-mark">SATURDAY <b>EDGE</b></span>'
+    '<span class="se-footer-sub">Data driven. Game ready.</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
