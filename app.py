@@ -6542,6 +6542,72 @@ h4{margin-top:1.1rem!important;margin-bottom:.35rem!important;letter-spacing:-.0
   display:block;margin-top:4px;font-size:.6rem;letter-spacing:.16em;
   text-transform:uppercase;color:#5c748c;
 }
+/* ===== Turn Streamlit radios into pill tabs =====
+   Hide the circle glyph only; the label becomes the control. Far less
+   invasive than replacing the widget, which broke labels previously. */
+div[class*="st-key-ge432_topnav"] [data-testid="stRadio"] > div,
+div[class*="st-key-v420_slate_segment"] [data-testid="stRadio"] > div{
+  gap:4px!important;
+}
+div[class*="st-key-ge432_topnav"] label > div:first-child,
+div[class*="st-key-v420_slate_segment"] label > div:first-child{
+  display:none!important;
+}
+div[class*="st-key-ge432_topnav"] label,
+div[class*="st-key-v420_slate_segment"] label{
+  padding:9px 16px!important;border-radius:11px!important;
+  margin:0!important;transition:background .15s ease,color .15s ease;
+}
+div[class*="st-key-ge432_topnav"] label p,
+div[class*="st-key-v420_slate_segment"] label p{
+  font-weight:800!important;font-size:.8rem!important;color:#8fa6bd!important;
+}
+div[class*="st-key-ge432_topnav"] label:has(input:checked),
+div[class*="st-key-v420_slate_segment"] label:has(input:checked){
+  background:linear-gradient(180deg,#3b7bff,#2f6bff)!important;
+  box-shadow:0 6px 16px rgba(47,107,255,.34)!important;
+}
+div[class*="st-key-ge432_topnav"] label:has(input:checked) p,
+div[class*="st-key-v420_slate_segment"] label:has(input:checked) p{
+  color:#ffffff!important;
+}
+.se-footer-legal{
+  display:block;max-width:520px;margin:14px auto 0;
+  font-size:.62rem;line-height:1.6;color:#4e657d;
+}
+/* ===== Density pass =====
+   Elements were floating as separate islands with ~70px between them.
+   Tightening the vertical rhythm groups related controls and removes the
+   "long scrolling form" feel. */
+[data-testid="stVerticalBlock"]{gap:.55rem!important}
+[data-testid="stElementContainer"]{margin-bottom:0!important}
+
+/* Filter controls read as one group */
+div[class*="st-key-ge433_filter_row"]{margin-bottom:.15rem!important}
+div[class*="st-key-ge433_filter_row"] [data-testid="stVerticalBlock"]{gap:.4rem!important}
+[data-testid="stDateInput"],[data-testid="stSelectbox"]{margin-bottom:0!important}
+[data-testid="stDateInput"] input{font-size:.95rem!important}
+
+/* Slate meta line sits with the filters, not adrift */
+.ge433-slate-meta{margin:.1rem 0 .35rem!important}
+
+/* Expanders: quieter, less boxy */
+[data-testid="stExpander"]{
+  border-radius:13px!important;
+  border:1px solid rgba(120,154,188,.12)!important;
+  background:rgba(12,26,44,.42)!important;
+}
+[data-testid="stExpander"] summary{padding:11px 14px!important}
+[data-testid="stExpander"] summary p{font-size:.84rem!important;font-weight:700!important}
+
+/* Primary action gets breathing room above it — it is the one thing
+   that should feel separated from the controls */
+div[class*="st-key-v420_run_slate"]{margin-top:.7rem!important}
+div[class*="st-key-v420_run_slate"] button{
+  height:56px!important;font-size:1.02rem!important;font-weight:700!important;
+  border-radius:15px!important;
+}
+
 .market-card.plain{padding:13px 15px!important}
 .market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
@@ -15564,7 +15630,27 @@ def _v401_kickoff_has_started(kickoff_et, selected_date=None):
     except Exception:
         return False
 
+def _se_is_owner():
+    """
+    Only the owner writes to the tracker. Without this, anyone opening the
+    shared link and building a slate would add bets to the owner's record,
+    destroying the measurement it exists for.
+
+    Set owner_code in Streamlit Secrets to enable. If unset, the app behaves
+    as before (single-user).
+    """
+    try:
+        code = st.secrets.get("owner_code")
+    except Exception:
+        code = None
+    if not code:
+        return True                       # not configured: single-user mode
+    return st.session_state.get("se_owner_ok") is True
+
+
 def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
+    if not _se_is_owner():
+        return 0
     """
     Freeze the FIRST recommendation per game + market type.
     A game may therefore have one frozen spread and one frozen total.
@@ -17204,6 +17290,26 @@ if not st.session_state.get("se_welcome_seen"):
             st.rerun()
     st.stop()
 
+# --- Mode banner + owner unlock -------------------------------------------
+try:
+    _owner_code = st.secrets.get("owner_code")
+except Exception:
+    _owner_code = None
+
+if _owner_code and not _se_is_owner():
+    st.caption(
+        "View-only mode \u2014 explore freely; picks are not saved to the "
+        "shared record."
+    )
+    with st.expander("Owner sign-in", expanded=False):
+        _try = st.text_input("Owner code", type="password", key="se_owner_try")
+        if st.button("Unlock", key="se_owner_btn"):
+            if _try == _owner_code:
+                st.session_state["se_owner_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect code.")
+
 # --- Slate reminder -------------------------------------------------------
 # Streamlit cannot push notifications, so this checks on open instead:
 # are there games today that have not been frozen yet, and is kickoff close?
@@ -17280,7 +17386,8 @@ if run_mode == "Full Slate":
         slate_games = [g for g in production_games if slate_bucket(g) == slate_choice]
 
     st.markdown(
-        f'<div class="ge433-slate-meta"><span><b>{len(slate_games)} Games</b></span><span>No forced bets</span></div>',
+        f'<div class="ge433-slate-meta"><span><b>{len(slate_games)}</b> games in this window</span>'
+        f'<span>Bets only when they qualify</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -17289,14 +17396,14 @@ if run_mode == "Full Slate":
         st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
-    with st.expander("Market Data", expanded=False):
+    with st.expander("Line settings", expanded=False):
         include_lines = st.checkbox(
-            "Validated sportsbook lines",
+            "Use live sportsbook lines",
             value=True,
             key="v420_market_lines",
             help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
         )
-        st.caption("Split feeds are automatically rejected when the market is not trustworthy.")
+        st.caption("Unreliable or conflicting line feeds are ignored automatically.")
 
     _build_clicked = st.button("Build Ranked Slate", type="primary", use_container_width=True, key="v420_run_slate")
     if _build_clicked:
@@ -18497,6 +18604,11 @@ st.markdown(
     '<div class="se-footer">'
     '<span class="se-footer-mark">SATURDAY <b>EDGE</b></span>'
     '<span class="se-footer-sub">Data driven. Game ready.</span>'
+    '<span class="se-footer-legal">'
+    'For entertainment and research. This model has not been shown to beat the '
+    'closing market \u2014 no edge is claimed. 21+ where legal. '
+    'If gambling stops being fun, call 1-800-GAMBLER or text 800GAM.'
+    '</span>'
     '</div>',
     unsafe_allow_html=True,
 )
