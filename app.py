@@ -6553,6 +6553,11 @@ div[class*="st-key-ge432_topnav"] label > div:first-child,
 div[class*="st-key-v420_slate_segment"] label > div:first-child{
   display:none!important;
 }
+div[class*="st-key-ge432_topnav"] [data-testid="stRadio"] > div{
+  flex-wrap:nowrap!important;justify-content:space-between!important;
+}
+div[class*="st-key-ge432_topnav"] label{padding:8px 7px!important}
+div[class*="st-key-ge432_topnav"] label p{font-size:.72rem!important}
 div[class*="st-key-ge432_topnav"] label,
 div[class*="st-key-v420_slate_segment"] label{
   padding:9px 13px!important;border-radius:11px!important;
@@ -6619,6 +6624,19 @@ div[class*="st-key-v420_run_slate"] button{
 }
 .se-filter-summary b{color:#e8eef6;font-weight:800}
 .se-filter-summary span:not(:last-child):after{content:"";}
+.se-stat-strip{
+  display:flex;gap:0;padding:14px 8px;border-radius:14px;
+  background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13);
+}
+.se-stat-strip > div{
+  flex:1;text-align:center;border-right:1px solid rgba(120,154,188,.10);
+}
+.se-stat-strip > div:last-child{border-right:none}
+.se-stat-strip b{display:block;font-size:1.02rem;color:#e8eef6;font-weight:800}
+.se-stat-strip b.pos{color:#4ae0aa}
+.se-stat-strip b.neg{color:#f2748a}
+.se-stat-strip span{display:block;margin-top:3px;font-size:.58rem;
+  letter-spacing:.09em;text-transform:uppercase;color:#7f97ae}
 .market-card.plain{padding:13px 15px!important}
 .market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
@@ -17436,10 +17454,15 @@ def _render_home_page():
         st.caption("No bets recorded yet. Build a slate and picks are frozen automatically.")
     else:
         _s = _v401_summary(_t)
-        h1, h2, h3 = st.columns(3)
-        h1.metric("Record", f"{_s['wins']}-{_s['losses']}-{_s['pushes']}")
-        h2.metric("Units", f"{_s['units']:+.2f}u")
-        h3.metric("ROI", f"{_s['roi']:+.1%}")
+        st.markdown(
+            f'<div class="se-stat-strip">'
+            f'<div><b>{_s["wins"]}-{_s["losses"]}-{_s["pushes"]}</b><span>W · L · P</span></div>'
+            f'<div><b class="{"pos" if _s["units"]>=0 else "neg"}">{_s["units"]:+.2f}u</b><span>Units</span></div>'
+            f'<div><b class="{"pos" if _s["roi"]>=0 else "neg"}">{_s["roi"]:+.1%}</b><span>ROI</span></div>'
+            f'<div><b>{_s["pending"]}</b><span>Pending</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
             if "clv_points" in _t.columns else pd.Series(dtype=float)
