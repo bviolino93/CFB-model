@@ -17674,8 +17674,12 @@ def _se_pick_label(row, is_bet):
     if sel:
         return sel
     try:
-        mt = str(row.get("market_type", "")).upper()
         mk = float(row.get("market_display"))
+        mt = str(row.get("market_type", "")).upper()
+        if not mt:
+            # Older boards did not store market_type. A spread never reaches
+            # 30 in practice, so magnitude is a reliable tell.
+            mt = "TOTAL" if abs(mk) >= 30 else "SPREAD"
         if mt == "TOTAL":
             return f"Total {mk:g}"
         return f"Spread {mk:+g}"
