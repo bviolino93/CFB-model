@@ -2241,8 +2241,14 @@ def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, e
 
 
 def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None):
-    meta = verdict_meta(verdict)
-    cls = meta["grade"].lower() if meta["grade"] in {"A","B","C","D"} else "d"
+    # An empty verdict renders as a neutral row: the Games page explains
+    # pricing, it does not issue recommendations. The Slate does that.
+    if not str(verdict or "").strip():
+        meta = {"grade": "", "label": "—"}
+        cls = "neutral"
+    else:
+        meta = verdict_meta(verdict)
+        cls = meta["grade"].lower() if meta["grade"] in {"A","B","C","D"} else "d"
 
     try:
         odds_txt = f"{int(odds):+d}"
@@ -6580,6 +6586,7 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
 .ge-brandmark{gap:10px!important}
 .se-goalpost-logo{width:40px;height:40px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
 .se-goalpost-logo svg{display:block}
+.market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
 .ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
 .ge-shop b{color:#7fb4ff;font-size:.60rem}
 .ge-shop span{color:#7f97ae;font-weight:700}
@@ -16145,9 +16152,8 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
-V50_MIN_EV = 0.015         # +1.5% EV after shrinkage
-V50_MAX_OFFICIAL = 3       # hard cap per slate
-V50_FUN_COUNT = 5          # entertainment card size
+V50_MIN_EV = 0.015         # +1.5% EV after shrinkage — the ONLY volume control
+V50_FUN_COUNT = 5          # watch list size
 
 
 V50_FUN_MAX_SPREAD = 14.0  # fun bets should stay competitive into the 4th
@@ -16160,8 +16166,10 @@ def _v50_apply_strict_selection(card):
     OFFICIAL: the honest set. The model's disagreement with the market is
     shrunk toward the market, because walk-forward testing showed public
     fundamentals add ~nothing on top of the spread — so a raw 4-point
-    "edge" is not a 4-point edge. Extrapolation-prone games are excluded
-    and the count is capped. Frequently empty; that is the design working.
+    "edge" is not a 4-point edge. Extrapolation-prone games are excluded.
+    There is no cap: if a bet clears the threshold it qualifies, and volume
+    is controlled by the threshold alone. Frequently empty; that is the
+    design working.
 
     FUN: everything else worth a look, ranked by model lean. Entertainment
     only, and never written to the tracker, so the official record stays
@@ -16187,9 +16195,12 @@ def _v50_apply_strict_selection(card):
 
     official = c[qualifies].copy()
     if not official.empty:
+        # No cap. If a bet clears the threshold, it qualifies. Volume is
+        # controlled by the threshold itself, not by an arbitrary count —
+        # a cap would discard bets the criteria already approved.
         official = official.sort_values(
             ["shrunk_ev", "cover_probability"], ascending=[False, False]
-        ).head(V50_MAX_OFFICIAL)
+        )
         official["verdict"] = "BET"
         official.iloc[0, official.columns.get_loc("verdict")] = "BEST BET"
 
@@ -17774,12 +17785,48 @@ st.markdown(
 )
 st.caption(f"Rating sources • {p['away']}: {p['away_rating']['source']} • {p['home']}: {p['home_rating']['source']}")
 
-d1,d2,d3=st.columns(3)
-d1.metric("Model Confidence", f"{p['confidence']}/100")
-d2.metric("Margin Volatility", f"{p['margin_sd']:.1f}")
-d3.metric("Total Volatility", f"{p['total_sd']:.1f}")
+# ---- What actually matters, ranked -----------------------------------------
+_c = p["components"]
+_drivers = [
+    ("Team strength gap", _c.get("base_power_margin", 0.0),
+     "Difference in overall power rating between the two teams."),
+    ("Home field", _c.get("hfa_adjustment", 0.0),
+     "Standard home advantage, removed at neutral sites."),
+    ("Matchup fit", _c.get("matchup_margin_adjustment", 0.0),
+     "How these particular styles interact."),
+    ("Travel & weather", _c.get("environment_margin_adjustment", 0.0),
+     "Distance travelled, and conditions if the venue is open-air."),
+]
+_drivers = [d for d in _drivers if abs(float(d[1] or 0)) >= 0.05]
+_drivers.sort(key=lambda d: -abs(float(d[1] or 0)))
 
-with st.expander("Projection components"):
+st.markdown("#### What's driving this projection")
+if not _drivers:
+    st.caption("The teams project as evenly matched; no single factor dominates.")
+else:
+    for _name, _val, _why in _drivers:
+        _pts = float(_val or 0)
+        _side = p["home"] if _pts > 0 else p["away"]
+        st.markdown(
+            f"**{_name}** — {abs(_pts):.1f} pts toward {html.escape(str(_side))}  \n"
+            f"<span style='color:#7f97ae;font-size:.85em'>{_why}</span>",
+            unsafe_allow_html=True,
+        )
+
+_conf = p["confidence"]
+_band = "high" if _conf >= 78 else ("moderate" if _conf >= 60 else "low")
+st.caption(
+    f"Confidence {_conf}/100 ({_band}). Typical game lands within "
+    f"±{p['margin_sd']:.0f} points of this projection, so treat the fair line "
+    f"as a centre of gravity rather than a prediction."
+)
+
+with st.expander("Full component breakdown", expanded=False):
+    d1,d2,d3=st.columns(3)
+    d1.metric("Model Confidence", f"{p['confidence']}/100")
+    d2.metric("Margin Volatility", f"{p['margin_sd']:.1f}")
+    d3.metric("Total Volatility", f"{p['total_sd']:.1f}")
+    st.write("---")
     c = p["components"]
     st.write(f"Base power margin: {c['base_power_margin']:+.2f}")
     st.write(f"Matchup adjustment: {c['matchup_margin_adjustment']:+.2f}")
@@ -18151,6 +18198,27 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         st.warning("FCS opponent uses a generic fallback rating. Confidence is reduced and Best Bet / Bet recommendations are capped at Lean until better team-specific data is available.")
 
     rank={"STRONG BET":3,"BET":2,"LEAN":1,"PASS":0}
+
+    # Apply the SAME calibration shrinkage the slate uses, so a game reads
+    # identically in both views. Walk-forward testing showed public
+    # fundamentals add ~nothing on top of the market, so the model's raw
+    # disagreement is scaled toward a coin flip before display.
+    _shrunk = []
+    for (v, name, odds, prob, e, ev, fml) in markets:
+        try:
+            _p = 0.5 + V50_SHRINK * (float(prob) - 0.5)
+            _e = float(e) * V50_SHRINK
+            _ev = float(ev) * V50_SHRINK
+        except Exception:
+            _p, _e, _ev = prob, e, ev
+        _shrunk.append((v, name, odds, _p, _e, _ev, fml))
+    markets = _shrunk
+
+    st.caption(
+        "Probabilities and EV are calibration-adjusted — the same adjustment "
+        "the Slate applies — so the numbers here match what you see there."
+    )
+
     markets.sort(key=lambda x:(rank.get(x[0], -1),x[5]),reverse=True)
     best=markets[0]
 
@@ -18167,19 +18235,80 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     primary_markets = [m for m in markets if m[0] in {"STRONG BET","BET","LEAN"}]
     pass_markets = [m for m in markets if m[0] == "PASS"]
 
+    # ---- Would this game qualify as an official bet? ----------------------
+    # Applies the IDENTICAL criteria the Slate uses, so the two can never
+    # contradict each other: calibration-shrunk EV above the threshold, and
+    # not in the large-spread zone where power ratings extrapolate badly.
+    _qual = []
+    for (v, name, odds, prob, e, ev, fml) in markets:
+        _is_tot = name.lower().startswith(("over", "under"))
+        _line = market_total if _is_tot else home_spread
+        try:
+            _too_big = (not _is_tot) and abs(float(_line)) > V50_MAX_SPREAD
+        except Exception:
+            _too_big = False
+        try:
+            _passes = (float(ev) >= V50_MIN_EV) and not _too_big
+        except Exception:
+            _passes = False
+        if _passes:
+            _qual.append((name, float(ev), float(prob)))
+
+    _qual.sort(key=lambda x: -x[1])
+
+    st.markdown("#### Should you bet this game?")
+    if _qual:
+        _n, _ev_q, _p_q = _qual[0]
+        st.success(
+            f"**{_n}** clears the official-bet criteria — "
+            f"{_ev_q*100:+.1f}% EV, {_p_q*100:.1f}% win probability after calibration."
+        )
+        if len(_qual) > 1:
+            st.caption(
+                "Also qualifying: "
+                + ", ".join(f"{n} ({e*100:+.1f}% EV)" for n, e, _ in _qual[1:])
+            )
+    else:
+        _why = []
+        try:
+            if abs(float(home_spread)) > V50_MAX_SPREAD:
+                _why.append(
+                    f"the spread ({home_spread:+.1f}) is beyond the {V50_MAX_SPREAD:.0f}-point "
+                    "range where the ratings are reliable"
+                )
+        except Exception:
+            pass
+        _best_ev = max((m[5] for m in markets), default=None)
+        if _best_ev is not None and _best_ev < V50_MIN_EV:
+            _why.append(
+                f"the best market here is {_best_ev*100:+.1f}% EV, below the "
+                f"{V50_MIN_EV*100:.1f}% threshold"
+            )
+        st.info(
+            "**No — this would not be an official bet.** "
+            + ("Because " + "; and ".join(_why) + "." if _why else
+               "Nothing on this game clears the threshold.")
+            + " You can still play it off the Watch List if you like the game."
+        )
+
     if primary_markets:
         st.markdown('<div class="market-board">', unsafe_allow_html=True)
         for v,name,odds,prob,e,ev,fair in primary_markets:
-            render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+            render_market_row("", name, odds, prob=prob, edge=e, ev=ev, fair=fair)
         st.markdown('</div>', unsafe_allow_html=True)
+        st.caption(
+            "How the model prices each market on this game. Official "
+            "recommendations come from the Slate tab, which applies stricter "
+            "thresholds — this view explains the numbers rather than issuing picks."
+        )
     else:
-        st.caption("No Best Bet, Bet, or Lean markets on this game.")
+        st.caption("No markets priced for this game.")
 
     if pass_markets:
-        with st.expander(f"Other markets • {len(pass_markets)} pass", expanded=False):
+        with st.expander(f"Other markets • {len(pass_markets)}", expanded=False):
             st.markdown('<div class="market-board">', unsafe_allow_html=True)
             for v,name,odds,prob,e,ev,fair in pass_markets:
-                render_market_row(v, name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+                render_market_row("", name, odds, prob=prob, edge=e, ev=ev, fair=fair)
             st.markdown('</div>', unsafe_allow_html=True)
 
     market_export = {
