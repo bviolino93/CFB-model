@@ -18540,8 +18540,9 @@ if run_mode == "Full Slate":
             expanded=not _slate_done,
         ):
             st.caption(
-                "Everything frozen for this date, split by kickoff window. "
-                "Lines are locked at the number they were frozen at."
+                "Everything frozen for this date, split by kickoff window and "
+                "ranked strongest first. Lines are locked at the number they "
+                "were frozen at."
             )
             for _wname in ("Early", "Midday", "Night", "Unscheduled"):
                 _wdf = _froz[_froz["_win"] == _wname]
@@ -18556,17 +18557,32 @@ if run_mode == "Full Slate":
                     f'{int((_wt == "WATCH").sum())} watch</div>',
                     unsafe_allow_html=True,
                 )
-                for _, r in _wdf.sort_values("_k", na_position="last").iterrows():
-                    _isw = str(r.get("bet_tier", "")).upper() == "WATCH"
+                # Strongest pick first. Official bets always outrank watch
+                # plays, then expected value within each tier.
+                _wdf = _wdf.copy()
+                _wdf["_isw"] = (_wdf["bet_tier"].astype(str).str.upper() == "WATCH"
+                                if "bet_tier" in _wdf.columns else False)
+                _wdf["_evn"] = pd.to_numeric(
+                    _wdf.get("expected_value"), errors="coerce").fillna(-99)
+                _wdf = _wdf.sort_values(["_isw", "_evn"], ascending=[True, False])
+
+                for _n, (_, r) in enumerate(_wdf.iterrows(), start=1):
+                    _isw = bool(r.get("_isw"))
+                    try:
+                        _evs = f'{float(r.get("expected_value"))*100:+.1f}%'
+                    except Exception:
+                        _evs = ""
                     st.markdown(
                         f'<div class="se-extra">'
+                        f'<span class="se-extra-rank">{_n}</span>'
                         f'{_pick_logo_html(r, 22)}'
                         f'<div class="se-extra-main">'
                         f'<b>{html.escape(str(r.get("selection","")))}'
                         f'{" <em class=\'se-w\'>WATCH</em>" if _isw else ""}</b>'
                         f'<small>{html.escape(str(r.get("away_team","")))} @ '
                         f'{html.escape(str(r.get("home_team","")))} \u00b7 '
-                        f'{html.escape(_se_kick_label(r))}</small></div>'
+                        f'{html.escape(_se_kick_label(r))}'
+                        f'{" \u00b7 " + _evs if _evs else ""}</small></div>'
                         f'<span class="se-extra-ev">{_se_frozen_result(r)}</span>'
                         f'</div>',
                         unsafe_allow_html=True,
