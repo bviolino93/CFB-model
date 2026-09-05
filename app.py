@@ -6111,17 +6111,14 @@ st.markdown("""
 <style>
 /* CFB EDGE v4.2 — premium standalone app skin */
 [data-testid="stHeader"]{display:none!important;height:0!important;min-height:0!important;background:transparent!important;}
-/* Brute-force the top gap closed. Three attempts at finding the source
-   failed, so this simply pulls the content up regardless of cause. If it
-   overshoots, reduce the negative margin. */
-[data-testid="stAppViewContainer"] > section > div:first-child,
-[data-testid="stAppViewContainer"] .main > div:first-child,
-section.main > div:first-child{margin-top:-130px!important}
+/* Close the top gap. ONE selector only — stacking negative margins on
+   nested containers compounds and pushes content out of view. */
 [data-testid="stMainBlockContainer"],
 [data-testid="stAppViewBlockContainer"],
-.stMainBlockContainer{margin-top:-130px!important;padding-top:0!important}
-[data-testid="stAppViewBlockContainer"],[data-testid="stMainBlockContainer"],.stMainBlockContainer,section.main > div.block-container{padding-top:calc(6px + env(safe-area-inset-top))!important;}
-[data-testid="stMainBlockContainer"] > div:first-child,[data-testid="stAppViewBlockContainer"] > div:first-child{margin-top:0!important;padding-top:0!important;}
+.stMainBlockContainer{
+  margin-top:-90px!important;
+  padding-top:0!important;
+}
 [data-testid="stMarkdownContainer"]:has(> style){display:none!important;}
 [data-testid="stElementContainer"]:has(style):not(:has(*:not(style):not([data-testid="stMarkdownContainer"]))){display:none!important;height:0!important;margin:0!important;padding:0!important;}
 [data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stStatusWidget"],#MainMenu,footer{display:none!important;}
