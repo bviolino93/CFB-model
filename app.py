@@ -6741,6 +6741,62 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-extra-ev{color:#4ae0aa;font-size:.8rem;font-weight:800;white-space:nowrap}
+.se-take{
+  text-align:center;padding:38px 22px 30px;border-radius:20px;margin:6px 0 14px;
+  border:1px solid rgba(74,224,170,.34);
+  background:radial-gradient(circle at 50% 0%,rgba(74,224,170,.20),rgba(11,27,45,.9) 68%);
+}
+.se-take.big{border-color:rgba(242,193,78,.46);
+  background:radial-gradient(circle at 50% 0%,rgba(242,193,78,.26),rgba(11,27,45,.9) 68%)}
+.se-take.rough{border-color:rgba(120,154,188,.28);
+  background:radial-gradient(circle at 50% 0%,rgba(125,150,175,.16),rgba(11,27,45,.92) 68%)}
+.se-take-av{display:flex;justify-content:center;margin-bottom:16px}
+.se-take-av svg{border-radius:50%;box-shadow:0 0 0 3px rgba(74,224,170,.45),
+  0 14px 40px rgba(0,0,0,.45)}
+.se-take.big .se-take-av svg{box-shadow:0 0 0 3px rgba(242,193,78,.6),
+  0 14px 40px rgba(0,0,0,.45)}
+.se-take.rough .se-take-av svg{box-shadow:0 0 0 3px rgba(120,154,188,.4),
+  0 14px 40px rgba(0,0,0,.45)}
+.se-take-head{font-size:.66rem;letter-spacing:.2em;text-transform:uppercase;
+  color:#7f97ae;font-weight:800}
+.se-take-rec{font-size:3.4rem;font-weight:800;color:#eef4fb;line-height:1.05;
+  letter-spacing:-.03em;margin-top:6px}
+.se-take-rec span{color:#4d84ff;margin:0 3px}
+.se-take-sub{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;
+  color:#63798f;margin-top:4px}
+.se-take-line{font-size:.94rem;color:#dbe7f5;line-height:1.55;margin:18px auto 0;
+  max-width:330px}
+.se-tock{display:flex;align-items:center;gap:13px;margin:2px 0 16px;
+  padding:14px 16px;border-radius:15px;
+  background:linear-gradient(135deg,rgba(74,224,170,.16),rgba(47,107,255,.10));
+  border:1px solid rgba(74,224,170,.34);
+  box-shadow:0 10px 28px rgba(74,224,170,.13)}
+.se-tock.big{background:linear-gradient(135deg,rgba(242,193,78,.20),rgba(74,224,170,.12));
+  border-color:rgba(242,193,78,.44);box-shadow:0 12px 34px rgba(242,193,78,.18)}
+.se-tock.rough{background:linear-gradient(135deg,rgba(125,150,175,.14),rgba(12,26,44,.5));
+  border-color:rgba(120,154,188,.26);box-shadow:none}
+.se-tock.rough .se-tock-badge{background:linear-gradient(180deg,#9db4cb,#7f97ae)}
+.se-tock-badge{width:46px;height:46px;flex:0 0 46px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;
+  box-shadow:0 0 0 2px rgba(74,224,170,.45)}
+.se-tock.big .se-tock-badge{box-shadow:0 0 0 2px rgba(242,193,78,.55)}
+.se-tock.rough .se-tock-badge{box-shadow:0 0 0 2px rgba(120,154,188,.34)}
+.se-tock-copy b{display:block;font-size:.94rem;color:#eef4fb;font-weight:800}
+.se-tock-copy span{display:block;margin-top:3px;font-size:.76rem;color:#c3d3e4;
+  line-height:1.45}
+.se-win{position:relative;height:64px;border-radius:13px;overflow:hidden;
+  margin:16px 0 10px;border:1px solid rgba(120,154,188,.14)}
+.se-win-bg{position:absolute;inset:0;width:100%;height:100%}
+.se-win-text{position:relative;height:100%;display:flex;flex-direction:column;
+  justify-content:center;padding-left:15px}
+.se-win-text b{font-size:.94rem;font-weight:800;letter-spacing:.09em}
+.se-win-text span{font-size:.63rem;opacity:.82;margin-top:2px;font-weight:600}
+.se-st{font-size:.66rem;font-weight:800;white-space:nowrap;color:#7f97ae}
+.se-st.soon{color:#f2c14e}
+.se-st.live{color:#4ae0aa}
+.se-st.won{color:#4ae0aa}
+.se-st.lost{color:#f2748a}
+.se-st.push{color:#f2c14e}
 .se-w{font-style:normal;font-size:.54rem;letter-spacing:.08em;color:#f2c14e;
   border:1px solid rgba(242,193,78,.34);border-radius:99px;padding:1px 6px;
   margin-left:6px;vertical-align:middle}
@@ -16538,8 +16594,18 @@ def _v50_apply_strict_selection(card):
     fun = fun.sort_values("lean_strength", ascending=False)
 
     if not fun.empty:
+        # Apply the SAME calibration as official bets. Shrinking only the
+        # probability left watch EVs at raw scale, so they displayed several
+        # times larger than official bets on the same board.
         _pf = pd.to_numeric(fun.get("cover_probability"), errors="coerce")
         fun["cover_probability"] = 0.5 + V50_SHRINK * (_pf - 0.5)
+        for _c in ("expected_value", "point_edge"):
+            if _c in fun.columns:
+                fun[_c] = pd.to_numeric(fun[_c], errors="coerce") * V50_SHRINK
+        if "fair_display" in fun.columns and "market_display" in fun.columns:
+            _fm = pd.to_numeric(fun["market_display"], errors="coerce")
+            _ff = pd.to_numeric(fun["fair_display"], errors="coerce")
+            fun["fair_display"] = _fm + V50_SHRINK * (_ff - _fm)
     return official, fun
 
 
@@ -17732,6 +17798,305 @@ def _se_pick_label(row, is_bet):
     return "Official bet" if is_bet else "No bet"
 
 
+# --- flavour text ----------------------------------------------------------
+# Humour lives in the loading and empty states only. Numbers, results and the
+# model-honesty panel stay straight — a joke there would undercut the point.
+
+SE_BUILDING = [
+    "Consulting the spreadsheet\u2026",
+    "Disagreeing with Vegas\u2026",
+    "Asking the model to show its work\u2026",
+    "Pricing games nobody asked about\u2026",
+    "Doing maths at a football game\u2026",
+    "Politely arguing with the closing line\u2026",
+]
+
+SE_NO_BETS = [
+    "Nothing cleared the bar. The model looked at every game and shrugged.",
+    "No bets today. Somewhere, a bookmaker sleeps soundly.",
+    "Zero qualifying plays. The market got it right again, annoyingly.",
+    "Nothing worth touching. This is the app working, not the app broken.",
+    "No edge found. Consider watching football purely for enjoyment.",
+]
+
+SE_EMPTY_RECORD = [
+    "No graded bets yet. Undefeated, technically.",
+    "0-0-0. The most balanced record in sports.",
+    "Nothing settled yet. Enjoy the unblemished record while it lasts.",
+]
+
+
+SE_TOCK = [
+    "Chris Tock has seen the board and remains unmoved.",
+    "Chris Tock would take the other side of this.",
+    "Consulting Chris Tock\u2026 he says do whatever you want.",
+    "Chris Tock is not on the record for this one.",
+    "Chris Tock declined to comment on today's card.",
+    "Somewhere, Chris Tock is quietly fading all of this.",
+]
+
+
+def _se_quip(pool, seed=None):
+    """
+    Pick a line, stable within a session so it does not flicker on rerun.
+    Roughly one in twelve, Chris Tock turns up instead.
+    """
+    import random
+    key = f"se_quip_{id(pool)}_{seed or ''}"
+    if key not in st.session_state:
+        src = SE_TOCK if random.random() < 1 / 12 else pool
+        st.session_state[key] = random.choice(src)
+    return st.session_state[key]
+
+
+SE_TOCK_WINS = [
+    "Chris Tock has reviewed the tape and is, reluctantly, impressed.",
+    "Chris Tock would like it noted that he never doubted you.",
+    "Chris Tock has emerged to acknowledge this. He will not do so again.",
+    "Chris Tock says this changes nothing, but says it warmly.",
+    "Chris Tock is on record: a good day. Do not get carried away.",
+]
+
+SE_TOCK_BIG = [
+    "Chris Tock has left his home to tell you personally: outstanding.",
+    "Chris Tock is speechless, which for Chris Tock is remarkable.",
+    "Chris Tock has cancelled his evening plans to sit with this result.",
+]
+
+
+SE_TOCK_ROUGH = [
+    "Chris Tock has seen worse. He declines to say when.",
+    "Chris Tock suggests the couch, the remote, and nothing else today.",
+    "Chris Tock is here. He is not going to say anything clever about it.",
+    "Chris Tock notes that the games were played and the model was wrong.",
+    "Chris Tock recommends closing the app and enjoying the football.",
+]
+
+
+def _se_tock_avatar(size=54, mood="pleased"):
+    """
+    Anime Chris Tock with an expression to match the day.
+    mood: "pleased" (solid day), "ecstatic" (big day), "deflated" (rough day).
+    """
+    u = size
+    bg = {
+        "ecstatic": ("#5c4a1e", "#2a2210"),
+        "deflated": ("#2b3746", "#131c27"),
+    }.get(mood, ("#2c4d7c", "#11223c"))
+
+    if mood == "ecstatic":
+        eyes = (
+            '<path d="M39 40 l2.1 5.2 5.6 .4 -4.3 3.7 1.4 5.5 -4.8 -3 -4.8 3 '
+            '1.4 -5.5 -4.3 -3.7 5.6 -.4 Z" fill="#ffd97a"/>'
+            '<path d="M61 40 l2.1 5.2 5.6 .4 -4.3 3.7 1.4 5.5 -4.8 -3 -4.8 3 '
+            '1.4 -5.5 -4.3 -3.7 5.6 -.4 Z" fill="#ffd97a"/>'
+        )
+        brows = ('<path d="M32 32 q7 -5 13 -1" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>'
+                 '<path d="M55 31 q6 -4 13 1" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>')
+        mouth = ('<path d="M39 55 q11 14 22 0 q-11 6 -22 0 Z" fill="#5c2f22"/>'
+                 '<path d="M41 56 q9 3.4 18 0 q-9 2 -18 0 Z" fill="#ffffff"/>')
+        blush = ('<ellipse cx="29" cy="55" rx="5" ry="3.2" fill="#ff8f9c" opacity=".55"/>'
+                 '<ellipse cx="71" cy="55" rx="5" ry="3.2" fill="#ff8f9c" opacity=".55"/>')
+        extra = ''
+    elif mood == "deflated":
+        eyes = (
+            '<ellipse cx="39" cy="48" rx="5.6" ry="5" fill="#ffffff"/>'
+            '<ellipse cx="61" cy="48" rx="5.6" ry="5" fill="#ffffff"/>'
+            '<ellipse cx="39.4" cy="49" rx="3.8" ry="3.8" fill="#5b4028"/>'
+            '<ellipse cx="61.4" cy="49" rx="3.8" ry="3.8" fill="#5b4028"/>'
+            '<circle cx="39.4" cy="49.4" r="2" fill="#0d1220"/>'
+            '<circle cx="61.4" cy="49.4" r="2" fill="#0d1220"/>'
+            '<circle cx="37.8" cy="47" r="1.3" fill="#ffffff" opacity=".8"/>'
+            '<circle cx="59.8" cy="47" r="1.3" fill="#ffffff" opacity=".8"/>'
+        )
+        brows = ('<path d="M33 37 q6 3 12 1" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>'
+                 '<path d="M55 38 q6 -2 12 -1" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>')
+        mouth = ('<path d="M43 60 q7 -2.5 14 0" stroke="#7a4634" stroke-width="2.6" '
+                 'fill="none" stroke-linecap="round"/>')
+        blush = ''
+        extra = ('<path d="M34 30 q2 6 0 11" stroke="#8fc7ff" stroke-width="1.8" '
+                 'fill="none" opacity=".5" stroke-linecap="round"/>')
+    else:
+        eyes = (
+            '<ellipse cx="39" cy="47" rx="6.6" ry="7.2" fill="#ffffff"/>'
+            '<ellipse cx="61" cy="47" rx="6.6" ry="7.2" fill="#ffffff"/>'
+            '<ellipse cx="39.4" cy="47.4" rx="4.5" ry="5.4" fill="#5b4028"/>'
+            '<ellipse cx="61.4" cy="47.4" rx="4.5" ry="5.4" fill="#5b4028"/>'
+            '<circle cx="39.4" cy="48.2" r="2.4" fill="#0d1220"/>'
+            '<circle cx="61.4" cy="48.2" r="2.4" fill="#0d1220"/>'
+            '<circle cx="37.4" cy="44.6" r="2" fill="#ffffff"/>'
+            '<circle cx="59.4" cy="44.6" r="2" fill="#ffffff"/>'
+        )
+        brows = ('<path d="M33 34.5 q6 -3 12 -0.5" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>'
+                 '<path d="M55 34 q6 -2.5 12 0.5" stroke="#5a3a1e" stroke-width="2.8" '
+                 'fill="none" stroke-linecap="round"/>')
+        mouth = ('<path d="M42 57 q8 7 16 0 q-8 3 -16 0 Z" fill="#5c2f22"/>'
+                 '<path d="M43.5 57.6 q6.5 2.2 13 0 q-6.5 1.3 -13 0 Z" fill="#ffffff"/>')
+        blush = ('<ellipse cx="30" cy="55" rx="4.2" ry="2.8" fill="#ff8f9c" opacity=".38"/>'
+                 '<ellipse cx="70" cy="55" rx="4.2" ry="2.8" fill="#ff8f9c" opacity=".38"/>')
+        extra = ''
+
+    return f'''<svg viewBox="0 0 100 100" width="{u}" height="{u}"
+     xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Chris Tock">
+  <defs>
+    <clipPath id="ctC{u}{mood}"><circle cx="50" cy="50" r="49"/></clipPath>
+    <radialGradient id="ctG{u}{mood}" cx="50%" cy="34%">
+      <stop offset="0%" stop-color="{bg[0]}"/><stop offset="100%" stop-color="{bg[1]}"/>
+    </radialGradient>
+  </defs>
+  <g clip-path="url(#ctC{u}{mood})">
+    <circle cx="50" cy="50" r="49" fill="url(#ctG{u}{mood})"/>
+    <path d="M8 100 C11 80 29 71 50 71 C71 71 89 80 92 100 Z" fill="#8e959e"/>
+    <path d="M41 71 L50 84 L59 71 L55 69 L50 77 L45 69 Z" fill="#6f767f"/>
+    <path d="M44 60 h12 v11 h-12 z" fill="#f0c2a2"/>
+    <path d="M44 60 h12 v5 h-12 z" fill="#d9a385"/>
+    <path d="M29 47 C29 31 38 22 50 22 C62 22 71 31 71 47
+             C71 62 62 72 50 72 C38 72 29 62 29 47 Z" fill="#fcdabc"/>
+    <path d="M30 50 C32 63 40 70 50 70 C60 70 68 63 70 50
+             C68 61 60 64 50 64 C40 64 32 61 30 50 Z" fill="#7a5236" opacity=".62"/>
+    <path d="M27 45 C24 22 40 13 51 13 C64 13 76 21 73 45 C72 33 68 27 62 25
+             C55 22 42 23 35 29 C31 33 28 38 27 45 Z" fill="#6b4526"/>
+    <path d="M31 32 C38 22 54 19 65 25 C55 21 40 24 31 32 Z"
+          fill="#a3733f" opacity=".85"/>
+    {eyes}{brows}{mouth}{blush}{extra}
+    <rect x="29" y="39" width="20" height="16" rx="3.5" fill="#9fd0ff"
+          fill-opacity=".10" stroke="#141821" stroke-width="3.4"/>
+    <rect x="51" y="39" width="20" height="16" rx="3.5" fill="#9fd0ff"
+          fill-opacity=".10" stroke="#141821" stroke-width="3.4"/>
+    <path d="M49 45 h2" stroke="#141821" stroke-width="3.4"/>
+    <path d="M29 44 h-4" stroke="#141821" stroke-width="3.4"/>
+    <path d="M71 44 h4" stroke="#141821" stroke-width="3.4"/>
+    <path d="M31.5 41 l8 4.5" stroke="#ffffff" stroke-width="2.2" opacity=".45"
+          stroke-linecap="round"/>
+    <path d="M53.5 41 l8 4.5" stroke="#ffffff" stroke-width="2.2" opacity=".45"
+          stroke-linecap="round"/>
+  </g>
+</svg>'''
+
+
+def _se_tock_takeover(df_today, day):
+    """
+    Full-page Chris Tock moment. Shows once per day per outcome, then gets out
+    of the way — the welcome screen taught us that a blocker on every load is
+    just an obstacle.
+    """
+    try:
+        res = df_today["result"].astype(str).str.upper()
+        wins = int((res == "WIN").sum())
+        losses = int((res == "LOSS").sum())
+    except Exception:
+        return False
+
+    if wins >= 4:
+        big = wins >= 6 and wins > losses * 2
+        pool, tone = (SE_TOCK_BIG if big else SE_TOCK_WINS), ("big" if big else "good")
+        mood = "ecstatic" if big else "pleased"
+        head = "Big day." if big else "Good day."
+    elif losses >= 5 and losses > wins * 2:
+        pool, tone, head = SE_TOCK_ROUGH, "rough", "Rough one."
+        mood = "deflated"
+    else:
+        return False
+
+    seen = f"se_tock_seen_{day}_{tone}_{wins}_{losses}"
+    if st.session_state.get(seen):
+        return False
+
+    line = _se_quip(pool, f"tk{day}{wins}{losses}")
+    st.markdown(
+        f'<div class="se-take {tone}">'
+        f'<div class="se-take-av">{_se_tock_avatar(120, mood)}</div>'
+        f'<div class="se-take-head">{head}</div>'
+        f'<div class="se-take-rec">{wins}<span>-</span>{losses}</div>'
+        f'<div class="se-take-sub">official bets graded today</div>'
+        f'<div class="se-take-line">{html.escape(line)}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Continue", type="primary", use_container_width=True,
+                 key=f"se_tock_ok_{tone}"):
+        st.session_state[seen] = True
+        st.rerun()
+    st.stop()
+
+
+def _se_window_banner(name, n_off, n_watch):
+    """
+    A small scene per kickoff window: sunrise for Early, high sun for Midday,
+    moon and stars for Night. Drawn as inline SVG so it matches the theme.
+    """
+    art = {
+        "Early": (
+            '<linearGradient id="gE" x1="0" y1="0" x2="0" y2="1">'
+            '<stop offset="0%" stop-color="#2b3f63"/><stop offset="100%" stop-color="#7a4f3a"/>'
+            '</linearGradient>',
+            '<rect width="300" height="64" fill="url(#gE)"/>'
+            '<circle cx="238" cy="60" r="21" fill="#ffb057" opacity=".95"/>'
+            '<circle cx="238" cy="60" r="31" fill="#ffb057" opacity=".22"/>'
+            '<path d="M0 52 L48 40 L92 50 L140 34 L188 46 L240 32 L300 44 L300 64 L0 64 Z"'
+            ' fill="#101c2f" opacity=".85"/>',
+            "#ffd2a1",
+        ),
+        "Midday": (
+            '<linearGradient id="gM" x1="0" y1="0" x2="0" y2="1">'
+            '<stop offset="0%" stop-color="#1d3f6b"/><stop offset="100%" stop-color="#2f6bff"/>'
+            '</linearGradient>',
+            '<rect width="300" height="64" fill="url(#gM)" opacity=".55"/>'
+            '<circle cx="246" cy="20" r="13" fill="#ffe08a"/>'
+            '<circle cx="246" cy="20" r="24" fill="#ffe08a" opacity=".18"/>'
+            '<path d="M0 50 L52 38 L104 48 L156 32 L206 44 L262 34 L300 42 L300 64 L0 64 Z"'
+            ' fill="#0d1b2e" opacity=".8"/>',
+            "#cfe0f5",
+        ),
+        "Night": (
+            '<linearGradient id="gN" x1="0" y1="0" x2="0" y2="1">'
+            '<stop offset="0%" stop-color="#0a1730"/><stop offset="100%" stop-color="#16264a"/>'
+            '</linearGradient>',
+            '<rect width="300" height="64" fill="url(#gN)"/>'
+            '<circle cx="244" cy="20" r="11" fill="#e8eef6"/>'
+            '<circle cx="238" cy="16" r="10" fill="#0e1c38"/>'
+            '<circle cx="40" cy="16" r="1.4" fill="#fff" opacity=".8"/>'
+            '<circle cx="88" cy="27" r="1.1" fill="#fff" opacity=".6"/>'
+            '<circle cx="150" cy="13" r="1.5" fill="#fff" opacity=".75"/>'
+            '<circle cx="196" cy="30" r="1" fill="#fff" opacity=".5"/>'
+            '<circle cx="118" cy="34" r="1.2" fill="#fff" opacity=".55"/>'
+            '<path d="M0 50 L56 40 L110 50 L162 36 L214 46 L268 36 L300 44 L300 64 L0 64 Z"'
+            ' fill="#060f1f" opacity=".9"/>',
+            "#b9c9dd",
+        ),
+    }.get(name, (
+        '', '<rect width="300" height="64" fill="#101c2f"/>', "#8fa6bd"
+    ))
+    grad, scene, tint = art
+    return (
+        f'<div class="se-win">'
+        f'<svg viewBox="0 0 300 64" preserveAspectRatio="none" class="se-win-bg" '
+        f'xmlns="http://www.w3.org/2000/svg"><defs>{grad}</defs>{scene}</svg>'
+        f'<div class="se-win-text" style="color:{tint}">'
+        f'<b>{html.escape(name.upper())}</b>'
+        f'<span>{n_off} official \u00b7 {n_watch} watch</span>'
+        f'</div></div>'
+    )
+
+
+def _se_frozen_status(row, now, day=None):
+    """Result once graded, otherwise how long until kickoff."""
+    res = str(row.get("result", "") or "").upper()
+    if res == "WIN":
+        return '<span class="se-st won">WON</span>'
+    if res == "LOSS":
+        return '<span class="se-st lost">LOST</span>'
+    if res == "PUSH":
+        return '<span class="se-st push">PUSH</span>'
+    label, state = _se_time_to_kick(row, now, day)
+    return f'<span class="se-st {state}">{html.escape(label)}</span>'
+
+
 def _se_window_of(row, day=None):
     """Which kickoff window a frozen bet belongs to."""
     ts = _se_kick_dt(row, day)
@@ -18025,6 +18390,8 @@ def _render_home_page():
         st.session_state.get("cfb_v36_latest_date") == _today
 
     _off = _trk_today
+    if not _off.empty:
+        _se_tock_takeover(_off, _today)
     if _off.empty:
         _card = st.session_state.get("cfb_v36_latest_card")
         if isinstance(_card, pd.DataFrame) and not _card.empty and _built:
@@ -18048,7 +18415,7 @@ def _render_home_page():
 
     # --- today's bets, shown here rather than linked to -------------------
     if not _tg:
-        st.info("Nothing on the board today.")
+        st.info("No college football today. A tragedy, but a survivable one.")
     elif not _built:
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
         st.caption("No bets frozen yet today.")
@@ -18058,7 +18425,7 @@ def _render_home_page():
             st.rerun()
     elif _off.empty:
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
-        st.info("No bets qualified today. Empty days are normal.")
+        st.info(_se_quip(SE_NO_BETS, _today))
     else:
         # Front page shows the five strongest only; the Slate has the full set.
         try:
@@ -18201,6 +18568,7 @@ def _render_home_page():
                 [74, 224, 170, 220] if p["bet"] else [125, 150, 175, 120]
                 for p in _pts
             ]
+
             st.markdown('<div class="se-sec">TODAY\u2019S BOARD</div>',
                         unsafe_allow_html=True)
             st.pydeck_chart(pdk.Deck(
@@ -18415,7 +18783,7 @@ def _render_home_page():
 
     st.markdown('<div class="se-sec">SEASON RECORD</div>', unsafe_allow_html=True)
     if _t is None or _t.empty:
-        st.caption("No bets recorded yet.")
+        st.caption(_se_quip(SE_EMPTY_RECORD))
         return
 
     _s = _v401_summary(_t)
@@ -18529,6 +18897,7 @@ if run_mode == "Full Slate":
         _froz = pd.DataFrame()
 
     if not _froz.empty:
+        _now_et = pd.Timestamp.now(tz="America/New_York")
         _froz["_k"] = [_se_kick_dt(r, str(selected_date)) for _, r in _froz.iterrows()]
         _froz["_win"] = [_se_window_of(r, str(selected_date)) for _, r in _froz.iterrows()]
         _tier_col = (_froz["bet_tier"].astype(str).str.upper()
@@ -18552,9 +18921,9 @@ if run_mode == "Full Slate":
                        if "bet_tier" in _wdf.columns
                        else pd.Series("OFFICIAL", index=_wdf.index))
                 st.markdown(
-                    f'<div class="se-sec">{_wname.upper()} \u00b7 '
-                    f'{int((_wt != "WATCH").sum())} official, '
-                    f'{int((_wt == "WATCH").sum())} watch</div>',
+                    _se_window_banner(_wname,
+                                      int((_wt != "WATCH").sum()),
+                                      int((_wt == "WATCH").sum())),
                     unsafe_allow_html=True,
                 )
                 # Strongest pick first. Official bets always outrank watch
@@ -18583,7 +18952,7 @@ if run_mode == "Full Slate":
                         f'{html.escape(str(r.get("home_team","")))} \u00b7 '
                         f'{html.escape(_se_kick_label(r))}'
                         f'{" \u00b7 " + _evs if _evs else ""}</small></div>'
-                        f'<span class="se-extra-ev">{_se_frozen_result(r)}</span>'
+                        f'{_se_frozen_status(r, _now_et, str(selected_date))}'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
@@ -18600,7 +18969,7 @@ if run_mode == "Full Slate":
         if not _was_built:
             st.rerun()
     if st.session_state.get("cfb_build_requested"):
-        _build_status = st.status("Building ranked slate…", expanded=False)
+        _build_status = st.status(_se_quip(SE_BUILDING, selected_date), expanded=False)
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
@@ -18984,9 +19353,7 @@ if run_mode == "Full Slate":
 
         if _official.empty:
             st.info(
-                "**No official bets today.** Nothing cleared the threshold once the "
-                "model's disagreement with the market is shrunk to a realistic size. "
-                "Empty days are normal and expected."
+                f"**No official bets today.** {_se_quip(SE_NO_BETS, selected_date)}"
             )
         else:
             _render_v36_live_card(_official, selected_date)
