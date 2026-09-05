@@ -17750,27 +17750,6 @@ def _render_home_page():
             pass
         _total = len(_off)
 
-        # Order: upcoming first (soonest kickoff), then live, then finished.
-        # A settled game should not sit as "best play" all evening.
-        def _state(row):
-            try:
-                if str(row.get("status", "")).upper() == "FINAL":
-                    return 2, 0
-                _kd2 = _se_kick_dt(row, _today)
-                if _kd2 is None:
-                    return 0, 9999
-                _m = (_kd2 - _now).total_seconds() / 60.0
-                if _m > 0:
-                    return 0, _m          # upcoming, soonest first
-                return 1, -_m             # under way
-            except Exception:
-                return 0, 9999
-
-        _off = _off.copy()
-        _off["_grp"] = [_state(r)[0] for _, r in _off.iterrows()]
-        _off["_ord"] = [_state(r)[1] for _, r in _off.iterrows()]
-        _off = _off.sort_values(["_grp", "_ord", "_ev"],
-                                ascending=[True, True, False])
         _top = _off
 
         # --- hero: the single best play, with its outcome distribution ----
@@ -17815,26 +17794,41 @@ def _render_home_page():
             _score_html = ""
 
         # Countdown alert when the best play is close to kickoff.
-        _kd = _se_kick_dt(_h, _today)
-        _kt = _se_kick_label(_h)
-        _mins = (_kd - _now).total_seconds() / 60.0 if _kd is not None else None
+        # Soonest upcoming bet across the whole board, not just the hero.
+        _soon, _soon_m = None, None
+        for _, _rr in _off.iterrows():
+            _kd = _se_kick_dt(_rr, _today)
+            if _kd is None:
+                continue
+            _m = (_kd - _now).total_seconds() / 60.0
+            if 0 < _m <= 90 and (_soon_m is None or _m < _soon_m):
+                _soon, _soon_m = _rr, _m
 
-        if _mins is not None and 0 < _mins <= 60:
-            _txt = f"{int(_mins)} min" if _mins >= 1 else "under a minute"
+        if _soon is not None:
+            _txt = f"{int(_soon_m)} min" if _soon_m >= 1 else "under a minute"
             st.markdown(
                 f'<div class="se-imminent"><i></i>'
-                f'<span><b>Top bet kicks off in {_txt}</b> \u2014 '
-                f'{html.escape(str(_h.get("selection","")))} at '
-                f'{html.escape(_kt)}</span></div>',
+                f'<span><b>Kicks off in {_txt}</b> \u2014 '
+                f'{html.escape(str(_soon.get("selection","")))} '
+                f'({html.escape(_se_kick_label(_soon))})</span></div>',
                 unsafe_allow_html=True,
             )
-        elif _mins is not None and -210 < _mins <= 0:
-            st.markdown(
-                f'<div class="se-imminent live"><i></i>'
-                f'<span><b>Top bet is under way</b> \u2014 '
-                f'{html.escape(str(_h.get("selection","")))}</span></div>',
-                unsafe_allow_html=True,
-            )
+        else:
+            _live = [
+                _rr for _, _rr in _off.iterrows()
+                if (_kd := _se_kick_dt(_rr, _today)) is not None
+                and -210 < (_kd - _now).total_seconds() / 60.0 <= 0
+                and str(_rr.get("result", "") or "").strip() == ""
+            ]
+            if _live:
+                _names = ", ".join(str(x.get("selection", "")) for x in _live[:2])
+                _more = f" +{len(_live)-2} more" if len(_live) > 2 else ""
+                st.markdown(
+                    f'<div class="se-imminent live"><i></i>'
+                    f'<span><b>{len(_live)} bet{"s" if len(_live)!=1 else ""} under way</b>'
+                    f' \u2014 {html.escape(_names)}{_more}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
         st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
         st.markdown(
@@ -17844,10 +17838,8 @@ def _render_home_page():
             f'<div class="se-hero-bet-copy">'
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
-            f'{html.escape(str(_h.get("home_team","")))}'
-            f'<em> \u00b7 {html.escape(str(_h.get("kickoff_et","")) or "TBD")}</em>'
-            f'</small>{_se_result_badge(_h, big=True)}<small>'
-            f'</small></div>'
+            f'{html.escape(str(_h.get("home_team","")))}</small>'
+            f'{_se_result_badge(_h, big=True)}</div>'
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
             f'</div>'
