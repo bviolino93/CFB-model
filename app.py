@@ -6678,7 +6678,16 @@ div[class*="st-key-v420_run_slate"] button{
 .se-hero-ev{text-align:right}
 .se-hero-ev b{display:block;font-size:1.24rem;color:#4ae0aa;font-weight:800}
 .se-hero-ev span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
-.se-hero-curve{margin-top:6px}
+.se-hero-curve{margin-top:2px}
+.se-proj{margin-top:13px;padding-top:12px;border-top:1px solid rgba(120,154,188,.14)}
+.se-proj-row{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.se-proj-row span{flex:0 0 116px;font-size:.7rem;color:#9db4cb;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-proj-row i{height:9px;border-radius:99px;background:rgba(120,154,188,.34);display:block}
+.se-proj-row i.hi{background:linear-gradient(90deg,#2f6bff,#4ae0aa)}
+.se-proj-row b{font-size:.86rem;color:#eef4fb;font-weight:800;min-width:26px;text-align:right}
+.se-proj-cap{font-size:.58rem;letter-spacing:.11em;text-transform:uppercase;
+  color:#63798f;margin-top:2px}
 .se-home-bet-logo{flex:0 0 auto;display:flex;align-items:center}
 .se-home-bet-main{flex:1;min-width:0}
 .se-conv{margin-top:7px;height:4px;border-radius:99px;background:rgba(120,154,188,.14);overflow:hidden}
@@ -17471,6 +17480,38 @@ try:
 except Exception:
     pass
 
+def _se_ability_svg(ats=0.511, breakeven=0.524, w=680, h=132):
+    """
+    What the model can actually do, from the walk-forward test: ATS hit rate
+    against the break-even line. Drawn to scale so the gap is visible rather
+    than asserted.
+    """
+    lo, hi = 0.46, 0.58
+    pad_l, pad_r, pad_t = 12, 12, 30
+    iw = w - pad_l - pad_r
+    def px(v): return pad_l + (min(max(v, lo), hi) - lo) / (hi - lo) * iw
+    bar_y, bar_h = pad_t + 14, 26
+    x_ats, x_be = px(ats), px(breakeven)
+    good = ats >= breakeven
+    col = "#4ae0aa" if good else "#f2748a"
+    return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
+  <rect x="{pad_l}" y="{bar_y}" width="{iw}" height="{bar_h}" rx="13"
+        fill="rgba(120,154,188,.13)"/>
+  <rect x="{pad_l}" y="{bar_y}" width="{max(x_ats-pad_l,2):.1f}" height="{bar_h}" rx="13"
+        fill="{col}" fill-opacity=".62"/>
+  <line x1="{x_be:.1f}" y1="{bar_y-9}" x2="{x_be:.1f}" y2="{bar_y+bar_h+9}"
+        stroke="#f2c14e" stroke-width="2.4"/>
+  <text x="{x_be:.1f}" y="{bar_y-15}" fill="#f2c14e" font-size="11.5"
+        font-family="sans-serif" text-anchor="middle">break-even {breakeven:.1%}</text>
+  <text x="{pad_l+10}" y="{bar_y+18}" fill="#ffffff" font-size="13"
+        font-family="sans-serif" font-weight="700">{ats:.1%}</text>
+  <text x="{pad_l}" y="{h-8}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif">model, out of sample</text>
+  <text x="{w-pad_r}" y="{h-8}" fill="#7f97ae" font-size="10.5"
+        font-family="sans-serif" text-anchor="end">7,062 games \u00b7 2020\u20132025</text>
+</svg>'''
+
+
 def _se_margin_curve_svg(mu, sigma, market, home, away, w=680, h=190):
     """
     Projected margin distribution with the market number marked and the
@@ -17614,6 +17655,29 @@ def _render_home_page():
         except Exception:
             _hero_svg = ""
 
+        # Projected scoreline, derived from the model's fair total and spread.
+        _score_html = ""
+        try:
+            _ft = float(_h.get("fair_total"))
+            _fs = float(_h.get("fair_home_spread"))
+            _hp = (_ft - _fs) / 2.0
+            _ap = (_ft + _fs) / 2.0
+            if _hp > 0 and _ap > 0:
+                _mx = max(_hp, _ap)
+                _score_html = (
+                    f'<div class="se-proj">'
+                    f'<div class="se-proj-row">'
+                    f'<span>{html.escape(str(_h.get("away_team","")))}</span>'
+                    f'<i style="width:{(_ap/_mx)*100:.0f}%"></i><b>{_ap:.0f}</b></div>'
+                    f'<div class="se-proj-row">'
+                    f'<span>{html.escape(str(_h.get("home_team","")))}</span>'
+                    f'<i class="hi" style="width:{(_hp/_mx)*100:.0f}%"></i><b>{_hp:.0f}</b></div>'
+                    f'<div class="se-proj-cap">Projected score \u00b7 total {_ft:.0f}</div>'
+                    f'</div>'
+                )
+        except Exception:
+            _score_html = ""
+
         st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="se-hero-bet">'
@@ -17626,6 +17690,7 @@ def _render_home_page():
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
             f'</div>'
+            + _score_html
             + (f'<div class="se-hero-curve">{_hero_svg}</div>' if _hero_svg else '')
             + f'</div>',
             unsafe_allow_html=True,
@@ -17679,6 +17744,27 @@ def _render_home_page():
             _t = _t[_t["bet_tier"].astype(str).str.upper() != "WATCH"]
     except Exception:
         _t = pd.DataFrame()
+
+    # --- what the model can actually do -----------------------------------
+    with st.expander("How good is this model?", expanded=False):
+        st.markdown(_se_ability_svg(), unsafe_allow_html=True)
+        st.markdown(
+            "**Tested honestly.** Fit on past seasons, tested on the next one — "
+            "never on data it had already seen. Across 7,062 games it picked the "
+            "right side of the spread **51.1%** of the time. You need **52.4%** to "
+            "break even at -110."
+        )
+        st.markdown(
+            "**What that means.** Public power ratings do not beat the closing "
+            "line, because the market already prices them in. So this app shrinks "
+            "the model's disagreement with the market to a quarter of what it "
+            "claims, and only calls a bet official when something still clears the "
+            "bar afterwards."
+        )
+        st.caption(
+            "Most betting models are never tested this way. The number above is "
+            "the reason nothing here promises an edge."
+        )
 
     st.markdown('<div class="se-sec">SEASON RECORD</div>', unsafe_allow_html=True)
     if _t is None or _t.empty:
