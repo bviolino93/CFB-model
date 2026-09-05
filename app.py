@@ -15731,6 +15731,23 @@ def _clv_points(bet_line, closing_line, market_type, pick_side):
 def _v401_empty_tracker():
     return pd.DataFrame(columns=V401_TRACKER_COLUMNS)
 
+def _v401_prep_for_grading(df):
+    """
+    Sheets round-trips turn numbers into blanks and text. Coerce the columns
+    grading writes into, so assigning a float cannot raise on a text column.
+    """
+    df = df.reset_index(drop=True)
+    for c in ("units_result", "final_home_score", "final_away_score",
+              "closing_line", "clv_points", "suggested_units", "odds",
+              "bet_line", "expected_value", "cover_probability"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("result", "status", "graded_at"):
+        if c in df.columns:
+            df[c] = df[c].astype(object)
+    return df
+
+
 def _v401_clean_tracker(df):
     if df is None or df.empty:
         return _v401_empty_tracker()
@@ -16159,7 +16176,7 @@ def _v401_closing_line_for(row):
 
 
 def _v401_grade_tracker():
-    df = _v401_load_tracker()
+    df = _v401_prep_for_grading(_v401_load_tracker())
     if df.empty:
         return 0, df
 
@@ -16181,28 +16198,37 @@ def _v401_grade_tracker():
         if result is None:
             continue
 
-        stake = float(r.get("suggested_units") or 1.0)
-        odds = float(r.get("odds") or -110)
+        # NaN is truthy, so `x or default` silently passes NaN through. Values
+        # loaded back from Sheets are often blank, so coerce explicitly.
+        def _num_or(v, default):
+            try:
+                f = float(v)
+                return f if math.isfinite(f) else float(default)
+            except Exception:
+                return float(default)
+
+        stake = _num_or(r.get("suggested_units"), 1.0)
+        odds = _num_or(r.get("odds"), -110.0)
         if result == "WIN":
-            units = _v401_american_profit(odds, stake) or 0.0
+            units = _num_or(_v401_american_profit(odds, stake), 0.0)
         elif result == "LOSS":
             units = -stake
         else:
             units = 0.0
 
-        df.at[idx, "result"] = result
-        df.at[idx, "units_result"] = round(float(units), 6)
-        df.at[idx, "status"] = "FINAL"
-        df.at[idx, "final_home_score"] = final["home_score"]
-        df.at[idx, "final_away_score"] = final["away_score"]
-        df.at[idx, "graded_at"] = now
+        df.loc[idx, "result"] = result
+        df.loc[idx, "units_result"] = round(float(units), 6)
+        df.loc[idx, "status"] = "FINAL"
+        df.loc[idx, "final_home_score"] = final["home_score"]
+        df.loc[idx, "final_away_score"] = final["away_score"]
+        df.loc[idx, "graded_at"] = now
 
         # Closing line value: how the number moved after we froze it.
         try:
             _cl = _v401_closing_line_for(r)
             if _cl is not None:
-                df.at[idx, "closing_line"] = _cl
-                df.at[idx, "clv_points"] = _clv_points(
+                df.loc[idx, "closing_line"] = _cl
+                df.loc[idx, "clv_points"] = _clv_points(
                     r.get("bet_line"), _cl,
                     r.get("market_type"), r.get("pick_side"),
                 )
