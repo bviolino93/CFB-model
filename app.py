@@ -15372,7 +15372,7 @@ V401_TRACKER_COLUMNS = [
     "reliability","model_confidence","data_completeness","selector_score",
     "suggested_units","frozen_at_et","status","result","units_result",
     "final_home_score","final_away_score","graded_at",
-    "closing_line","clv_points"
+    "closing_line","clv_points","bet_tier"
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -15596,16 +15596,23 @@ def _v401_kickoff_has_started(kickoff_et, selected_date=None):
     except Exception:
         return False
 
-def _v401_track_daily_card(card, selected_date):
+def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
     """
-    Freeze the FIRST official recommendation per game + market type.
-    A game may therefore have one official spread and one official total.
+    Freeze the FIRST recommendation per game + market type.
+    A game may therefore have one frozen spread and one frozen total.
     Later reruns never rewrite the frozen line.
+
+    tier: "OFFICIAL" (strict, shrunk selection) or "WATCH" (watch list).
+    Both are recorded but scored separately, so the official record stays
+    a clean measurement.
     """
     if card is None or card.empty:
         return 0
 
-    official = card[card["verdict"].isin(["BEST BET","BET"])].copy()
+    if tier == "OFFICIAL":
+        official = card[card["verdict"].isin(["BEST BET","BET"])].copy()
+    else:
+        official = card.copy()
     if official.empty:
         return 0
 
@@ -15647,7 +15654,8 @@ def _v401_track_daily_card(card, selected_date):
                 bet_line = float(m.group(1)) if m else None
 
         rows.append({
-            "record_key": key,
+            "record_key": key if tier == "OFFICIAL" else f"{key}|W",
+            "bet_tier": tier,
             "model_version": MODEL_VERSION,
             "game_date": str(selected_date),
             "game_id": gid,
@@ -15977,8 +15985,34 @@ def _v401_render_official_tracker():
             ] if c in pending.columns]].copy()
 
     # How the model is performing, once bets start grading.
+    # Split the two tiers so the official record stays a clean measurement.
+    if "bet_tier" in df.columns:
+        _tier = df["bet_tier"].astype(str).str.upper()
+        df_official = df[_tier != "WATCH"].copy()
+        df_watch = df[_tier == "WATCH"].copy()
+    else:
+        df_official, df_watch = df.copy(), pd.DataFrame(columns=df.columns)
+
+    if not df_watch.empty:
+        so, sw = _v401_summary(df_official), _v401_summary(df_watch)
+        st.markdown("### Official vs Watch List")
+        st.caption(
+            "Does the strict selection actually beat simply betting interesting "
+            "games? If not, the thresholds are not earning their keep."
+        )
+        comp = pd.DataFrame([
+            {"Tier": "Official", "Bets": so["bets"], "Graded": so["graded"],
+             "Win rate": so["win_rate"], "Units": so["units"], "ROI": so["roi"]},
+            {"Tier": "Watch List", "Bets": sw["bets"], "Graded": sw["graded"],
+             "Win rate": sw["win_rate"], "Units": sw["units"], "ROI": sw["roi"]},
+        ])
+        comp["Win rate"] = comp["Win rate"].map(lambda v: f"{v:.1%}")
+        comp["ROI"] = comp["ROI"].map(lambda v: f"{v:+.1%}")
+        comp["Units"] = comp["Units"].map(lambda v: f"{v:+.2f}")
+        st.dataframe(comp, use_container_width=True, hide_index=True)
+
     # Closing line value — the earliest real read on whether there is edge.
-    _clv = pd.to_numeric(df.get("clv_points"), errors="coerce").dropna() if "clv_points" in df.columns else pd.Series(dtype=float)
+    _clv = pd.to_numeric(df_official.get("clv_points"), errors="coerce").dropna() if "clv_points" in df_official.columns else pd.Series(dtype=float)
     st.markdown("### Closing line value")
     st.caption(
         "Did you get a better number than the market closed at? This shows edge "
@@ -16116,6 +16150,9 @@ V50_MAX_OFFICIAL = 3       # hard cap per slate
 V50_FUN_COUNT = 5          # entertainment card size
 
 
+V50_FUN_MAX_SPREAD = 14.0  # fun bets should stay competitive into the 4th
+
+
 def _v50_apply_strict_selection(card):
     """
     Two tiers.
@@ -16156,8 +16193,30 @@ def _v50_apply_strict_selection(card):
         official["verdict"] = "BET"
         official.iloc[0, official.columns.get_loc("verdict")] = "BEST BET"
 
-    fun = c[~c.index.isin(official.index)].copy()
+        # Show the honest numbers: the card must display what selection used,
+        # not the pre-shrinkage figures the model originally claimed.
+        official["fair_display"] = official["shrunk_fair"]
+        official["point_edge"] = official["shrunk_edge"]
+        official["expected_value"] = official["shrunk_ev"]
+        _mkt_o = pd.to_numeric(official.get("market_display"), errors="coerce")
+        _p = pd.to_numeric(official.get("cover_probability"), errors="coerce")
+        # Pull the win probability back toward the break-even coin flip by the
+        # same factor, so cover% is not left overstated next to a 1-point edge.
+        official["cover_probability"] = 0.5 + V50_SHRINK * (_p - 0.5)
+
+    # Fun card: watchable games first, then the model's lean within them.
+    # A 34-point FCS blowout is over by halftime; a one-score game keeps you
+    # in it. Spreads are capped; totals are always eligible.
+    fun_pool = c[~c.index.isin(official.index)].copy()
+    _is_total = fun_pool["market_type"].astype(str).str.upper().eq("TOTAL")
+    _competitive = pd.to_numeric(fun_pool.get("market_display"), errors="coerce").abs() <= V50_FUN_MAX_SPREAD
+    fun = fun_pool[_is_total | _competitive.fillna(False)].copy()
+    if fun.empty:
+        fun = fun_pool.copy()
     fun = fun.sort_values("shrunk_edge", ascending=False).head(V50_FUN_COUNT)
+    if not fun.empty:
+        _pf = pd.to_numeric(fun.get("cover_probability"), errors="coerce")
+        fun["cover_probability"] = 0.5 + V50_SHRINK * (_pf - 0.5)
     return official, fun
 
 
@@ -17544,9 +17603,9 @@ if run_mode == "Full Slate":
         if not _fun.empty:
             st.markdown(
                 '<div class="ge-leans-head"><div>'
-                '<div class="ge-section-title">Fun Card</div>'
-                '<div class="ge-section-sub">Most interesting games on the slate. '
-                'Entertainment only — not tracked, no claimed edge.</div></div>'
+                '<div class="ge-section-title">Watch List</div>'
+                '<div class="ge-section-sub">Competitive games worth watching, with '
+                'the model\'s lean. Tracked separately — not part of the official record.</div></div>'
                 f'<div class="ge-count amber">{len(_fun)} {"PLAY" if len(_fun)==1 else "PLAYS"}</div>'
                 '</div>',
                 unsafe_allow_html=True,
@@ -17562,18 +17621,21 @@ if run_mode == "Full Slate":
                         <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
                       </div>
                       <div class="ge-lean-stats"><span>{_v390_prob_text(fr.get("cover_probability"))}</span></div>
-                      <div class="ge-lean-pill">FUN</div>
+                      <div class="ge-lean-pill">WATCH</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-        # Freeze ONLY official bets. Fun plays never enter the tracker, so the
-        # measured record stays honest.
+        # Freeze both tiers, tagged separately so the official record stays a
+        # clean measurement and the watch list can be compared against it.
         try:
-            _v36_added = _v401_track_daily_card(_official, selected_date)
-            if _v36_added:
-                st.toast(f"Official tracker froze {_v36_added} new bet(s) at the current line.")
+            _v36_added = _v401_track_daily_card(_official, selected_date, tier="OFFICIAL")
+            _watch_added = _v401_track_daily_card(_fun, selected_date, tier="WATCH")
+            if _v36_added or _watch_added:
+                st.toast(
+                    f"Froze {_v36_added} official and {_watch_added} watch-list bet(s)."
+                )
         except Exception as _trk_e:
             st.warning(f"Bets are shown above, but saving them to the tracker failed: {_trk_e}")
 
