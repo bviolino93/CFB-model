@@ -6678,6 +6678,26 @@ div[class*="st-key-v420_run_slate"] button{
 .se-hero-ev{text-align:right}
 .se-hero-ev b{display:block;font-size:1.24rem;color:#4ae0aa;font-weight:800}
 .se-hero-ev span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
+.se-mini{
+  padding:12px 12px 11px;border-radius:14px;height:100%;
+  background:rgba(12,26,44,.6);border:1px solid rgba(120,154,188,.13);
+}
+.se-mini-top{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.se-mini-rank{
+  width:20px;height:20px;flex:0 0 20px;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(47,107,255,.16);border:1px solid rgba(47,107,255,.26);
+  color:#7fb4ff;font-size:.62rem;font-weight:800;
+}
+.se-mini-ev{margin-left:auto;color:#4ae0aa;font-size:.82rem;font-weight:800}
+.se-mini b{display:block;font-size:.86rem;color:#eef4fb;font-weight:800;line-height:1.25}
+.se-mini small{display:block;font-size:.63rem;color:#7f97ae;margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-mini .se-conv{margin-top:9px}
+.se-ability{margin:2px 0 22px}
+.se-ability-copy p{font-size:.82rem!important;line-height:1.55!important;
+  color:#c3d3e4!important;margin:0 0 11px!important}
+.se-ability-copy b{color:#eef4fb}
 .se-hero-curve{margin-top:2px}
 .se-proj{margin-top:13px;padding-top:12px;border-top:1px solid rgba(120,154,188,.14)}
 .se-proj-row{display:flex;align-items:center;gap:10px;margin-bottom:7px}
@@ -17705,31 +17725,33 @@ def _render_home_page():
             st.markdown(
                 '<div class="se-sec">ALSO ON THE BOARD</div>', unsafe_allow_html=True
             )
-        for _i, (_, r) in enumerate(_top.iloc[1:].iterrows(), start=2):
-            _star = "\u2605 " if str(r.get("verdict")) == "BEST BET" else ""
-            # Conviction bar: EV relative to the strongest bet on the board,
-            # so relative strength reads at a glance without parsing numbers.
-            try:
-                _ev_v = float(r.get("expected_value"))
-                _ev_max = float(_top["_ev"].max()) or 1.0
-                _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
-            except Exception:
-                _ev_v, _pct = None, 12
-            _best = str(r.get("verdict")) == "BEST BET"
-            st.markdown(
-                f'<div class="se-home-bet{" is-best" if _best else ""}">'
-                f'<div class="se-home-bet-rank">{_i}</div>'
-                f'<div class="se-home-bet-logo">{_pick_logo_html(r, 34)}</div>'
-                f'<div class="se-home-bet-main">'
-                f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                f'{html.escape(str(r.get("home_team","")))}</small>'
-                f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div></div>'
-                f'<div class="se-home-bet-num">'
-                f'<b>{_v390_prob_text(r.get("expected_value"))}</b><span>EV</span></div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        _rest = list(_top.iloc[1:].iterrows())
+        for _pair_start in range(0, len(_rest), 2):
+            _cols = st.columns(2, gap="small")
+            for _c, _idx in zip(_cols, range(_pair_start, min(_pair_start + 2, len(_rest)))):
+                _i = _idx + 2
+                r = _rest[_idx][1]
+                with _c:
+                    try:
+                        _ev_v = float(r.get("expected_value"))
+                        _ev_max = float(_top["_ev"].max()) or 1.0
+                        _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
+                    except Exception:
+                        _pct = 12
+                    st.markdown(
+                        f'<div class="se-mini">'
+                        f'<div class="se-mini-top">'
+                        f'<span class="se-mini-rank">{_i}</span>'
+                        f'{_pick_logo_html(r, 26)}'
+                        f'<span class="se-mini-ev">'
+                        f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
+                        f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                        f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                        f'{html.escape(str(r.get("home_team","")))}</small>'
+                        f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
         if _total > 5:
             if st.button(f"See all {_total} bets", use_container_width=True,
@@ -17747,19 +17769,23 @@ def _render_home_page():
 
     # --- what the model can actually do -----------------------------------
     with st.expander("How good is this model?", expanded=False):
-        st.markdown(_se_ability_svg(), unsafe_allow_html=True)
         st.markdown(
-            "**Tested honestly.** Fit on past seasons, tested on the next one — "
-            "never on data it had already seen. Across 7,062 games it picked the "
-            "right side of the spread **51.1%** of the time. You need **52.4%** to "
-            "break even at -110."
+            f'<div class="se-ability">{_se_ability_svg()}</div>',
+            unsafe_allow_html=True,
         )
         st.markdown(
-            "**What that means.** Public power ratings do not beat the closing "
-            "line, because the market already prices them in. So this app shrinks "
-            "the model's disagreement with the market to a quarter of what it "
-            "claims, and only calls a bet official when something still clears the "
-            "bar afterwards."
+            '<div class="se-ability-copy">'
+            '<p><b>Tested honestly.</b> Fit on past seasons, tested on the next one '
+            '\u2014 never on data it had already seen. Across 7,062 games it picked '
+            'the right side of the spread <b>51.1%</b> of the time. You need '
+            '<b>52.4%</b> to break even at -110.</p>'
+            '<p><b>What that means.</b> Public power ratings do not beat the closing '
+            'line, because the market already prices them in. So this app shrinks the '
+            "model's disagreement with the market to a quarter of what it claims, and "
+            'only calls a bet official when something still clears the bar '
+            'afterwards.</p>'
+            '</div>',
+            unsafe_allow_html=True,
         )
         st.caption(
             "Most betting models are never tested this way. The number above is "
