@@ -17603,12 +17603,21 @@ if run_mode == "Full Slate":
         total_card = _v410_total_card(slate_df)
         combined_card = _v410_combine_cards(v36_card, total_card)
 
-        st.session_state["cfb_v36_latest_card"] = combined_card.copy()
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
 
-        # Two tiers: strict official bets, plus an always-there fun card.
+        # Two tiers: strict official bets, plus an always-there watch list.
         _official, _fun = _v50_apply_strict_selection(combined_card)
+
+        # Store the POST-selection card so other views report the real verdict.
+        _stored = combined_card.copy()
+        _stored["verdict"] = "PASS"
+        if not _official.empty:
+            _stored.loc[_official.index, "verdict"] = _official["verdict"]
+            for _col in ["cover_probability", "expected_value", "point_edge", "fair_display"]:
+                if _col in _official.columns:
+                    _stored.loc[_official.index, _col] = _official[_col]
+        st.session_state["cfb_v36_latest_card"] = _stored
 
         try:
             _build_status.update(label="Slate ready", state="complete")
@@ -18121,18 +18130,10 @@ st.session_state["cfb_latest_projection_filename"] = (
 
 st.markdown(
     '<div class="workflow-step"><div class="workflow-num">4</div><div>'
-    '<div class="workflow-title">Get your betting board</div>'
-    '<div class="workflow-sub">Markets are ranked Best Bet, Bet, Lean, or Pass using probability, price, edge, EV, and model confidence.</div>'
+    '<div class="workflow-title">Analyze the markets</div>'
+    '<div class="workflow-sub">How the model prices each market on this game, '
+    'and whether any of it clears the official-bet threshold.</div>'
     '</div></div>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div class="grade-legend-inline">'
-    '<div class="grade-pill a"><b>Best Bet</b></div>'
-    '<div class="grade-pill b"><b>Bet</b></div>'
-    '<div class="grade-pill c"><b>Lean</b></div>'
-    '<div class="grade-pill d"><b>Pass</b></div>'
-    '</div>',
     unsafe_allow_html=True,
 )
 
@@ -18172,9 +18173,15 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         v = apply_moneyline_guard(v, odds, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    spread_gap = residual_p["spread_correction"]
-    hc=residual_p["home_cover_prob"]
-    ac=residual_p["away_cover_prob"]
+    # UNIFIED ENGINE: use the SAME fundamental probability the Slate uses —
+    # cover_probability() on the raw projection versus the market number —
+    # rather than a residual-corrected variant. Both views now run one engine.
+    _fund_margin_sd = float(p.get("margin_sd") or BASE_MARGIN_SD)
+    _fund_home_margin = -float(p["model_home_spread"])
+    hc = cover_probability(_fund_home_margin, float(home_spread),
+                           side="home", sigma=_fund_margin_sd)
+    ac = 1.0 - hc
+    spread_gap = abs(float(p["model_home_spread"]) - float(home_spread))
     for name,prob,odds in [
         (f"{p['home']} {home_spread:+.1f}",hc,home_spread_odds),
         (f"{p['away']} {away_spread:+.1f}",ac,away_spread_odds)
@@ -18184,9 +18191,12 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
         markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
-    total_gap = residual_p["total_correction"]
-    op=residual_p["over_prob"]
-    up=residual_p["under_prob"]
+    # Same fundamental engine for totals: projected total versus market number.
+    _fund_total = float(p["model_total"])
+    _fund_total_sd = float(p.get("total_sd") or BASE_TOTAL_SD)
+    op = 1.0 - NormalDist(mu=_fund_total, sigma=max(_fund_total_sd, 1e-6)).cdf(float(market_total))
+    up = 1.0 - op
+    total_gap = abs(_fund_total - float(market_total))
     for name,prob,odds in [(f"Over {market_total:g}",op,over_odds),(f"Under {market_total:g}",up,under_odds)]:
         v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="total",
                          projection_gap=total_gap,week=p["week"])
@@ -18219,21 +18229,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         "the Slate applies — so the numbers here match what you see there."
     )
 
-    markets.sort(key=lambda x:(rank.get(x[0], -1),x[5]),reverse=True)
-    best=markets[0]
-
-    top_label = "NO PLAY" if best[0] == "PASS" else "TOP PLAY"
-    st.markdown(f'<div class="section-kicker">{top_label}</div>', unsafe_allow_html=True)
-    best_stake = playable_stake(best[0], best[4], p["confidence"])
-    render_recommendation_card(
-        best[0], best[1], best[2],
-        prob=best[3], edge=best[4], ev=best[5],
-        fair=best[6], stake=best_stake
-    )
-
-    st.markdown('<div class="section-kicker">MARKET BOARD</div>', unsafe_allow_html=True)
-    primary_markets = [m for m in markets if m[0] in {"STRONG BET","BET","LEAN"}]
-    pass_markets = [m for m in markets if m[0] == "PASS"]
+    markets.sort(key=lambda x: x[5], reverse=True)
 
     # ---- Would this game qualify as an official bet? ----------------------
     # Applies the IDENTICAL criteria the Slate uses, so the two can never
@@ -18257,59 +18253,56 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     _qual.sort(key=lambda x: -x[1])
 
     st.markdown("#### Should you bet this game?")
-    if _qual:
-        _n, _ev_q, _p_q = _qual[0]
-        st.success(
-            f"**{_n}** clears the official-bet criteria — "
-            f"{_ev_q*100:+.1f}% EV, {_p_q*100:.1f}% win probability after calibration."
-        )
-        if len(_qual) > 1:
-            st.caption(
-                "Also qualifying: "
-                + ", ".join(f"{n} ({e*100:+.1f}% EV)" for n, e, _ in _qual[1:])
-            )
-    else:
-        _why = []
+
+    # The Slate is the single source of truth. If it has been built, report
+    # ITS verdict for this game rather than computing a second opinion from a
+    # different engine — that is what produced contradictory answers before.
+    _slate_card = st.session_state.get("cfb_v36_latest_card")
+    _slate_says = None
+    if isinstance(_slate_card, pd.DataFrame) and not _slate_card.empty:
         try:
-            if abs(float(home_spread)) > V50_MAX_SPREAD:
-                _why.append(
-                    f"the spread ({home_spread:+.1f}) is beyond the {V50_MAX_SPREAD:.0f}-point "
-                    "range where the ratings are reliable"
-                )
+            _gid = str(game.get("id") or "")
+            _hit = _slate_card[_slate_card["game_id"].astype(str) == _gid]
+            if not _hit.empty:
+                _slate_says = _hit
         except Exception:
-            pass
-        _best_ev = max((m[5] for m in markets), default=None)
-        if _best_ev is not None and _best_ev < V50_MIN_EV:
-            _why.append(
-                f"the best market here is {_best_ev*100:+.1f}% EV, below the "
-                f"{V50_MIN_EV*100:.1f}% threshold"
-            )
-        st.info(
-            "**No — this would not be an official bet.** "
-            + ("Because " + "; and ".join(_why) + "." if _why else
-               "Nothing on this game clears the threshold.")
-            + " You can still play it off the Watch List if you like the game."
-        )
+            _slate_says = None
 
-    if primary_markets:
-        st.markdown('<div class="market-board">', unsafe_allow_html=True)
-        for v,name,odds,prob,e,ev,fair in primary_markets:
-            render_market_row("", name, odds, prob=prob, edge=e, ev=ev, fair=fair)
-        st.markdown('</div>', unsafe_allow_html=True)
+    if _slate_says is not None:
+        _off = _slate_says[_slate_says["verdict"].isin(["BET", "BEST BET"])]
+        _sdate = st.session_state.get("cfb_v36_latest_date", "")
+        if not _off.empty:
+            _r0 = _off.iloc[0]
+            st.success(
+                f"**Yes — the Slate has this as {_r0.get('verdict')}: "
+                f"{_r0.get('selection','')}.** "
+                f"{_v390_prob_text(_r0.get('cover_probability'))} win probability, "
+                f"{_v390_prob_text(_r0.get('expected_value'))} EV after calibration."
+            )
+        else:
+            st.info(
+                "**No — the Slate does not have this as an official bet.** "
+                "It did not clear the threshold on the slate built for "
+                f"{_sdate}. You can still play it off the Watch List."
+            )
         st.caption(
-            "How the model prices each market on this game. Official "
-            "recommendations come from the Slate tab, which applies stricter "
-            "thresholds — this view explains the numbers rather than issuing picks."
+            "This is the Slate's verdict, which is the official one. The market "
+            "board below is this page's own pricing detail and can differ — the "
+            "Slate decides."
         )
     else:
-        st.caption("No markets priced for this game.")
+        st.info(
+            "Build a slate on the **Slate** tab to get the official verdict for "
+            "this game. The market board below shows how this page prices each "
+            "market, but the Slate makes the call."
+        )
 
-    if pass_markets:
-        with st.expander(f"Other markets • {len(pass_markets)}", expanded=False):
-            st.markdown('<div class="market-board">', unsafe_allow_html=True)
-            for v,name,odds,prob,e,ev,fair in pass_markets:
-                render_market_row("", name, odds, prob=prob, edge=e, ev=ev, fair=fair)
-            st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker">HOW THE MODEL PRICES THIS GAME</div>', unsafe_allow_html=True)
+    st.caption("Every market on this game, best expected value first.")
+    st.markdown('<div class="market-board">', unsafe_allow_html=True)
+    for v,name,odds,prob,e,ev,fair in markets:
+        render_market_row("", name, odds, prob=prob, edge=e, ev=ev, fair=fair)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     market_export = {
         "line_provider": selected_line.get("provider") if selected_line else None,
