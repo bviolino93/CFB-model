@@ -17727,13 +17727,41 @@ if run_mode == "Full Slate":
 
     st.stop()
 
-labels={}
-for g in daily:
-    label=f"{g.get('awayTeam','Away')} @ {g.get('homeTeam','Home')}"
-    if g.get("neutralSite"): label += " (Neutral)"
-    labels[label]=g
+# Searchable, kickoff-ordered matchup picker.
+def _game_sort_key(g):
+    k = kickoff_et(g)
+    return k if k is not None else pd.Timestamp.max.tz_localize("UTC")
 
-game=labels[st.selectbox("Matchup", list(labels.keys()))]
+_sorted_daily = sorted(daily, key=_game_sort_key)
+
+labels = {}
+for g in _sorted_daily:
+    _k = kickoff_et(g)
+    _t = _k.strftime("%-I:%M %p") if _k is not None else "TBD"
+    label = f"{_t}  ·  {g.get('awayTeam','Away')} @ {g.get('homeTeam','Home')}"
+    if g.get("neutralSite"):
+        label += " (Neutral)"
+    labels[label] = g
+
+_all_labels = list(labels.keys())
+
+_q = st.text_input(
+    "Find a game",
+    placeholder="Type a team name — e.g. Oregon, Michigan State",
+    key="game_search",
+).strip().lower()
+
+if _q:
+    _filtered = [l for l in _all_labels if _q in l.lower()]
+    if not _filtered:
+        st.warning(f"No games matching '{_q}' on this date. Showing all games.")
+        _filtered = _all_labels
+    elif len(_filtered) < len(_all_labels):
+        st.caption(f"{len(_filtered)} of {len(_all_labels)} games match.")
+else:
+    _filtered = _all_labels
+
+game = labels[st.selectbox("Matchup", _filtered, key="game_pick")]
 
 try:
     model_data = get_model_data(year)
@@ -18230,6 +18258,7 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     )
 
     markets.sort(key=lambda x: x[5], reverse=True)
+    best = markets[0] if markets else ("PASS", "", -110, 0.5, 0.0, 0.0, -110)
 
     # ---- Would this game qualify as an official bet? ----------------------
     # Applies the IDENTICAL criteria the Slate uses, so the two can never
