@@ -6641,12 +6641,34 @@ div[class*="st-key-v420_run_slate"] button{
   border-radius:13px;background:rgba(12,26,44,.6);
   border:1px solid rgba(120,154,188,.13);
 }
+.se-home-bet-rank{
+  width:26px;height:26px;flex:0 0 26px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(47,107,255,.16);border:1px solid rgba(47,107,255,.26);
+  color:#7fb4ff;font-size:.72rem;font-weight:800;
+}
+.se-curve{
+  padding:10px 8px 4px;border-radius:14px;margin-bottom:2px;
+  background:rgba(12,26,44,.5);border:1px solid rgba(120,154,188,.12);
+}
+.se-home-bet-logo{flex:0 0 auto;display:flex;align-items:center}
 .se-home-bet-main{flex:1;min-width:0}
+.se-conv{margin-top:7px;height:4px;border-radius:99px;background:rgba(120,154,188,.14);overflow:hidden}
+.se-conv i{display:block;height:100%;border-radius:99px;
+  background:linear-gradient(90deg,#2f6bff,#4ae0aa)}
+.se-home-bet.is-best{
+  border-color:rgba(47,107,255,.42)!important;
+  background:linear-gradient(180deg,rgba(47,107,255,.14),rgba(12,26,44,.6))!important;
+  box-shadow:0 8px 24px rgba(47,107,255,.16);
+}
+.se-home-bet.is-best .se-home-bet-rank{
+  background:linear-gradient(180deg,#3b7bff,#2f6bff);color:#fff;border-color:transparent;
+}
 .se-home-bet-main b{display:block;font-size:.94rem;color:#eef4fb;font-weight:800}
 .se-home-bet-main small{display:block;font-size:.68rem;color:#7f97ae;margin-top:2px}
 .se-home-bet-num{text-align:right}
 .se-home-bet-num b{display:block;font-size:.9rem;color:#4ae0aa;font-weight:800}
-.se-home-bet-num span{font-size:.54rem;letter-spacing:.1em;color:#7f97ae;text-transform:uppercase}
+.se-home-bet-num span{display:block;font-size:.5rem;letter-spacing:.12em;color:#63798f;text-transform:uppercase;margin-top:1px}
 .se-home-bet-tag{
   font-size:.55rem;letter-spacing:.09em;font-weight:800;color:#7fb4ff;
   border:1px solid rgba(47,107,255,.34);border-radius:999px;padding:5px 9px;
@@ -17421,6 +17443,60 @@ try:
 except Exception:
     pass
 
+def _se_margin_curve_svg(mu, sigma, market, home, away, w=680, h=190):
+    """
+    Projected margin distribution with the market number marked and the
+    covering region shaded. Makes visible why a small edge only shifts the
+    probability a little — the distribution is very wide.
+    """
+    try:
+        mu = float(mu); sigma = max(float(sigma), 1e-6); market = float(market)
+    except Exception:
+        return ""
+    lo, hi = mu - 3.2 * sigma, mu + 3.2 * sigma
+    if market < lo: lo = market - 0.6 * sigma
+    if market > hi: hi = market + 0.6 * sigma
+
+    n, pad_l, pad_r, pad_t, pad_b = 120, 10, 10, 12, 26
+    iw, ih = w - pad_l - pad_r, h - pad_t - pad_b
+    xs = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    ys = [math.exp(-0.5 * ((x - mu) / sigma) ** 2) for x in xs]
+    ymax = max(ys) or 1.0
+
+    def px(x): return pad_l + (x - lo) / (hi - lo) * iw
+    def py(y): return pad_t + ih - (y / ymax) * ih
+
+    line = " ".join(f"{px(x):.1f},{py(y):.1f}" for x, y in zip(xs, ys))
+    # Shade the side that covers.
+    shade = [(x, y) for x, y in zip(xs, ys) if x >= market]
+    if shade:
+        area = f"{px(shade[0][0]):.1f},{py(0):.1f} " + \
+               " ".join(f"{px(x):.1f},{py(y):.1f}" for x, y in shade) + \
+               f" {px(shade[-1][0]):.1f},{py(0):.1f}"
+    else:
+        area = ""
+    mx = px(market)
+
+    return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
+  <defs>
+    <linearGradient id="seFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2f6bff" stop-opacity=".42"/>
+      <stop offset="100%" stop-color="#2f6bff" stop-opacity=".04"/>
+    </linearGradient>
+  </defs>
+  <polygon points="{area}" fill="url(#seFill)"/>
+  <polyline points="{line}" fill="none" stroke="#7fb4ff" stroke-width="2.2"/>
+  <line x1="{px(mu):.1f}" y1="{pad_t}" x2="{px(mu):.1f}" y2="{pad_t+ih}"
+        stroke="#4ae0aa" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <line x1="{mx:.1f}" y1="{pad_t}" x2="{mx:.1f}" y2="{pad_t+ih}"
+        stroke="#f2c14e" stroke-width="2"/>
+  <text x="{px(mu):.1f}" y="{h-9}" fill="#4ae0aa" font-size="11"
+        font-family="sans-serif" text-anchor="middle">model {mu:+.1f}</text>
+  <text x="{mx:.1f}" y="{pad_t-1}" fill="#f2c14e" font-size="11"
+        font-family="sans-serif" text-anchor="middle">market {market:+.1f}</text>
+</svg>'''
+
+
 def _render_home_page():
     _now = pd.Timestamp.now(tz="America/New_York")
     _today = _now.strftime("%Y-%m-%d")
@@ -17482,25 +17558,50 @@ def _render_home_page():
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
         st.info("No bets qualified today. Empty days are normal.")
     else:
+        # Front page shows the five strongest only; the Slate has the full set.
+        try:
+            _off = _off.assign(
+                _ev=pd.to_numeric(_off.get("expected_value"), errors="coerce").fillna(-9)
+            ).sort_values("_ev", ascending=False)
+        except Exception:
+            pass
+        _total = len(_off)
+        _top = _off.head(5)
+
         st.markdown(
-            f'<div class="se-sec">TODAY\u2019S BETS \u00b7 {len(_off)}</div>',
-            unsafe_allow_html=True,
+            '<div class="se-sec">TOP BETS TODAY</div>', unsafe_allow_html=True
         )
-        for _, r in _off.iterrows():
+        for _i, (_, r) in enumerate(_top.iterrows(), start=1):
             _star = "\u2605 " if str(r.get("verdict")) == "BEST BET" else ""
+            # Conviction bar: EV relative to the strongest bet on the board,
+            # so relative strength reads at a glance without parsing numbers.
+            try:
+                _ev_v = float(r.get("expected_value"))
+                _ev_max = float(_top["_ev"].max()) or 1.0
+                _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
+            except Exception:
+                _ev_v, _pct = None, 12
+            _best = str(r.get("verdict")) == "BEST BET"
             st.markdown(
-                f'<div class="se-home-bet">'
+                f'<div class="se-home-bet{" is-best" if _best else ""}">'
+                f'<div class="se-home-bet-rank">{_i}</div>'
+                f'<div class="se-home-bet-logo">{_pick_logo_html(r, 34)}</div>'
                 f'<div class="se-home-bet-main">'
                 f'<b>{html.escape(str(r.get("selection","")))}</b>'
                 f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                f'{html.escape(str(r.get("home_team","")))}</small></div>'
+                f'{html.escape(str(r.get("home_team","")))}</small>'
+                f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div></div>'
                 f'<div class="se-home-bet-num">'
-                f'<b>{_v390_prob_text(r.get("expected_value"))}</b>'
-                f'<span>{"EV" if pd.notna(r.get("expected_value")) else ""}</span></div>'
-                f'<div class="se-home-bet-tag">{_star}{html.escape(str(r.get("verdict","")))}</div>'
+                f'<b>{_v390_prob_text(r.get("expected_value"))}</b><span>EV</span></div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+        if _total > 5:
+            if st.button(f"See all {_total} bets", use_container_width=True,
+                         key="home_see_all"):
+                st.session_state["cfb_page"] = "Slate"
+                st.rerun()
 
     # --- record ------------------------------------------------------------
     try:
@@ -18758,6 +18859,26 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         f"Same criteria the Slate uses: {V50_MIN_EV*100:.1f}% EV minimum after "
         f"calibration, spreads within {V50_MAX_SPREAD:.0f} points, moneylines excluded."
     )
+
+    # Distribution visual: where the market number falls on the model's
+    # projected range of outcomes.
+    try:
+        _svg = _se_margin_curve_svg(
+            -float(p["model_home_spread"]),
+            float(p.get("margin_sd") or BASE_MARGIN_SD),
+            -float(home_spread),
+            p["home"], p["away"],
+        )
+    except Exception:
+        _svg = ""
+    if _svg:
+        st.markdown('<div class="se-sec">PROJECTED MARGIN</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="se-curve">{_svg}</div>', unsafe_allow_html=True)
+        st.caption(
+            f"Each point is a possible final margin for {html.escape(str(p['home']))}. "
+            "The shaded area is where the bet covers. The spread of outcomes is why "
+            "a small edge only moves the win probability a little."
+        )
 
     st.markdown('<div class="section-kicker">HOW THE MODEL PRICES THIS GAME</div>', unsafe_allow_html=True)
     st.caption("Every market on this game, best expected value first.")
