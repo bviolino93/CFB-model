@@ -17579,6 +17579,33 @@ def _render_more_page():
                 "cfb_latest_ranked_bets.csv",
             )
 
+    with st.expander("Clear frozen bets for a date", expanded=False):
+        st.caption(
+            "Removes every frozen bet for one date so you can rebuild on the "
+            "current logic. Useful after a scoring change \u2014 mixing bets "
+            "frozen under different rules makes the record unreadable."
+        )
+        _cd = st.date_input("Date to clear", value=date.today(), key="se_clear_date")
+        _confirm = st.checkbox("I understand this cannot be undone",
+                               key="se_clear_confirm")
+        if st.button("Clear that date", disabled=not _confirm,
+                     use_container_width=True, key="se_clear_go"):
+            try:
+                _t = _v401_load_tracker()
+                if _t.empty:
+                    st.info("Tracker is already empty.")
+                else:
+                    _before = len(_t)
+                    _t = _t[_t["game_date"].astype(str) != str(_cd)]
+                    _v401_save_tracker(_t)
+                    for _k in list(st.session_state.keys()):
+                        if _k.startswith("se_board_saved_") or _k == "cfb_v36_latest_card":
+                            del st.session_state[_k]
+                    st.success(f"Removed {_before - len(_t)} bet(s) for {_cd}. "
+                               "Rebuild the slate to refreeze on current logic.")
+            except Exception as _e:
+                st.error(f"Could not clear: {_e}")
+
     with st.expander("Model details & limitations", expanded=False):
         st.write(
             "Live views are for tracking only. Pregame projection, calibration, FCS protection, "
