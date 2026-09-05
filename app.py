@@ -6693,7 +6693,10 @@ div[class*="st-key-v420_run_slate"] button{
 .se-mini b{display:block;font-size:.86rem;color:#eef4fb;font-weight:800;line-height:1.25}
 .se-mini small{display:block;font-size:.63rem;color:#7f97ae;margin-top:3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.se-mini .se-conv{margin-top:9px}
+.se-mini-time{font-size:.6rem;color:#63798f;margin-top:4px;
+  letter-spacing:.05em;font-weight:700}
+.se-mini .se-conv{margin-top:8px}
+.se-hero-bet-copy small em{font-style:normal;color:#7fb4ff;font-weight:700}
 .se-ability{margin:2px 0 22px}
 .se-ability-copy p{font-size:.82rem!important;line-height:1.55!important;
   color:#c3d3e4!important;margin:0 0 11px!important}
@@ -17655,7 +17658,7 @@ def _render_home_page():
         except Exception:
             pass
         _total = len(_off)
-        _top = _off.head(5)
+        _top = _off
 
         # --- hero: the single best play, with its outcome distribution ----
         _h = _top.iloc[0]
@@ -17706,7 +17709,9 @@ def _render_home_page():
             f'<div class="se-hero-bet-copy">'
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
-            f'{html.escape(str(_h.get("home_team","")))}</small></div>'
+            f'{html.escape(str(_h.get("home_team","")))}'
+            f'<em> \u00b7 {html.escape(str(_h.get("kickoff_et","")) or "TBD")}</em>'
+            f'</small></div>'
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
             f'</div>'
@@ -17723,7 +17728,8 @@ def _render_home_page():
 
         if len(_top) > 1:
             st.markdown(
-                '<div class="se-sec">ALSO ON THE BOARD</div>', unsafe_allow_html=True
+                f'<div class="se-sec">ALSO ON THE BOARD \u00b7 {len(_top)-1}</div>',
+                unsafe_allow_html=True,
             )
         _rest = list(_top.iloc[1:].iterrows())
         st.markdown(
@@ -17760,16 +17766,12 @@ def _render_home_page():
                             f'<b>{html.escape(str(r.get("selection","")))}</b>'
                             f'<small>{html.escape(str(r.get("away_team","")))} @ '
                             f'{html.escape(str(r.get("home_team","")))}</small>'
+                            f'<div class="se-mini-time">{html.escape(str(r.get("kickoff_et","")) or "TBD")}</div>'
                             f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
 
-        if _total > 5:
-            if st.button(f"See all {_total} bets", use_container_width=True,
-                         key="home_see_all"):
-                st.session_state["cfb_page"] = "Slate"
-                st.rerun()
 
     # --- record ------------------------------------------------------------
     try:
