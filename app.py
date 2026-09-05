@@ -18254,48 +18254,108 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
 
     st.markdown("#### Should you bet this game?")
 
-    # The Slate is the single source of truth. If it has been built, report
-    # ITS verdict for this game rather than computing a second opinion from a
-    # different engine — that is what produced contradictory answers before.
-    _slate_card = st.session_state.get("cfb_v36_latest_card")
-    _slate_says = None
-    if isinstance(_slate_card, pd.DataFrame) and not _slate_card.empty:
-        try:
-            _gid = str(game.get("id") or "")
-            _hit = _slate_card[_slate_card["game_id"].astype(str) == _gid]
-            if not _hit.empty:
-                _slate_says = _hit
-        except Exception:
-            _slate_says = None
+    # Both views now run the same engine, so the official criteria can be
+    # applied to a single game directly — no need to build a full slate.
+    # Identical rules: calibration-shrunk EV above threshold, spread inside
+    # the range where the ratings hold up, moneylines excluded.
+    def _is_ml(nm):
+        n = nm.lower()
+        return n.endswith(" ml") or " ml " in f" {n} "
 
-    if _slate_says is not None:
-        _off = _slate_says[_slate_says["verdict"].isin(["BET", "BEST BET"])]
-        _sdate = st.session_state.get("cfb_v36_latest_date", "")
-        if not _off.empty:
-            _r0 = _off.iloc[0]
-            st.success(
-                f"**Yes — the Slate has this as {_r0.get('verdict')}: "
-                f"{_r0.get('selection','')}.** "
-                f"{_v390_prob_text(_r0.get('cover_probability'))} win probability, "
-                f"{_v390_prob_text(_r0.get('expected_value'))} EV after calibration."
-            )
-        else:
-            st.info(
-                "**No — the Slate does not have this as an official bet.** "
-                "It did not clear the threshold on the slate built for "
-                f"{_sdate}. You can still play it off the Watch List."
-            )
-        st.caption(
-            "This is the Slate's verdict, which is the official one. The market "
-            "board below is this page's own pricing detail and can differ — the "
-            "Slate decides."
+    _qual = []
+    for (v, name, odds, prob, e, ev, fml) in markets:
+        if _is_ml(name):
+            continue
+        _is_tot = name.lower().startswith(("over", "under"))
+        try:
+            _too_big = (not _is_tot) and abs(float(home_spread)) > V50_MAX_SPREAD
+        except Exception:
+            _too_big = False
+        try:
+            if float(ev) >= V50_MIN_EV and not _too_big:
+                _qual.append((name, float(ev), float(prob)))
+        except Exception:
+            pass
+    _qual.sort(key=lambda x: -x[1])
+
+    if _qual:
+        _n, _ev_q, _p_q = _qual[0]
+        st.success(
+            f"**Yes — {_n} clears the official-bet criteria.** "
+            f"{_ev_q*100:+.1f}% EV, {_p_q*100:.1f}% win probability after calibration."
         )
+        if len(_qual) > 1:
+            st.caption(
+                "Also qualifying: "
+                + ", ".join(f"{n} ({e*100:+.1f}% EV)" for n, e, _ in _qual[1:])
+            )
     else:
+        _why = []
+        try:
+            if abs(float(home_spread)) > V50_MAX_SPREAD:
+                _why.append(
+                    f"the spread ({home_spread:+.1f}) is beyond the "
+                    f"{V50_MAX_SPREAD:.0f}-point range where the ratings hold up"
+                )
+        except Exception:
+            pass
+        _sides = [m[5] for m in markets if not _is_ml(m[1])]
+        _best_ev = max(_sides, default=None)
+        if _best_ev is not None and _best_ev < V50_MIN_EV:
+            _why.append(
+                f"the best market here is {_best_ev*100:+.1f}% EV, below the "
+                f"{V50_MIN_EV*100:.1f}% threshold"
+            )
         st.info(
-            "Build a slate on the **Slate** tab to get the official verdict for "
-            "this game. The market board below shows how this page prices each "
-            "market, but the Slate makes the call."
+            "**No — this would not be an official bet.** "
+            + ("Because " + "; and ".join(_why) + "." if _why else
+               "Nothing here clears the threshold.")
         )
+
+    # Watch List check: would this game make the entertainment card?
+    # Competitive spreads only; totals always eligible; ranked by lean.
+    _watch = []
+    for (v, name, odds, prob, e, ev, fml) in markets:
+        if _is_ml(name):
+            continue
+        if any(name == q[0] for q in _qual):
+            continue
+        _is_tot = name.lower().startswith(("over", "under"))
+        try:
+            _ok = _is_tot or abs(float(home_spread)) <= V50_FUN_MAX_SPREAD
+        except Exception:
+            _ok = _is_tot
+        if not _ok:
+            continue
+        try:
+            _watch.append((name, abs(float(prob) - 0.5), float(prob)))
+        except Exception:
+            pass
+    _watch.sort(key=lambda x: -x[1])
+
+    if _watch:
+        _wn, _wl, _wp = _watch[0]
+        st.warning(
+            f"**Worth a look — {_wn}.** The model leans this way at "
+            f"{_wp*100:.1f}%, and the game should stay competitive. "
+            "Watch List material: fine to play for interest, tracked separately "
+            "from the official record."
+        )
+    elif not _qual:
+        try:
+            _blow = abs(float(home_spread)) > V50_FUN_MAX_SPREAD
+        except Exception:
+            _blow = False
+        st.caption(
+            "Not Watch List material either — "
+            + ("the spread is wide enough that the game is likely decided early."
+               if _blow else "the model has no meaningful lean here.")
+        )
+
+    st.caption(
+        f"Same criteria the Slate uses: {V50_MIN_EV*100:.1f}% EV minimum after "
+        f"calibration, spreads within {V50_MAX_SPREAD:.0f} points, moneylines excluded."
+    )
 
     st.markdown('<div class="section-kicker">HOW THE MODEL PRICES THIS GAME</div>', unsafe_allow_html=True)
     st.caption("Every market on this game, best expected value first.")
