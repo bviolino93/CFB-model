@@ -2270,6 +2270,22 @@ def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, f
 
     sub = " • ".join(pieces)
 
+    # With no verdict, drop the badge slots entirely rather than rendering
+    # empty placeholder boxes on both sides of the row.
+    if cls == "neutral":
+        st.markdown(
+            f"""
+            <div class="market-card plain">
+              <div class="market-main">
+                <div class="market-pick">{bet_label} {odds_txt}</div>
+                <div class="market-sub">{sub}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
     st.markdown(
         f"""
         <div class="market-card">
@@ -6586,6 +6602,8 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
 .ge-brandmark{gap:10px!important}
 .se-goalpost-logo{width:40px;height:40px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
 .se-goalpost-logo svg{display:block}
+.market-card.plain{padding:13px 15px!important}
+.market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
 .ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
 .ge-shop b{color:#7fb4ff;font-size:.60rem}
