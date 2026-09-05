@@ -6740,6 +6740,9 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-extra-main b{display:block;font-size:.82rem;color:#eef4fb;font-weight:800}
 .se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-evtag{display:inline-block;margin-top:4px;font-size:.58rem;font-weight:800;
+  letter-spacing:.04em;color:#4ae0aa;background:rgba(74,224,170,.10);
+  border:1px solid rgba(74,224,170,.22);border-radius:99px;padding:2px 7px}
 .se-extra-ev{color:#4ae0aa;font-size:.8rem;font-weight:800;white-space:nowrap}
 .se-take{
   text-align:center;padding:38px 22px 30px;border-radius:20px;margin:6px 0 14px;
@@ -16497,17 +16500,34 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
-V50_MIN_EV = 0.040         # +4.0% EV after shrinkage — the ONLY volume control.
-# Tuned to land near ten official bets on a full Saturday with spreads and
-# totals both eligible. That is a volume target, not an evidence-based edge
-# threshold, so expect some marginal plays. The number to watch is CLV: if it
-# runs negative over a few dozen graded bets, raise this.
+V50_MIN_EV = 0.0175        # +1.75% EV after calibration — the ONLY volume control.
+# Retuned after EV was corrected to derive from the shrunk win probability
+# (it was previously scaled separately and ran ~40% too high). On a full
+# Saturday this lands near ten official bets. It is a volume target, not an
+# evidence-based edge threshold, so expect marginal plays near the line.
+# The number to watch is CLV: if it runs negative over a few dozen graded
+# bets, raise this.
 V50_FUN_COUNT = 5          # watch list size
 
 
 V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
 # just miss the official threshold still surface somewhere rather than
 # vanishing between the two tiers.
+
+
+def _se_ev_from_prob(p, odds=-110):
+    """
+    EV implied by a win probability at given odds. Shrinking EV separately
+    from probability made the two disagree; deriving one from the other keeps
+    every displayed number internally consistent.
+    """
+    try:
+        p = float(p)
+        o = float(odds) if odds else -110
+    except Exception:
+        return None
+    payout = (100.0 / abs(o)) if o < 0 else (o / 100.0)
+    return p * payout - (1.0 - p)
 
 
 def _v50_apply_strict_selection(card):
@@ -16563,12 +16583,14 @@ def _v50_apply_strict_selection(card):
         # not the pre-shrinkage figures the model originally claimed.
         official["fair_display"] = official["shrunk_fair"]
         official["point_edge"] = official["shrunk_edge"]
-        official["expected_value"] = official["shrunk_ev"]
-        _mkt_o = pd.to_numeric(official.get("market_display"), errors="coerce")
         _p = pd.to_numeric(official.get("cover_probability"), errors="coerce")
-        # Pull the win probability back toward the break-even coin flip by the
-        # same factor, so cover% is not left overstated next to a 1-point edge.
-        official["cover_probability"] = 0.5 + V50_SHRINK * (_p - 0.5)
+        _ps = 0.5 + V50_SHRINK * (_p - 0.5)
+        official["cover_probability"] = _ps
+        # EV comes FROM the shrunk probability, not from scaling raw EV.
+        official["expected_value"] = [
+            _se_ev_from_prob(v, o) for v, o in
+            zip(_ps, official.get("odds", pd.Series(-110, index=official.index)))
+        ]
 
     # Fun card: watchable games first, then the model's lean within them.
     # Rank by distance from a coin flip, NOT by points — totals are larger
@@ -16598,10 +16620,15 @@ def _v50_apply_strict_selection(card):
         # probability left watch EVs at raw scale, so they displayed several
         # times larger than official bets on the same board.
         _pf = pd.to_numeric(fun.get("cover_probability"), errors="coerce")
-        fun["cover_probability"] = 0.5 + V50_SHRINK * (_pf - 0.5)
-        for _c in ("expected_value", "point_edge"):
-            if _c in fun.columns:
-                fun[_c] = pd.to_numeric(fun[_c], errors="coerce") * V50_SHRINK
+        _pfs = 0.5 + V50_SHRINK * (_pf - 0.5)
+        fun["cover_probability"] = _pfs
+        fun["expected_value"] = [
+            _se_ev_from_prob(v, o) for v, o in
+            zip(_pfs, fun.get("odds", pd.Series(-110, index=fun.index)))
+        ]
+        if "point_edge" in fun.columns:
+            fun["point_edge"] = pd.to_numeric(fun["point_edge"],
+                                              errors="coerce") * V50_SHRINK
         if "fair_display" in fun.columns and "market_display" in fun.columns:
             _fm = pd.to_numeric(fun["market_display"], errors="coerce")
             _ff = pd.to_numeric(fun["fair_display"], errors="coerce")
@@ -18097,6 +18124,98 @@ def _se_frozen_status(row, now, day=None):
     return f'<span class="se-st {state}">{html.escape(label)}</span>'
 
 
+def _se_card_pdf(df, day):
+    """
+    Render the frozen card as a PDF, grouped by kickoff window and ranked
+    strongest first — the same structure as the on-screen card.
+    """
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                    Table, TableStyle)
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                            leftMargin=0.6*inch, rightMargin=0.6*inch,
+                            topMargin=0.6*inch, bottomMargin=0.6*inch,
+                            title=f"Saturday Edge card {day}")
+    ss = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=ss["Title"], fontSize=17, spaceAfter=2,
+                        textColor=colors.HexColor("#12233d"))
+    sub = ParagraphStyle("sub", parent=ss["Normal"], fontSize=9,
+                         textColor=colors.HexColor("#5a7086"), spaceAfter=14)
+    wh = ParagraphStyle("wh", parent=ss["Heading2"], fontSize=11, spaceBefore=12,
+                        spaceAfter=5, textColor=colors.HexColor("#2f6bff"))
+    note = ParagraphStyle("note", parent=ss["Normal"], fontSize=7.5,
+                          textColor=colors.HexColor("#7a8a99"), spaceBefore=16)
+
+    story = [Paragraph("SATURDAY EDGE", h1),
+             Paragraph(f"Frozen card &middot; {day}", sub)]
+
+    for wname in ("Early", "Midday", "Night", "Unscheduled"):
+        wdf = df[df["_win"] == wname]
+        if wdf.empty:
+            continue
+        wdf = wdf.copy()
+        wdf["_isw"] = (wdf["bet_tier"].astype(str).str.upper() == "WATCH"
+                       if "bet_tier" in wdf.columns else False)
+        wdf["_evn"] = pd.to_numeric(wdf.get("expected_value"),
+                                    errors="coerce").fillna(-99)
+        wdf = wdf.sort_values(["_isw", "_evn"], ascending=[True, False])
+
+        n_off = int((~wdf["_isw"]).sum())
+        story.append(Paragraph(
+            f"{wname.upper()} &mdash; {n_off} official, "
+            f"{len(wdf)-n_off} watch", wh))
+
+        rows = [["#", "Pick", "Matchup", "Kick", "Line", "EV", "Result"]]
+        for i, (_, r) in enumerate(wdf.iterrows(), start=1):
+            try:
+                ev = f'{float(r.get("expected_value"))*100:+.1f}%'
+            except Exception:
+                ev = "-"
+            try:
+                ln = f'{float(r.get("bet_line")):+g}'
+            except Exception:
+                ln = "-"
+            res = str(r.get("result", "") or "").upper() or "pending"
+            tag = " (watch)" if r["_isw"] else ""
+            rows.append([
+                str(i),
+                f'{r.get("selection","")}{tag}',
+                f'{r.get("away_team","")} @ {r.get("home_team","")}',
+                _se_kick_label(r), ln, ev, res.title(),
+            ])
+
+        t = Table(rows, colWidths=[0.3*inch, 1.55*inch, 2.25*inch,
+                                   0.72*inch, 0.5*inch, 0.55*inch, 0.63*inch])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#12233d")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.6),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f2f6fa")]),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d7e0ea")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(t)
+
+    story.append(Paragraph(
+        "For entertainment and research. This model has not been shown to beat "
+        "the closing market &mdash; no edge is claimed. 21+ where legal. "
+        "If gambling stops being fun, call 1-800-GAMBLER.", note))
+    doc.build(story)
+    return buf.getvalue()
+
+
 def _se_window_of(row, day=None):
     """Which kickoff window a frozen bet belongs to."""
     ts = _se_kick_dt(row, day)
@@ -18913,6 +19032,18 @@ if run_mode == "Full Slate":
                 "ranked strongest first. Lines are locked at the number they "
                 "were frozen at."
             )
+            try:
+                st.download_button(
+                    "Download card as PDF",
+                    data=_se_card_pdf(_froz, str(selected_date)),
+                    file_name=f"saturday_edge_{selected_date}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"se_pdf_{selected_date}",
+                )
+            except Exception as _pe:
+                st.caption(f"PDF export unavailable: {_pe}")
+
             for _wname in ("Early", "Midday", "Night", "Unscheduled"):
                 _wdf = _froz[_froz["_win"] == _wname]
                 if _wdf.empty:
@@ -18950,8 +19081,9 @@ if run_mode == "Full Slate":
                         f'{" <em class=\'se-w\'>WATCH</em>" if _isw else ""}</b>'
                         f'<small>{html.escape(str(r.get("away_team","")))} @ '
                         f'{html.escape(str(r.get("home_team","")))} \u00b7 '
-                        f'{html.escape(_se_kick_label(r))}'
-                        f'{" \u00b7 " + _evs if _evs else ""}</small></div>'
+                        f'{html.escape(_se_kick_label(r))}</small>'
+                        f'{f"<span class=\'se-evtag\'>{_evs} EV</span>" if _evs else ""}'
+                        f'</div>'
                         f'{_se_frozen_status(r, _now_et, str(selected_date))}'
                         f'</div>',
                         unsafe_allow_html=True,
