@@ -6726,8 +6726,9 @@ div[class*="st-key-v420_run_slate"] button{
 .se-mini-time.big{font-size:.72rem;margin-top:6px}
 .se-mini-time.live{color:#4ae0aa}
 .se-mini-time.soon{color:#f2c14e}
-.se-meta{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px}
-.se-meta span{font-size:.62rem;color:#8fa6bd;font-weight:600}
+.se-meta{margin-top:6px;line-height:1.55}
+.se-meta span{display:block;font-size:.62rem;color:#8fa6bd;font-weight:600}
+.se-meta .nb{white-space:nowrap}
 .se-meta b{color:#dbe7f5;font-weight:800}
 .se-meta .cov{color:#7fb4ff;font-weight:800}
 .se-mini .se-conv{margin-top:8px}
@@ -17538,24 +17539,46 @@ try:
 except Exception:
     pass
 
-def _se_card_meta(row, now, day=None):
-    """Fair vs market, cover probability, and time to kickoff."""
+def _se_card_meta(row, now, day=None, lean=False):
+    """
+    Time to kickoff, plus the supporting numbers. lean=True drops the detail
+    for the small cards — a dashboard should scan, not be read.
+    """
     if str(row.get("result", "") or "").strip():
         return _se_result_badge(row)
+
+    if lean:
+        label, state = _se_time_to_kick(row, now, day)
+        cov = ""
+        try:
+            cov = (f'<div class="se-meta"><span class="cov nb">'
+                   f'{float(row.get("cover_probability"))*100:.1f}% cover</span></div>')
+        except Exception:
+            cov = ""
+        return f'{cov}<div class="se-mini-time {state}">{html.escape(label)}</div>'
 
     bits = []
     try:
         _is_tot = str(row.get("market_type", "")).upper() == "TOTAL"
-        mk = float(row.get("market_total") if _is_tot else row.get("market_home_spread"))
-        fa = float(row.get("fair_total") if _is_tot else row.get("fair_home_spread"))
-        bits.append(f'<span>fair <b>{fa:+.1f}</b> vs <b>{mk:+.1f}</b></span>'
-                    if not _is_tot else
-                    f'<span>fair <b>{fa:.1f}</b> vs <b>{mk:.1f}</b></span>')
+        if _is_tot:
+            mk = float(row.get("market_total"))
+            fa = float(row.get("fair_total"))
+            bits.append(f'<span class="nb">fair <b>{fa:.1f}</b> \u00b7 '
+                        f'mkt <b>{mk:.1f}</b></span>')
+        else:
+            mk = float(row.get("market_home_spread"))
+            fa = float(row.get("fair_home_spread"))
+            # Show both from the perspective of the side actually being bet,
+            # otherwise an away pick reads with the home team's signs.
+            if str(row.get("pick_side", "")).strip().upper() == "AWAY":
+                mk, fa = -mk, -fa
+            bits.append(f'<span class="nb">fair <b>{fa:+.1f}</b> \u00b7 '
+                        f'mkt <b>{mk:+.1f}</b></span>')
     except Exception:
         pass
     try:
         cp = float(row.get("cover_probability"))
-        bits.append(f'<span class="cov">{cp*100:.1f}% cover</span>')
+        bits.append(f'<span class="cov nb">{cp*100:.1f}% cover</span>')
     except Exception:
         pass
 
@@ -17928,12 +17951,6 @@ def _render_home_page():
                     _i = _idx + 2
                     r = _rest[_idx][1]
                     with _c:
-                        try:
-                            _ev_v = float(r.get("expected_value"))
-                            _ev_max = float(_top["_ev"].max()) or 1.0
-                            _pct = max(12, min(100, (_ev_v / _ev_max) * 100))
-                        except Exception:
-                            _pct = 12
                         st.markdown(
                             f'<div class="se-mini">'
                             f'<div class="se-mini-top">'
@@ -17944,8 +17961,8 @@ def _render_home_page():
                             f'<b>{html.escape(str(r.get("selection","")))}</b>'
                             f'<small>{html.escape(str(r.get("away_team","")))} @ '
                             f'{html.escape(str(r.get("home_team","")))}</small>'
-                            f'{_se_card_meta(r, _now, _today)}'
-                            f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
+                            f'{_se_card_meta(r, _now, _today, lean=True)}'
+
                             f'</div>',
                             unsafe_allow_html=True,
                         )
