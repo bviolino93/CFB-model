@@ -15687,8 +15687,8 @@ def _v401_clean_tracker(df):
             x.at[idx, "status"] = "FROZEN"
     return x[V401_TRACKER_COLUMNS]
 
-def _v401_sheet(return_error=False):
-    """Return the tracker worksheet, or None if Sheets isn't configured."""
+def _v401_sheet(return_error=False, tab="tracker"):
+    """Return a worksheet by tab name, or None if Sheets isn't configured."""
     err = None
     try:
         import json as _json
@@ -15726,9 +15726,9 @@ def _v401_sheet(return_error=False):
             return (None, err) if return_error else None
 
         try:
-            ws = book.worksheet("tracker")
+            ws = book.worksheet(tab)
         except Exception:
-            ws = book.add_worksheet(title="tracker", rows=2000, cols=40)
+            ws = book.add_worksheet(title=tab, rows=4000, cols=40)
         return (ws, None) if return_error else ws
     except Exception as e:
         err = f"Unexpected error connecting to Sheets: {e}"
@@ -17539,6 +17539,50 @@ try:
 except Exception:
     pass
 
+SE_BOARD_COLS = ["game_date", "game_id", "market_display", "expected_value", "verdict"]
+
+
+def _se_save_board(card, day):
+    """
+    Persist a compact snapshot of the full board so the front-page visuals
+    survive restarts. Session state is wiped on every redeploy; this is not.
+    """
+    try:
+        ws = _v401_sheet(tab="board")
+        if ws is None or card is None or card.empty:
+            return False
+        x = card.copy()
+        x["game_date"] = str(day)
+        keep = [c for c in SE_BOARD_COLS if c in x.columns]
+        x = x[keep].dropna(subset=["expected_value"])
+        try:
+            old = pd.DataFrame(ws.get_all_records())
+            if not old.empty and "game_date" in old.columns:
+                old = old[old["game_date"].astype(str) != str(day)]
+                x = pd.concat([old, x], ignore_index=True)
+        except Exception:
+            pass
+        body = [list(x.columns)] + x.astype(object).where(pd.notna(x), "").values.tolist()
+        ws.clear()
+        ws.update(body, value_input_option="RAW")
+        return True
+    except Exception:
+        return False
+
+
+def _se_load_board(day):
+    try:
+        ws = _v401_sheet(tab="board")
+        if ws is None:
+            return pd.DataFrame()
+        df = pd.DataFrame(ws.get_all_records())
+        if df.empty or "game_date" not in df.columns:
+            return pd.DataFrame()
+        return df[df["game_date"].astype(str) == str(day)].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _se_venue_coords():
     """venueId -> (lat, lon), cached for the day."""
@@ -18070,6 +18114,8 @@ def _render_home_page():
 
     # --- the whole board, two ways ----------------------------------------
     _board = st.session_state.get("cfb_v36_latest_card")
+    if not isinstance(_board, pd.DataFrame) or _board.empty:
+        _board = _se_load_board(_today)      # survives restarts
     if isinstance(_board, pd.DataFrame) and not _board.empty:
         _bet_ids = set(_off["record_key"].astype(str)) if "record_key" in _off.columns else set()
         _coords = _se_venue_coords()
@@ -18631,6 +18677,10 @@ if run_mode == "Full Slate":
                 if _col in _official.columns:
                     _stored.loc[_official.index, _col] = _official[_col]
         st.session_state["cfb_v36_latest_card"] = _stored
+        try:
+            _se_save_board(_stored, selected_date)
+        except Exception:
+            pass
 
         try:
             _build_status.update(label="Slate ready", state="complete")
