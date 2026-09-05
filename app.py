@@ -16523,9 +16523,18 @@ def _se_ev_from_prob(p, odds=-110):
     """
     try:
         p = float(p)
-        o = float(odds) if odds else -110
     except Exception:
         return None
+    if not math.isfinite(p):
+        return None
+    # NaN is truthy, so `odds or -110` silently passes NaN through and makes
+    # the whole result NaN. Check for a finite number explicitly.
+    try:
+        o = float(odds)
+        if not math.isfinite(o) or o == 0:
+            o = -110.0
+    except Exception:
+        o = -110.0
     payout = (100.0 / abs(o)) if o < 0 else (o / 100.0)
     return p * payout - (1.0 - p)
 
