@@ -407,9 +407,22 @@ def _pick_logo_html(row, size=32):
 
     if mtype == "TOTAL":
         return '<div class="logo-pair">' + _logo_html(away_logo, away, size) + _logo_html(home_logo, home, size) + '</div>'
-    if market.startswith(home):
+
+    # Which team is actually being backed. Prefer the explicit pick_side, then
+    # fall back to the selection text. The old code checked a "market" column
+    # that tracker rows do not have, so it always fell through to the away team.
+    side = str(row.get("pick_side", "")).strip().upper()
+    if side == "HOME":
         return _logo_html(home_logo, home, size)
-    return _logo_html(away_logo, away, size)
+    if side == "AWAY":
+        return _logo_html(away_logo, away, size)
+
+    label = str(row.get("selection", "") or market or "")
+    if home and label.startswith(home):
+        return _logo_html(home_logo, home, size)
+    if away and label.startswith(away):
+        return _logo_html(away_logo, away, size)
+    return _logo_html(home_logo, home, size)
 
 def _school_map(rows):
     return {str(r.get("school")): r for r in rows or [] if r.get("school")}
