@@ -6644,6 +6644,31 @@ div[class*="st-key-v420_run_slate"] button{
 .se-filter-summary b{color:#e8eef6;font-weight:800}
 .se-filter-summary span:not(:last-child):after{content:"";}
 .se-hero{padding:2px 0 14px}
+.se-hero-title em{font-style:normal;color:#4d84ff}
+.se-imminent{
+  display:flex;align-items:center;gap:10px;margin:4px 0 14px;
+  padding:12px 14px;border-radius:13px;
+  background:linear-gradient(180deg,rgba(242,193,78,.15),rgba(242,193,78,.05));
+  border:1px solid rgba(242,193,78,.34);
+}
+.se-imminent i{
+  width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#f2c14e;
+  box-shadow:0 0 0 0 rgba(242,193,78,.6);animation:sePulse 1.9s infinite;
+}
+.se-imminent span{font-size:.8rem;color:#f0e2bd;line-height:1.4}
+.se-imminent b{color:#ffd97a}
+.se-imminent.live{
+  background:linear-gradient(180deg,rgba(74,224,170,.15),rgba(74,224,170,.05));
+  border-color:rgba(74,224,170,.34);
+}
+.se-imminent.live i{background:#4ae0aa;box-shadow:0 0 0 0 rgba(74,224,170,.6)}
+.se-imminent.live span{color:#c6f0e0}
+.se-imminent.live b{color:#7dffcf}
+@keyframes sePulse{
+  0%{box-shadow:0 0 0 0 rgba(242,193,78,.55)}
+  70%{box-shadow:0 0 0 9px rgba(242,193,78,0)}
+  100%{box-shadow:0 0 0 0 rgba(242,193,78,0)}
+}
 .se-hero-kicker{font-size:.6rem;letter-spacing:.18em;color:#4d84ff;font-weight:800}
 .se-hero-title{font-size:1.62rem;font-weight:800;color:#eef4fb;letter-spacing:-.02em;margin-top:3px}
 .se-hero-sub{font-size:.78rem;color:#7f97ae;margin-top:5px}
@@ -6695,6 +6720,10 @@ div[class*="st-key-v420_run_slate"] button{
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-mini-time{font-size:.6rem;color:#63798f;margin-top:4px;
   letter-spacing:.05em;font-weight:700}
+.se-mini-time.won{color:#4ae0aa}
+.se-mini-time.lost{color:#f2748a}
+.se-mini-time.push{color:#f2c14e}
+.se-mini-time.big{font-size:.72rem;margin-top:6px}
 .se-mini .se-conv{margin-top:8px}
 .se-hero-bet-copy small em{font-style:normal;color:#7fb4ff;font-weight:700}
 .se-ability{margin:2px 0 22px}
@@ -17503,6 +17532,30 @@ try:
 except Exception:
     pass
 
+def _se_result_badge(row, big=False):
+    """Kickoff time, or the settled result once a bet has graded."""
+    res = str(row.get("result", "") or "").upper()
+    kt = str(row.get("kickoff_et", "") or "").strip() or "TBD"
+    cls = "se-mini-time" + (" big" if big else "")
+    if res in ("WIN", "WON"):
+        sc = ""
+        try:
+            sc = f' {int(float(row.get("final_away_score")))}\u2013{int(float(row.get("final_home_score")))}'
+        except Exception:
+            pass
+        return f'<div class="{cls} won">WON{sc}</div>'
+    if res in ("LOSS", "LOST"):
+        sc = ""
+        try:
+            sc = f' {int(float(row.get("final_away_score")))}\u2013{int(float(row.get("final_home_score")))}'
+        except Exception:
+            pass
+        return f'<div class="{cls} lost">LOST{sc}</div>'
+    if res == "PUSH":
+        return f'<div class="{cls} push">PUSH</div>'
+    return f'<div class="{cls}">{html.escape(kt)}</div>'
+
+
 def _se_ability_svg(ats=0.511, breakeven=0.524, w=680, h=132):
     """
     What the model can actually do, from the walk-forward test: ATS hit rate
@@ -17599,6 +17652,13 @@ def _render_home_page():
     except Exception:
         _tg = []
 
+    # Grade here too, so the record is current on Home rather than only
+    # after visiting the Tracker tab.
+    try:
+        _v401_grade_tracker()
+    except Exception:
+        pass
+
     # Read today's frozen bets from the TRACKER, which survives restarts,
     # rather than session state, which is wiped on every redeploy.
     _trk_today = pd.DataFrame()
@@ -17630,7 +17690,8 @@ def _render_home_page():
     st.markdown(
         f'<div class="se-hero">'
         f'<div class="se-hero-kicker">TODAY</div>'
-        f'<div class="se-hero-title">{_now.strftime("%A, %B %-d")}</div>'
+        f'<div class="se-hero-title">{_now.strftime("%A")} '
+        f'<em>{_now.strftime("%-m/%-d")}</em></div>'
         f'<div class="se-hero-sub">{_sub}</div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -17658,6 +17719,29 @@ def _render_home_page():
         except Exception:
             pass
         _total = len(_off)
+
+        # Order: upcoming first (soonest kickoff), then live, then finished.
+        # A settled game should not sit as "best play" all evening.
+        def _state(row):
+            try:
+                _kt = str(row.get("kickoff_et", "")).strip()
+                if str(row.get("status", "")).upper() == "FINAL":
+                    return 2, 0
+                if not _kt:
+                    return 0, 9999
+                _kd = pd.to_datetime(f"{_today} {_kt}").tz_localize("America/New_York")
+                _m = (_kd - _now).total_seconds() / 60.0
+                if _m > 0:
+                    return 0, _m          # upcoming, soonest first
+                return 1, -_m             # under way
+            except Exception:
+                return 0, 9999
+
+        _off = _off.copy()
+        _off["_grp"] = [_state(r)[0] for _, r in _off.iterrows()]
+        _off["_ord"] = [_state(r)[1] for _, r in _off.iterrows()]
+        _off = _off.sort_values(["_grp", "_ord", "_ev"],
+                                ascending=[True, True, False])
         _top = _off
 
         # --- hero: the single best play, with its outcome distribution ----
@@ -17701,6 +17785,33 @@ def _render_home_page():
         except Exception:
             _score_html = ""
 
+        # Countdown alert when the best play is close to kickoff.
+        _mins = None
+        try:
+            _kt = str(_h.get("kickoff_et", "")).strip()
+            if _kt:
+                _kd = pd.to_datetime(f"{_today} {_kt}").tz_localize("America/New_York")
+                _mins = (_kd - _now).total_seconds() / 60.0
+        except Exception:
+            _mins = None
+
+        if _mins is not None and 0 < _mins <= 60:
+            _txt = f"{int(_mins)} min" if _mins >= 1 else "under a minute"
+            st.markdown(
+                f'<div class="se-imminent"><i></i>'
+                f'<span><b>Top bet kicks off in {_txt}</b> \u2014 '
+                f'{html.escape(str(_h.get("selection","")))} at '
+                f'{html.escape(_kt)}</span></div>',
+                unsafe_allow_html=True,
+            )
+        elif _mins is not None and -210 < _mins <= 0:
+            st.markdown(
+                f'<div class="se-imminent live"><i></i>'
+                f'<span><b>Top bet is under way</b> \u2014 '
+                f'{html.escape(str(_h.get("selection","")))}</span></div>',
+                unsafe_allow_html=True,
+            )
+
         st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="se-hero-bet">'
@@ -17711,6 +17822,7 @@ def _render_home_page():
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}'
             f'<em> \u00b7 {html.escape(str(_h.get("kickoff_et","")) or "TBD")}</em>'
+            f'</small>{_se_result_badge(_h, big=True)}<small>'
             f'</small></div>'
             f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
             f'<span>EV</span></div>'
@@ -17766,7 +17878,7 @@ def _render_home_page():
                             f'<b>{html.escape(str(r.get("selection","")))}</b>'
                             f'<small>{html.escape(str(r.get("away_team","")))} @ '
                             f'{html.escape(str(r.get("home_team","")))}</small>'
-                            f'<div class="se-mini-time">{html.escape(str(r.get("kickoff_et","")) or "TBD")}</div>'
+                            f'{_se_result_badge(r)}'
                             f'<div class="se-conv"><i style="width:{_pct:.0f}%"></i></div>'
                             f'</div>',
                             unsafe_allow_html=True,
