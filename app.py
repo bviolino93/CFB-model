@@ -6630,6 +6630,28 @@ div[class*="st-key-v420_run_slate"] button{
 }
 .se-filter-summary b{color:#e8eef6;font-weight:800}
 .se-filter-summary span:not(:last-child):after{content:"";}
+.se-hero{padding:2px 0 14px}
+.se-hero-kicker{font-size:.6rem;letter-spacing:.18em;color:#4d84ff;font-weight:800}
+.se-hero-title{font-size:1.62rem;font-weight:800;color:#eef4fb;letter-spacing:-.02em;margin-top:3px}
+.se-hero-sub{font-size:.78rem;color:#7f97ae;margin-top:5px}
+.se-sec{font-size:.6rem;letter-spacing:.16em;color:#7f97ae;font-weight:800;
+  margin:20px 0 8px}
+.se-home-bet{
+  display:flex;align-items:center;gap:12px;padding:13px 14px;margin-bottom:7px;
+  border-radius:13px;background:rgba(12,26,44,.6);
+  border:1px solid rgba(120,154,188,.13);
+}
+.se-home-bet-main{flex:1;min-width:0}
+.se-home-bet-main b{display:block;font-size:.94rem;color:#eef4fb;font-weight:800}
+.se-home-bet-main small{display:block;font-size:.68rem;color:#7f97ae;margin-top:2px}
+.se-home-bet-num{text-align:right}
+.se-home-bet-num b{display:block;font-size:.9rem;color:#4ae0aa;font-weight:800}
+.se-home-bet-num span{font-size:.54rem;letter-spacing:.1em;color:#7f97ae;text-transform:uppercase}
+.se-home-bet-tag{
+  font-size:.55rem;letter-spacing:.09em;font-weight:800;color:#7fb4ff;
+  border:1px solid rgba(47,107,255,.34);border-radius:999px;padding:5px 9px;
+  white-space:nowrap;
+}
 .se-stat-strip{
   display:flex;gap:0;margin-bottom:14px;padding:14px 8px;border-radius:14px;
   background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13);
@@ -17403,13 +17425,6 @@ def _render_home_page():
     _now = pd.Timestamp.now(tz="America/New_York")
     _today = _now.strftime("%Y-%m-%d")
 
-    st.markdown(
-        '<div class="mobile-page-head"><div class="mobile-page-kicker">TODAY</div>'
-        f'<div class="mobile-page-title">{_now.strftime("%A, %B %-d")}</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    # --- today's board ----------------------------------------------------
     try:
         _tg = [g for g in (get_games(_now.year) or [])
                if str(g.get("startDate", ""))[:10] == _today]
@@ -17418,42 +17433,58 @@ def _render_home_page():
 
     _built = st.session_state.get("cfb_v36_latest_date") == _today
     _card = st.session_state.get("cfb_v36_latest_card")
-    _off_today = 0
+    _off = pd.DataFrame()
     if isinstance(_card, pd.DataFrame) and not _card.empty and _built:
-        _off_today = int(_card["verdict"].isin(["BET", "BEST BET"]).sum())
+        _off = _card[_card["verdict"].isin(["BET", "BEST BET"])]
 
+    # Next kickoff, so the header carries live information.
+    _ks = [k for k in (kickoff_et(g) for g in _tg) if k is not None and k > _now]
+    _next = min(_ks) if _ks else None
+    _sub = f"{len(_tg)} games \u00b7 next kickoff {_next.strftime('%-I:%M %p')} ET" if _next \
+        else (f"{len(_tg)} games \u00b7 all underway or final" if _tg else "No games scheduled")
+
+    st.markdown(
+        f'<div class="se-hero">'
+        f'<div class="se-hero-kicker">TODAY</div>'
+        f'<div class="se-hero-title">{_now.strftime("%A, %B %-d")}</div>'
+        f'<div class="se-hero-sub">{_sub}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # --- today's bets, shown here rather than linked to -------------------
     if not _tg:
-        st.info("No college football scheduled today.")
+        st.info("Nothing on the board today.")
     elif not _built:
-        _ks = [kickoff_et(g) for g in _tg]
-        _ks = [k for k in _ks if k is not None and k > _now]
-        _first = min(_ks).strftime("%-I:%M %p") if _ks else None
-        st.warning(
-            f"**{len(_tg)} games today**"
-            + (f", first kickoff {_first} ET." if _first else ".")
-            + " Today's slate has not been built yet."
-        )
         if st.button("Build today's slate", type="primary",
                      use_container_width=True, key="home_go_slate"):
             st.session_state["cfb_page"] = "Slate"
             st.rerun()
+        st.caption("Today's slate has not been built yet.")
+    elif _off.empty:
+        st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
+        st.info("No bets qualified today. Empty days are normal.")
     else:
-        try:
-            _slate_n = int(_card["game_id"].nunique())
-        except Exception:
-            _slate_n = len(_tg)
-        _bet_word = "bet" if _off_today == 1 else "bets"
-        st.success(
-            f"**Today's slate is built.** "
-            + (f"{_off_today} official {_bet_word} from {_slate_n} games."
-               if _off_today else f"No bets qualified from {_slate_n} games.")
+        st.markdown(
+            f'<div class="se-sec">TODAY\u2019S BETS \u00b7 {len(_off)}</div>',
+            unsafe_allow_html=True,
         )
-        if st.button("Open today's slate", use_container_width=True, key="home_open_slate"):
-            st.session_state["cfb_page"] = "Slate"
-            st.rerun()
+        for _, r in _off.iterrows():
+            _star = "\u2605 " if str(r.get("verdict")) == "BEST BET" else ""
+            st.markdown(
+                f'<div class="se-home-bet">'
+                f'<div class="se-home-bet-main">'
+                f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                f'{html.escape(str(r.get("home_team","")))}</small></div>'
+                f'<div class="se-home-bet-num">'
+                f'<b>{_v390_prob_text(r.get("expected_value"))}</b><span>EV</span></div>'
+                f'<div class="se-home-bet-tag">{_star}{html.escape(str(r.get("verdict","")))}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    # --- season record ----------------------------------------------------
-    st.markdown("#### Season record")
+    # --- record ------------------------------------------------------------
     try:
         _t = _v401_load_tracker()
         if "bet_tier" in _t.columns:
@@ -17461,43 +17492,27 @@ def _render_home_page():
     except Exception:
         _t = pd.DataFrame()
 
+    st.markdown('<div class="se-sec">SEASON RECORD</div>', unsafe_allow_html=True)
     if _t is None or _t.empty:
-        st.caption("No bets recorded yet. Build a slate and picks are frozen automatically.")
+        st.caption("No bets recorded yet.")
+        return
+
+    _s = _v401_summary(_t)
+    st.markdown(
+        f'<div class="se-stat-strip">'
+        f'<div><b>{_s["wins"]}-{_s["losses"]}-{_s["pushes"]}</b><span>W \u00b7 L \u00b7 P</span></div>'
+        f'<div><b class="{"pos" if _s["units"]>=0 else "neg"}">{_s["units"]:+.2f}u</b><span>Units</span></div>'
+        f'<div><b class="{"pos" if _s["roi"]>=0 else "neg"}">{_s["roi"]:+.1%}</b><span>ROI</span></div>'
+        f'<div><b>{_s["pending"]}</b><span>Pending</span></div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
+        if "clv_points" in _t.columns else pd.Series(dtype=float)
+    if len(_clv):
+        st.caption(f"Closing line value {_clv.mean():+.2f} pts across {len(_clv)} graded bets.")
     else:
-        _s = _v401_summary(_t)
-        st.markdown(
-            f'<div class="se-stat-strip">'
-            f'<div><b>{_s["wins"]}-{_s["losses"]}-{_s["pushes"]}</b><span>W · L · P</span></div>'
-            f'<div><b class="{"pos" if _s["units"]>=0 else "neg"}">{_s["units"]:+.2f}u</b><span>Units</span></div>'
-            f'<div><b class="{"pos" if _s["roi"]>=0 else "neg"}">{_s["roi"]:+.1%}</b><span>ROI</span></div>'
-            f'<div><b>{_s["pending"]}</b><span>Pending</span></div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
-            if "clv_points" in _t.columns else pd.Series(dtype=float)
-        if len(_clv):
-            st.caption(
-                f"Closing line value {_clv.mean():+.2f} pts across {len(_clv)} graded bets \u2014 "
-                "the earliest sign of whether there is real edge."
-            )
-        else:
-            st.caption(
-                f"{_s['bets']} bets frozen, {_s['graded']} graded. "
-                "Results appear automatically once games finish."
-            )
-
-    st.markdown("#### Go to")
-    g1, g2 = st.columns(2)
-    with g1:
-        if st.button("Analyse a game", use_container_width=True, key="home_to_games"):
-            st.session_state["cfb_page"] = "Games"
-            st.rerun()
-    with g2:
-        if st.button("Full tracker", use_container_width=True, key="home_to_tracker"):
-            st.session_state["cfb_page"] = "Tracker"
-            st.rerun()
+        st.caption(f"{_s['graded']} of {_s['bets']} bets graded so far.")
 
 
 if main_view == "Home":
