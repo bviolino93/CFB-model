@@ -18049,7 +18049,9 @@ def _render_home_page():
             st.markdown('<div class="se-sec">TODAY\u2019S BOARD</div>',
                         unsafe_allow_html=True)
             st.pydeck_chart(pdk.Deck(
-                map_style="mapbox://styles/mapbox/dark-v10",
+                # Carto basemap — renders without a Mapbox token, unlike the
+                # mapbox:// styles which silently show no tiles at all.
+                map_style="dark",
                 initial_view_state=pdk.ViewState(
                     latitude=float(_mdf["lat"].mean()),
                     longitude=float(_mdf["lon"].mean()),
@@ -18069,7 +18071,7 @@ def _render_home_page():
                               "border": "1px solid rgba(120,154,188,.3)",
                               "borderRadius": "8px"},
                 },
-            ))
+            ), height=330)
             _nb = sum(1 for p in _pts if p["bet"])
             st.caption(
                 f"The {len(_pts)} games in today's slate. Green marks the "
