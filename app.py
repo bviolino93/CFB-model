@@ -6715,14 +6715,14 @@ st.markdown(
 
 # v4.3.2 native-style horizontal navigation
 if "cfb_page" not in st.session_state:
-    st.session_state["cfb_page"] = "Slate"
+    st.session_state["cfb_page"] = "Home"
 
 _ge432_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
 _ge432_view = _ge432_alias.get(
     st.session_state.get("cfb_page", "Slate"),
     st.session_state.get("cfb_page", "Slate"),
 )
-_ge432_options = ["Slate", "Games", "Tracker", "More"]
+_ge432_options = ["Home", "Slate", "Games", "Tracker", "More"]
 
 # Keep the segmented nav synchronized with navigation triggered elsewhere.
 # Only resync when the page changed OUTSIDE this widget; otherwise a user's
@@ -14688,8 +14688,8 @@ if app_section == "Research Lab":
 
 # ===== v3.8 primary navigation state =====
 if "cfb_page" not in st.session_state:
-    st.session_state["cfb_page"] = "Slate"
-_v38_page_alias = {"Home": "Game", "Bets": "Slate", "Live": "Slate"}
+    st.session_state["cfb_page"] = "Home"
+_v38_page_alias = {"Bets": "Slate", "Live": "Slate"}
 _v38_main_view = _v38_page_alias.get(
     st.session_state.get("cfb_page", "Slate"),
     st.session_state.get("cfb_page", "Slate"),
@@ -17374,6 +17374,101 @@ try:
                     )
 except Exception:
     pass
+
+def _render_home_page():
+    _now = pd.Timestamp.now(tz="America/New_York")
+    _today = _now.strftime("%Y-%m-%d")
+
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">TODAY</div>'
+        f'<div class="mobile-page-title">{_now.strftime("%A, %B %-d")}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # --- today's board ----------------------------------------------------
+    try:
+        _tg = [g for g in (get_games(_now.year) or [])
+               if str(g.get("startDate", ""))[:10] == _today]
+    except Exception:
+        _tg = []
+
+    _built = st.session_state.get("cfb_v36_latest_date") == _today
+    _card = st.session_state.get("cfb_v36_latest_card")
+    _off_today = 0
+    if isinstance(_card, pd.DataFrame) and not _card.empty and _built:
+        _off_today = int(_card["verdict"].isin(["BET", "BEST BET"]).sum())
+
+    if not _tg:
+        st.info("No college football scheduled today.")
+    elif not _built:
+        _ks = [kickoff_et(g) for g in _tg]
+        _ks = [k for k in _ks if k is not None and k > _now]
+        _first = min(_ks).strftime("%-I:%M %p") if _ks else None
+        st.warning(
+            f"**{len(_tg)} games today**"
+            + (f", first kickoff {_first} ET." if _first else ".")
+            + " Today's slate has not been built yet."
+        )
+        if st.button("Build today's slate", type="primary",
+                     use_container_width=True, key="home_go_slate"):
+            st.session_state["cfb_page"] = "Slate"
+            st.rerun()
+    else:
+        st.success(
+            f"**Today's slate is built.** "
+            + (f"{_off_today} official bet(s) from {len(_tg)} games."
+               if _off_today else f"No bets qualified from {len(_tg)} games today.")
+        )
+        if st.button("Open today's slate", use_container_width=True, key="home_open_slate"):
+            st.session_state["cfb_page"] = "Slate"
+            st.rerun()
+
+    # --- season record ----------------------------------------------------
+    st.markdown("#### Season record")
+    try:
+        _t = _v401_load_tracker()
+        if "bet_tier" in _t.columns:
+            _t = _t[_t["bet_tier"].astype(str).str.upper() != "WATCH"]
+    except Exception:
+        _t = pd.DataFrame()
+
+    if _t is None or _t.empty:
+        st.caption("No bets recorded yet. Build a slate and picks are frozen automatically.")
+    else:
+        _s = _v401_summary(_t)
+        h1, h2, h3 = st.columns(3)
+        h1.metric("Record", f"{_s['wins']}-{_s['losses']}-{_s['pushes']}")
+        h2.metric("Units", f"{_s['units']:+.2f}u")
+        h3.metric("ROI", f"{_s['roi']:+.1%}")
+
+        _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
+            if "clv_points" in _t.columns else pd.Series(dtype=float)
+        if len(_clv):
+            st.caption(
+                f"Closing line value {_clv.mean():+.2f} pts across {len(_clv)} graded bets \u2014 "
+                "the earliest sign of whether there is real edge."
+            )
+        else:
+            st.caption(
+                f"{_s['bets']} bets frozen, {_s['graded']} graded. "
+                "Results appear automatically once games finish."
+            )
+
+    st.markdown("#### Go to")
+    g1, g2 = st.columns(2)
+    with g1:
+        if st.button("Analyse a game", use_container_width=True, key="home_to_games"):
+            st.session_state["cfb_page"] = "Games"
+            st.rerun()
+    with g2:
+        if st.button("Full tracker", use_container_width=True, key="home_to_tracker"):
+            st.session_state["cfb_page"] = "Tracker"
+            st.rerun()
+
+
+if main_view == "Home":
+    _render_home_page()
+    st.stop()
 
 if main_view == "Tracker":
     _v401_render_official_tracker()
