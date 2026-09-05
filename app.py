@@ -17455,39 +17455,6 @@ def _cfb_nav_button(label, slug):
         st.rerun()
 
 
-# --- First-run welcome ----------------------------------------------------
-# Shown once per session until dismissed, so a first-time visitor knows what
-# this is and what to do, without a wall of text for returning users.
-if not st.session_state.get("se_welcome_seen"):
-    with st.container(border=True):
-        st.markdown(
-            "#### Welcome to Saturday Edge\n"
-            "A college football model that compares its own fair line to the "
-            "betting market, then tells you honestly whether there is anything "
-            "worth betting."
-        )
-        st.markdown(
-            "**How to use it**\n"
-            "1. **Slate** — pick a date and press *Build Ranked Slate*.\n"
-            "2. **Official Bets** are the strict picks. Many days there are none — "
-            "that is normal, not a bug.\n"
-            "3. **Watch List** is always there: competitive games with a lean, "
-            "for interest rather than edge.\n"
-            "4. **Games** — analyse any single matchup on the same criteria.\n"
-            "5. **Tracker** — every pick is frozen at its line and graded "
-            "automatically once the game ends."
-        )
-        st.info(
-            "**Worth knowing up front.** Testing across 7,000+ games showed this "
-            "model does not beat the closing spread. Numbers shown are "
-            "calibration-adjusted to reflect that. Treat it as a research tool "
-            "and entertainment, not an edge."
-        )
-        if st.button("Got it", type="primary", use_container_width=True, key="se_welcome_ok"):
-            st.session_state["se_welcome_seen"] = True
-            st.rerun()
-    st.stop()
-
 # --- Mode banner + owner unlock -------------------------------------------
 try:
     _owner_code = st.secrets.get("owner_code")
@@ -17549,7 +17516,8 @@ try:
 except Exception:
     pass
 
-SE_BOARD_COLS = ["game_date", "game_id", "market_display", "expected_value", "verdict"]
+SE_BOARD_COLS = ["game_date", "game_id", "market_display", "expected_value",
+                 "verdict", "selection", "market_type"]
 
 
 def _se_save_board(card, day):
@@ -17913,6 +17881,8 @@ def _render_home_page():
     except Exception:
         _tg = []
 
+    _sc, _pts = [], []
+
     # Grade here too, so the record is current on Home rather than only
     # after visiting the Tracker tab.
     try:
@@ -18025,6 +17995,87 @@ def _render_home_page():
             _score_html = ""
 
         # Countdown alert when the best play is close to kickoff.
+        # --- today's board, geographically (top of page) ------------------
+        _board = st.session_state.get("cfb_v36_latest_card")
+        if not isinstance(_board, pd.DataFrame) or _board.empty:
+            _board = _se_load_board(_today)      # survives restarts
+        if isinstance(_board, pd.DataFrame) and not _board.empty:
+            _coords = _se_venue_coords()
+            _gv = {str(g.get("id")): str(g.get("venueId") or g.get("venue_id") or "")
+                   for g in _tg}
+            _gmeta = {}
+            for g in _tg:
+                _k = kickoff_et(g)
+                _gmeta[str(g.get("id"))] = {
+                    "matchup": f'{g.get("awayTeam","")} @ {g.get("homeTeam","")}',
+                    "kick": _k.strftime("%-I:%M %p") if _k is not None else "TBD",
+                }
+            for _, _b in _board.iterrows():
+                try:
+                    _ev = float(_b.get("expected_value"))
+                except Exception:
+                    continue
+                _isbet = str(_b.get("verdict", "")) in ("BET", "BEST BET")
+                try:
+                    _sc.append({"mkt": float(_b.get("market_display")),
+                                "ev": _ev, "bet": _isbet})
+                except Exception:
+                    pass
+                _vid = _gv.get(str(_b.get("game_id")), "")
+                if _vid and _vid in _coords:
+                    _la, _lo = _coords[_vid]
+                    _gm = _gmeta.get(str(_b.get("game_id")), {})
+                    _pts.append({
+                        "lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet,
+                        "matchup": _gm.get("matchup", ""),
+                        "kick": _gm.get("kick", ""),
+                        "pick": str(_b.get("selection", "") or
+                                    ("Official bet" if _isbet else "No bet")),
+                        "evtxt": f"{_ev*100:+.1f}% EV",
+                        "verdict": str(_b.get("verdict", "") or "PASS"),
+                    })
+
+        if _pts:
+            import pydeck as pdk
+            _mdf = pd.DataFrame(_pts)
+            _mdf["radius"] = [
+                (26000 + min(42000, abs(p["ev"]) * 400000)) if p["bet"] else 11000
+                for p in _pts
+            ]
+            _mdf["fill"] = [
+                [74, 224, 170, 220] if p["bet"] else [125, 150, 175, 120]
+                for p in _pts
+            ]
+            st.markdown('<div class="se-sec">TODAY\u2019S BOARD</div>',
+                        unsafe_allow_html=True)
+            st.pydeck_chart(pdk.Deck(
+                map_style="mapbox://styles/mapbox/dark-v10",
+                initial_view_state=pdk.ViewState(
+                    latitude=float(_mdf["lat"].mean()),
+                    longitude=float(_mdf["lon"].mean()),
+                    zoom=3.2, pitch=0,
+                ),
+                layers=[pdk.Layer(
+                    "ScatterplotLayer", data=_mdf,
+                    get_position="[lon, lat]", get_fill_color="fill",
+                    get_radius="radius", pickable=True, auto_highlight=True,
+                )],
+                tooltip={
+                    "html": "<b>{pick}</b><br/>{matchup}<br/>"
+                            "{evtxt} &middot; {kick}<br/>"
+                            "<span style='color:#7fb4ff'>{verdict}</span>",
+                    "style": {"backgroundColor": "#0b1b2d", "color": "#e8eef6",
+                              "fontSize": "12px",
+                              "border": "1px solid rgba(120,154,188,.3)",
+                              "borderRadius": "8px"},
+                },
+            ))
+            _nb = sum(1 for p in _pts if p["bet"])
+            st.caption(
+                f"The {len(_pts)} games in today's slate. Green marks the "
+                f"{_nb} official bet(s), sized by expected value. Tap a dot for detail."
+            )
+
         # Soonest upcoming bet across the whole board, not just the hero.
         _soon, _soon_m = None, None
         for _, _rr in _off.iterrows():
@@ -18134,77 +18185,20 @@ def _render_home_page():
     except Exception:
         _t = pd.DataFrame()
 
-    # --- the whole board, two ways ----------------------------------------
-    _board = st.session_state.get("cfb_v36_latest_card")
-    if not isinstance(_board, pd.DataFrame) or _board.empty:
-        _board = _se_load_board(_today)      # survives restarts
-    if isinstance(_board, pd.DataFrame) and not _board.empty:
-        _bet_ids = set(_off["record_key"].astype(str)) if "record_key" in _off.columns else set()
-        _coords = _se_venue_coords()
-        _gv = {str(g.get("id")): str(g.get("venueId") or g.get("venue_id") or "")
-               for g in _tg}
-
-        _pts, _sc = [], []
-        for _, _b in _board.iterrows():
-            try:
-                _ev = float(_b.get("expected_value"))
-            except Exception:
-                continue
-            _isbet = str(_b.get("verdict", "")) in ("BET", "BEST BET")
-            try:
-                _mk = float(_b.get("market_display"))
-            except Exception:
-                _mk = None
-            if _mk is not None:
-                _sc.append({"mkt": _mk, "ev": _ev, "bet": _isbet})
-            _vid = _gv.get(str(_b.get("game_id")), "")
-            if _vid and _vid in _coords:
-                _la, _lo = _coords[_vid]
-                _pts.append({"lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet})
-
-        if _sc or _pts:
-            st.markdown('<div class="se-sec">THE WHOLE BOARD</div>',
-                        unsafe_allow_html=True)
-            _t1, _t2 = st.tabs(["Edge spread", "Map"])
-            with _t1:
-                if _sc:
-                    st.markdown(
-                        f'<div class="se-curve">{_se_edge_scatter_svg(_sc, V50_MIN_EV)}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    _n_bet = sum(1 for r in _sc if r["bet"])
-                    st.caption(
-                        f"All {len(_sc)} markets on today's slate, placed by "
-                        f"expected value. {_n_bet} clear the threshold. The pile-up "
-                        "near zero is the model agreeing with the market \u2014 "
-                        "which is what an honest model does most of the time."
-                    )
-                else:
-                    st.caption("Build a slate to see the board.")
-            with _t2:
-                if _pts:
-                    _mdf = pd.DataFrame(_pts)
-                    _mdf["size"] = [
-                        (28000 + min(45000, abs(p.get("ev", 0)) * 420000))
-                        if p["bet"] else 9000
-                        for p in _pts
-                    ]
-                    _mdf["color"] = [
-                        "#4ae0aa" if p["bet"] else "#5a7086" for p in _pts
-                    ]
-                    st.map(
-                        _mdf.rename(columns={"lat": "latitude", "lon": "longitude"}),
-                        latitude="latitude", longitude="longitude",
-                        size="size", color="color",
-                    )
-                    _nb = sum(1 for p in _pts if p["bet"])
-                    st.caption(
-                        f"The {len(_pts)} games in today's slate. Green marks the "
-                        f"{_nb} official bet(s), sized by expected value. "
-                        "Pinch to zoom."
-                    )
-                else:
-                    st.caption("No venue locations available for today's games.")
+    # --- where every market falls on EV -----------------------------------
+    if _sc:
+        st.markdown('<div class="se-sec">EDGE SPREAD</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="se-curve">{_se_edge_scatter_svg(_sc, V50_MIN_EV)}</div>',
+            unsafe_allow_html=True,
+        )
+        _n_bet = sum(1 for r in _sc if r["bet"])
+        st.caption(
+            f"All {len(_sc)} markets on today's slate, placed by expected value. "
+            f"{_n_bet} clear the threshold. The pile-up near zero is the model "
+            "agreeing with the market \u2014 which is what an honest model does "
+            "most of the time."
+        )
 
     # --- what the model can actually do -----------------------------------
     with st.expander("How good is this model?", expanded=False):
