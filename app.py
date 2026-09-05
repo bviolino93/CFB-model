@@ -16392,7 +16392,11 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
-V50_MIN_EV = 0.015         # +1.5% EV after shrinkage — the ONLY volume control
+V50_MIN_EV = 0.040         # +4.0% EV after shrinkage — the ONLY volume control.
+# Tuned to land near ten official bets on a full Saturday with spreads and
+# totals both eligible. That is a volume target, not an evidence-based edge
+# threshold, so expect some marginal plays. The number to watch is CLV: if it
+# runs negative over a few dozen graded bets, raise this.
 V50_FUN_COUNT = 5          # watch list size
 
 
@@ -16425,7 +16429,11 @@ def _v50_apply_strict_selection(card):
     c["shrunk_fair"] = mkt + V50_SHRINK * (fair - mkt)
     c["shrunk_edge"] = (c["shrunk_fair"] - mkt).abs()
     c["shrunk_ev"] = pd.to_numeric(c.get("expected_value"), errors="coerce") * V50_SHRINK
-    c["excluded"] = (mkt.abs() > V50_MAX_SPREAD).fillna(False)
+    # The large-spread exclusion applies to SPREADS only. A total's market
+    # number is 45-70, so applying a 28-point cap to it excluded every total
+    # from ever qualifying.
+    _is_total = c["market_type"].astype(str).str.upper().eq("TOTAL")
+    c["excluded"] = ((~_is_total) & (mkt.abs() > V50_MAX_SPREAD)).fillna(False)
 
     qualifies = (
         c["verdict"].isin(["BET", "BEST BET"])
