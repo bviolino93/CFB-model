@@ -15836,30 +15836,41 @@ def _se_is_owner():
     return st.session_state.get("se_owner_ok") is True
 
 
-def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
+def _v401_track_both(official_card, watch_card, selected_date):
     """
-    Freeze the FIRST recommendation per game + market type.
-    A game may therefore have one frozen spread and one frozen total.
-    Later reruns never rewrite the frozen line.
-
-    tier: "OFFICIAL" (strict, shrunk selection) or "WATCH" (watch list).
-    Both are recorded but scored separately, so the official record stays
-    a clean measurement.
+    Freeze both tiers in a single sheet round trip. Previously each tier did
+    its own load + save, doubling the network cost of every build.
     """
     if not _se_is_owner():
-        return 0
-    if card is None or card.empty:
-        return 0
+        return 0, 0
+    tracker = _v401_load_tracker()
+    existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
 
+    new_rows, counts = [], {"OFFICIAL": 0, "WATCH": 0}
+    for card, tier in ((official_card, "OFFICIAL"), (watch_card, "WATCH")):
+        rows = _v401_build_freeze_rows(card, selected_date, tier, existing)
+        for r in rows:
+            existing.add(str(r["record_key"]))
+        new_rows.extend(rows)
+        counts[tier] = len(rows)
+
+    if new_rows:
+        merged = pd.concat([tracker, pd.DataFrame(new_rows)], ignore_index=True)
+        _v401_save_tracker(merged)
+    return counts["OFFICIAL"], counts["WATCH"]
+
+
+def _v401_build_freeze_rows(card, selected_date, tier, existing):
+    """Build the rows to freeze, without touching the sheet."""
+    if card is None or card.empty:
+        return []
     if tier == "OFFICIAL":
         official = card[card["verdict"].isin(["BEST BET","BET"])].copy()
     else:
         official = card.copy()
     if official.empty:
-        return 0
+        return []
 
-    tracker = _v401_load_tracker()
-    existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
 
     rows = []
     now = pd.Timestamp.now(tz="America/New_York").isoformat()
@@ -15941,9 +15952,18 @@ def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
         })
         existing.add(key)
 
+    return rows
+
+
+def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
+    """Freeze one tier. Kept for compatibility; builds use _v401_track_both."""
+    if not _se_is_owner():
+        return 0
+    tracker = _v401_load_tracker()
+    existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
+    rows = _v401_build_freeze_rows(card, selected_date, tier, existing)
     if not rows:
         return 0
-
     out = pd.concat([tracker, pd.DataFrame(rows)], ignore_index=True)
     _v401_save_tracker(out)
     return len(rows)
@@ -18791,8 +18811,11 @@ if run_mode == "Full Slate":
         # Freeze both tiers, tagged separately so the official record stays a
         # clean measurement and the watch list can be compared against it.
         try:
-            _v36_added = _v401_track_daily_card(_official, selected_date, tier="OFFICIAL")
-            _watch_added = _v401_track_daily_card(_fun, selected_date, tier="WATCH")
+            # One combined write. Freezing each tier separately meant loading
+            # and saving the sheet twice, which made every build slow.
+            _v36_added, _watch_added = _v401_track_both(
+                _official, _fun, selected_date
+            )
             if _v36_added or _watch_added:
                 st.toast(
                     f"Froze {_v36_added} official and {_watch_added} watch-list bet(s)."
