@@ -6010,7 +6010,7 @@ st.markdown("""
 [data-testid="stMainBlockContainer"],
 [data-testid="stAppViewBlockContainer"],
 .stMainBlockContainer{
-  margin-top:-90px!important;
+  margin-top:-52px!important;
   padding-top:0!important;
 }
 [data-testid="stMarkdownContainer"]:has(> style){display:none!important;}
@@ -6555,9 +6555,12 @@ div[class*="st-key-v420_slate_segment"] label > div:first-child{
 }
 div[class*="st-key-ge432_topnav"] label,
 div[class*="st-key-v420_slate_segment"] label{
-  padding:9px 16px!important;border-radius:11px!important;
-  margin:0!important;transition:background .15s ease,color .15s ease;
+  padding:9px 13px!important;border-radius:11px!important;
+  margin:0!important;white-space:nowrap!important;
+  transition:background .15s ease,color .15s ease;
 }
+div[class*="st-key-ge432_topnav"] label p,
+div[class*="st-key-v420_slate_segment"] label p{white-space:nowrap!important}
 div[class*="st-key-ge432_topnav"] label p,
 div[class*="st-key-v420_slate_segment"] label p{
   font-weight:800!important;font-size:.8rem!important;color:#8fa6bd!important;
@@ -15649,8 +15652,6 @@ def _se_is_owner():
 
 
 def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
-    if not _se_is_owner():
-        return 0
     """
     Freeze the FIRST recommendation per game + market type.
     A game may therefore have one frozen spread and one frozen total.
@@ -15660,6 +15661,8 @@ def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
     Both are recorded but scored separately, so the official record stays
     a clean measurement.
     """
+    if not _se_is_owner():
+        return 0
     if card is None or card.empty:
         return 0
 
