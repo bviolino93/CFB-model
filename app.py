@@ -6741,6 +6741,9 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-extra-ev{color:#4ae0aa;font-size:.8rem;font-weight:800;white-space:nowrap}
+.se-w{font-style:normal;font-size:.54rem;letter-spacing:.08em;color:#f2c14e;
+  border:1px solid rgba(242,193,78,.34);border-radius:99px;padding:1px 6px;
+  margin-left:6px;vertical-align:middle}
 .se-mini-time.live{color:#4ae0aa}
 .se-mini-time.soon{color:#f2c14e}
 .se-meta{margin-top:6px;line-height:1.55}
@@ -17729,6 +17732,34 @@ def _se_pick_label(row, is_bet):
     return "Official bet" if is_bet else "No bet"
 
 
+def _se_window_of(row, day=None):
+    """Which kickoff window a frozen bet belongs to."""
+    ts = _se_kick_dt(row, day)
+    if ts is None:
+        return "Unscheduled"
+    h = ts.hour + ts.minute / 60.0
+    if h < 15.5:
+        return "Early"
+    if h < 19.0:
+        return "Midday"
+    return "Night"
+
+
+def _se_frozen_result(row):
+    """Result if graded, otherwise the frozen line."""
+    res = str(row.get("result", "") or "").upper()
+    if res == "WIN":
+        return '<span style="color:#4ae0aa">WON</span>'
+    if res == "LOSS":
+        return '<span style="color:#f2748a">LOST</span>'
+    if res == "PUSH":
+        return '<span style="color:#f2c14e">PUSH</span>'
+    try:
+        return f'<span style="color:#8fa6bd">@ {float(row.get("bet_line")):+g}</span>'
+    except Exception:
+        return '<span style="color:#8fa6bd">pending</span>'
+
+
 def _se_hero_meta(row, now, day=None):
     """Compact one-line meta for the hero card, which lays out horizontally."""
     if str(row.get("result", "") or "").strip():
@@ -18485,6 +18516,61 @@ if run_mode == "Full Slate":
             if st.button("Done", use_container_width=True, key="se_edit_done"):
                 st.session_state["se_edit_filters"] = False
                 st.rerun()
+
+    # Show what is already frozen for this date, so the three windows can be
+    # built once each and reviewed later without rebuilding.
+    try:
+        _froz = _v401_load_tracker()
+        if not _froz.empty:
+            _froz = _froz[_froz["game_date"].astype(str) == str(selected_date)].copy()
+        else:
+            _froz = pd.DataFrame()
+    except Exception:
+        _froz = pd.DataFrame()
+
+    if not _froz.empty:
+        _froz["_k"] = [_se_kick_dt(r, str(selected_date)) for _, r in _froz.iterrows()]
+        _froz["_win"] = [_se_window_of(r, str(selected_date)) for _, r in _froz.iterrows()]
+        _tier_col = (_froz["bet_tier"].astype(str).str.upper()
+                     if "bet_tier" in _froz.columns else pd.Series("OFFICIAL", index=_froz.index))
+        _n_off = int((_tier_col != "WATCH").sum())
+
+        with st.expander(
+            f"Frozen card \u00b7 {_n_off} official, {len(_froz)-_n_off} watch",
+            expanded=not _slate_done,
+        ):
+            st.caption(
+                "Everything frozen for this date, split by kickoff window. "
+                "Lines are locked at the number they were frozen at."
+            )
+            for _wname in ("Early", "Midday", "Night", "Unscheduled"):
+                _wdf = _froz[_froz["_win"] == _wname]
+                if _wdf.empty:
+                    continue
+                _wt = (_wdf["bet_tier"].astype(str).str.upper()
+                       if "bet_tier" in _wdf.columns
+                       else pd.Series("OFFICIAL", index=_wdf.index))
+                st.markdown(
+                    f'<div class="se-sec">{_wname.upper()} \u00b7 '
+                    f'{int((_wt != "WATCH").sum())} official, '
+                    f'{int((_wt == "WATCH").sum())} watch</div>',
+                    unsafe_allow_html=True,
+                )
+                for _, r in _wdf.sort_values("_k", na_position="last").iterrows():
+                    _isw = str(r.get("bet_tier", "")).upper() == "WATCH"
+                    st.markdown(
+                        f'<div class="se-extra">'
+                        f'{_pick_logo_html(r, 22)}'
+                        f'<div class="se-extra-main">'
+                        f'<b>{html.escape(str(r.get("selection","")))}'
+                        f'{" <em class=\'se-w\'>WATCH</em>" if _isw else ""}</b>'
+                        f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                        f'{html.escape(str(r.get("home_team","")))} \u00b7 '
+                        f'{html.escape(_se_kick_label(r))}</small></div>'
+                        f'<span class="se-extra-ev">{_se_frozen_result(r)}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
     _build_label = "Rebuild Slate" if _slate_done else "Build Ranked Slate"
     _build_clicked = st.button(_build_label, type="primary", use_container_width=True, key="v420_run_slate")
