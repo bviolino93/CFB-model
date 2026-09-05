@@ -17452,7 +17452,14 @@ if run_mode == "Full Slate":
     _build_label = "Rebuild Slate" if _slate_done else "Build Ranked Slate"
     _build_clicked = st.button(_build_label, type="primary", use_container_width=True, key="v420_run_slate")
     if _build_clicked:
+        _was_built = bool(st.session_state.get("cfb_build_requested"))
         st.session_state["cfb_build_requested"] = True
+        st.session_state["se_edit_filters"] = False
+        # The collapse check runs near the top of the script, before this
+        # point, so it needs one refresh to see the new state. Guarded so it
+        # only fires on the first build — no rerun loop.
+        if not _was_built:
+            st.rerun()
     if st.session_state.get("cfb_build_requested"):
         _build_status = st.status("Building ranked slate…", expanded=False)
         try:
