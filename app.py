@@ -17532,10 +17532,40 @@ try:
 except Exception:
     pass
 
+def _se_kick_dt(row, day=None):
+    """
+    Parse a tracker kickoff into a tz-aware timestamp. The field may be a full
+    datetime ("2026-09-05 03:30 PM") or just a time ("03:30 PM"), so handle both.
+    """
+    raw = str(row.get("kickoff_et", "") or "").strip()
+    if not raw:
+        return None
+    for cand in (raw, f"{day} {raw}" if day else None):
+        if not cand:
+            continue
+        try:
+            ts = pd.to_datetime(cand)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("America/New_York")
+            return ts
+        except Exception:
+            continue
+    return None
+
+
+def _se_kick_label(row, day=None):
+    """Just the clock time, e.g. 3:30 PM."""
+    ts = _se_kick_dt(row, day)
+    if ts is None:
+        raw = str(row.get("kickoff_et", "") or "").strip()
+        return raw or "TBD"
+    return ts.strftime("%-I:%M %p")
+
+
 def _se_result_badge(row, big=False):
     """Kickoff time, or the settled result once a bet has graded."""
     res = str(row.get("result", "") or "").upper()
-    kt = str(row.get("kickoff_et", "") or "").strip() or "TBD"
+    kt = _se_kick_label(row)
     cls = "se-mini-time" + (" big" if big else "")
     if res in ("WIN", "WON"):
         sc = ""
@@ -17724,13 +17754,12 @@ def _render_home_page():
         # A settled game should not sit as "best play" all evening.
         def _state(row):
             try:
-                _kt = str(row.get("kickoff_et", "")).strip()
                 if str(row.get("status", "")).upper() == "FINAL":
                     return 2, 0
-                if not _kt:
+                _kd2 = _se_kick_dt(row, _today)
+                if _kd2 is None:
                     return 0, 9999
-                _kd = pd.to_datetime(f"{_today} {_kt}").tz_localize("America/New_York")
-                _m = (_kd - _now).total_seconds() / 60.0
+                _m = (_kd2 - _now).total_seconds() / 60.0
                 if _m > 0:
                     return 0, _m          # upcoming, soonest first
                 return 1, -_m             # under way
@@ -17786,14 +17815,9 @@ def _render_home_page():
             _score_html = ""
 
         # Countdown alert when the best play is close to kickoff.
-        _mins = None
-        try:
-            _kt = str(_h.get("kickoff_et", "")).strip()
-            if _kt:
-                _kd = pd.to_datetime(f"{_today} {_kt}").tz_localize("America/New_York")
-                _mins = (_kd - _now).total_seconds() / 60.0
-        except Exception:
-            _mins = None
+        _kd = _se_kick_dt(_h, _today)
+        _kt = _se_kick_label(_h)
+        _mins = (_kd - _now).total_seconds() / 60.0 if _kd is not None else None
 
         if _mins is not None and 0 < _mins <= 60:
             _txt = f"{int(_mins)} min" if _mins >= 1 else "under a minute"
