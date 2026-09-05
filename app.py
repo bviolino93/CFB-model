@@ -6116,10 +6116,10 @@ st.markdown("""
    overshoots, reduce the negative margin. */
 [data-testid="stAppViewContainer"] > section > div:first-child,
 [data-testid="stAppViewContainer"] .main > div:first-child,
-section.main > div:first-child{margin-top:-72px!important}
+section.main > div:first-child{margin-top:-130px!important}
 [data-testid="stMainBlockContainer"],
 [data-testid="stAppViewBlockContainer"],
-.stMainBlockContainer{margin-top:-72px!important;padding-top:0!important}
+.stMainBlockContainer{margin-top:-130px!important;padding-top:0!important}
 [data-testid="stAppViewBlockContainer"],[data-testid="stMainBlockContainer"],.stMainBlockContainer,section.main > div.block-container{padding-top:calc(6px + env(safe-area-inset-top))!important;}
 [data-testid="stMainBlockContainer"] > div:first-child,[data-testid="stAppViewBlockContainer"] > div:first-child{margin-top:0!important;padding-top:0!important;}
 [data-testid="stMarkdownContainer"]:has(> style){display:none!important;}
