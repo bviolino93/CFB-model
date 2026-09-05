@@ -6664,6 +6664,21 @@ div[class*="st-key-v420_run_slate"] button{
   padding:10px 8px 4px;border-radius:14px;margin-bottom:2px;
   background:rgba(12,26,44,.5);border:1px solid rgba(120,154,188,.12);
 }
+.se-hero-bet{
+  border-radius:17px;padding:15px 15px 8px;margin-bottom:4px;
+  background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
+  border:1px solid rgba(47,107,255,.36);
+  box-shadow:0 14px 34px rgba(47,107,255,.17);
+}
+.se-hero-bet-top{display:flex;align-items:center;gap:13px}
+.se-hero-logo{flex:0 0 auto;display:flex;align-items:center}
+.se-hero-bet-copy{flex:1;min-width:0}
+.se-hero-bet-copy b{display:block;font-size:1.18rem;color:#fff;font-weight:800;letter-spacing:-.01em}
+.se-hero-bet-copy small{display:block;font-size:.72rem;color:#9db4cb;margin-top:2px}
+.se-hero-ev{text-align:right}
+.se-hero-ev b{display:block;font-size:1.24rem;color:#4ae0aa;font-weight:800}
+.se-hero-ev span{font-size:.52rem;letter-spacing:.13em;color:#7f97ae;text-transform:uppercase}
+.se-hero-curve{margin-top:6px}
 .se-home-bet-logo{flex:0 0 auto;display:flex;align-items:center}
 .se-home-bet-main{flex:1;min-width:0}
 .se-conv{margin-top:7px;height:4px;border-radius:99px;background:rgba(120,154,188,.14);overflow:hidden}
@@ -17581,10 +17596,51 @@ def _render_home_page():
         _total = len(_off)
         _top = _off.head(5)
 
+        # --- hero: the single best play, with its outcome distribution ----
+        _h = _top.iloc[0]
+        try:
+            _is_tot = str(_h.get("market_type", "")).upper() == "TOTAL"
+            if _is_tot:
+                _mu = float(_h.get("fair_total"))
+                _mk = float(_h.get("market_total"))
+                _sd = BASE_TOTAL_SD
+            else:
+                _mu = -float(_h.get("fair_home_spread"))
+                _mk = -float(_h.get("market_home_spread"))
+                _sd = BASE_MARGIN_SD
+            _hero_svg = _se_margin_curve_svg(_mu, _sd, _mk,
+                                             str(_h.get("home_team", "")),
+                                             str(_h.get("away_team", "")))
+        except Exception:
+            _hero_svg = ""
+
+        st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="se-sec">TOP BETS TODAY</div>', unsafe_allow_html=True
+            f'<div class="se-hero-bet">'
+            f'<div class="se-hero-bet-top">'
+            f'<div class="se-hero-logo">{_pick_logo_html(_h, 46)}</div>'
+            f'<div class="se-hero-bet-copy">'
+            f'<b>{html.escape(str(_h.get("selection","")))}</b>'
+            f'<small>{html.escape(str(_h.get("away_team","")))} @ '
+            f'{html.escape(str(_h.get("home_team","")))}</small></div>'
+            f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
+            f'<span>EV</span></div>'
+            f'</div>'
+            + (f'<div class="se-hero-curve">{_hero_svg}</div>' if _hero_svg else '')
+            + f'</div>',
+            unsafe_allow_html=True,
         )
-        for _i, (_, r) in enumerate(_top.iterrows(), start=1):
+        if _hero_svg:
+            st.caption(
+                "Gold is the market number, green the model's. The shaded area "
+                "is where this bet covers."
+            )
+
+        if len(_top) > 1:
+            st.markdown(
+                '<div class="se-sec">ALSO ON THE BOARD</div>', unsafe_allow_html=True
+            )
+        for _i, (_, r) in enumerate(_top.iloc[1:].iterrows(), start=2):
             _star = "\u2605 " if str(r.get("verdict")) == "BEST BET" else ""
             # Conviction bar: EV relative to the strongest bet on the board,
             # so relative strength reads at a glance without parsing numbers.
