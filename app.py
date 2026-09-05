@@ -17665,6 +17665,25 @@ def _se_edge_scatter_svg(rows, thresh, w=680, h=250):
 </svg>'''
 
 
+def _se_pick_label(row, is_bet):
+    """
+    Readable pick name. Older saved boards predate the selection column, so
+    fall back to reconstructing it from market type and number.
+    """
+    sel = str(row.get("selection", "") or "").strip()
+    if sel:
+        return sel
+    try:
+        mt = str(row.get("market_type", "")).upper()
+        mk = float(row.get("market_display"))
+        if mt == "TOTAL":
+            return f"Total {mk:g}"
+        return f"Spread {mk:+g}"
+    except Exception:
+        pass
+    return "Official bet" if is_bet else "No bet"
+
+
 def _se_card_meta(row, now, day=None, lean=False):
     """
     Time to kickoff, plus the supporting numbers. lean=True drops the detail
@@ -18029,8 +18048,7 @@ def _render_home_page():
                         "lat": _la, "lon": _lo, "ev": _ev, "bet": _isbet,
                         "matchup": _gm.get("matchup", ""),
                         "kick": _gm.get("kick", ""),
-                        "pick": str(_b.get("selection", "") or
-                                    ("Official bet" if _isbet else "No bet")),
+                        "pick": _se_pick_label(_b, _isbet),
                         "evtxt": f"{_ev*100:+.1f}% EV",
                         "verdict": str(_b.get("verdict", "") or "PASS"),
                     })
