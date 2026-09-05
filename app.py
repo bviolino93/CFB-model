@@ -2104,29 +2104,6 @@ def display_grade(verdict):
     }.get(str(verdict), str(verdict))
 
 
-def playable_stake(verdict, edge, confidence):
-    """
-    Conservative entertainment-oriented unit guidance.
-    No Kelly sizing and no forced bets.
-    """
-    try:
-        e = float(edge)
-        c = float(confidence)
-    except Exception:
-        return 0.0
-
-    if verdict == "STRONG BET":
-        return 1.00
-    if verdict == "BET":
-        # Better B plays can reach 0.75u; ordinary B plays stay 0.50u.
-        return 0.75 if (e >= 0.055 and c >= 72) else 0.50
-    if verdict == "LEAN":
-        return 0.25
-    return 0.0
-
-
-
-
 def verdict_meta(verdict):
     mapping = {
         "STRONG BET": {
@@ -2161,83 +2138,6 @@ def verdict_meta(verdict):
         },
     }
     return mapping.get(str(verdict), mapping["PASS"])
-
-
-def render_recommendation_card(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None, stake=None):
-    meta = verdict_meta(verdict)
-    cls = meta["grade"].lower() if meta["grade"] in {"A","B","C","D"} else "d"
-
-    try:
-        odds_txt = f"{int(odds):+d}"
-    except Exception:
-        odds_txt = str(odds)
-
-    title = f"{bet_label} {odds_txt}".strip()
-
-    if verdict == "PASS":
-        st.markdown(
-            f"""
-            <div class="no-play">
-              <div class="result-top">
-                <div class="result-badge">PASS</div>
-                <div>
-                  <div class="result-label">NO PLAY RECOMMENDED</div>
-                  <div class="no-play-title">{title}</div>
-                </div>
-              </div>
-              <div class="no-play-sub">
-                The best available market still falls below the model's playable threshold.
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-
-    label = {
-        "STRONG BET":"BEST BET",
-        "BET":"BET",
-        "LEAN":"LEAN",
-    }.get(verdict, verdict)
-
-    metric_html = []
-    if prob is not None and pd.notna(prob):
-        metric_html.append(("Model", f"{float(prob)*100:.1f}%"))
-    if edge is not None and pd.notna(edge):
-        metric_html.append(("Edge", f"{float(edge)*100:+.1f}%"))
-    if ev is not None and pd.notna(ev):
-        metric_html.append(("EV", f"{float(ev)*100:+.1f}%"))
-    if fair is not None:
-        try:
-            metric_html.append(("Fair", f"{int(round(float(fair))):+d}"))
-        except Exception:
-            pass
-
-    metrics = "".join(
-        f'<div class="metric-chip"><div class="k">{k}</div><div class="v">{v}</div></div>'
-        for k,v in metric_html[:4]
-    )
-
-    stake_txt = ""
-    if stake is not None and float(stake) > 0:
-        stake_txt = f'<div class="result-stake">{float(stake):.2f}u</div>'
-
-    st.markdown(
-        f"""
-        <div class="result-hero {cls}">
-          <div class="result-top">
-            <div class="result-badge">{meta['label']}</div>
-            <div>
-              <div class="result-label">{label}</div>
-              <div class="result-pick">{title}</div>
-            </div>
-            {stake_txt}
-          </div>
-          <div class="result-metrics">{metrics}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def render_market_row(verdict, bet_label, odds, prob=None, edge=None, ev=None, fair=None):
@@ -5115,12 +5015,6 @@ div[data-testid="stMetric"]{
 }
 
 /* Compact legend */
-.grade-legend-inline{
-  display:flex;
-  gap:7px;
-  flex-wrap:wrap;
-  margin:5px 0 10px;
-}
 .grade-pill{
   padding:6px 9px;
   border-radius:999px;
@@ -6368,22 +6262,6 @@ div[class*="st-key-ge433_filter_row"] [data-testid="stSelectbox"] [role="combobo
 }
 
 /* one compact mockup-style row for date / universe / live */
-.ge433-summary{
-  display:grid;grid-template-columns:1.1fr 1fr auto;gap:7px;align-items:center;
-  margin:7px 0 8px;
-}
-.ge433-chip{
-  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  padding:8px 9px;border-radius:12px;
-  background:#0c2035;border:1px solid rgba(104,148,187,.13);
-  color:#dce8f2;font-size:.52rem;font-weight:850;
-}
-.ge433-live{
-  display:inline-flex;align-items:center;justify-content:center;gap:5px;
-  padding:8px 9px;border-radius:999px;
-  border:1px solid rgba(48,208,151,.25);background:rgba(29,181,124,.055);
-  color:#8de8c2;font-size:.48rem;font-weight:950;letter-spacing:.09em;
-}
 .ge433-live i{width:6px;height:6px;border-radius:50%;background:#4ae0aa;box-shadow:0 0 10px rgba(74,224,170,.6)}
 
 /* slate segmented selector: absolutely no native circle or widget label */
@@ -6432,8 +6310,7 @@ div[class*="st-key-v420_run_slate"]{margin-bottom:2px!important}
 
 @media(max-width:520px){
   .block-container{padding-top:calc(5px + env(safe-area-inset-top))!important}
-  .ge433-summary{grid-template-columns:1.15fr .95fr auto!important}
-  div[class*="st-key-ge433_filter_row"] [data-testid="stHorizontalBlock"]{
+    div[class*="st-key-ge433_filter_row"] [data-testid="stHorizontalBlock"]{
     display:flex!important;flex-direction:row!important;
   }
 }
@@ -6515,8 +6392,6 @@ div[class*="st-key-ge432_topnav"] svg{
 .ge431-brand{display:flex;align-items:center;gap:9px}
 .ge431-header-right{display:flex;align-items:center;gap:9px}
 .ge431-cfb{color:#8fa7bd;font-size:.54rem;font-weight:950;letter-spacing:.12em}
-.ge-football-logo{width:40px!important;height:35px!important}
-.ge-ball{width:34px!important;height:21px!important;top:6px!important}
 .ge-wordmark span,.ge-wordmark strong{font-size:.96rem!important}
 .ge-brand-sub{font-size:.40rem!important;margin-top:4px!important;letter-spacing:.14em!important}
 .v420-live{padding:6px 9px!important;font-size:.49rem!important}
@@ -6673,11 +6548,6 @@ h4{margin-top:1.1rem!important;margin-bottom:.35rem!important;letter-spacing:-.0
 .ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
 .ge-shop b{color:#7fb4ff;font-size:.60rem}
 .ge-shop span{color:#7f97ae;font-weight:700}
-.ge-football-logo{width:48px;height:42px;position:relative;flex:0 0 auto}
-.ge-ball{position:absolute;width:39px;height:24px;left:2px;top:8px;border:3px solid #edf6ff;border-radius:50%;transform:rotate(-28deg);box-shadow:0 0 18px rgba(69,157,255,.13)}
-.ge-ball:before{content:"";position:absolute;width:14px;height:3px;background:#edf6ff;left:10px;top:8px;border-radius:3px}
-.ge-ball span,.ge-ball b,.ge-ball i{position:absolute;width:2px;height:7px;background:#edf6ff;top:6px;border-radius:2px}
-.ge-ball span{left:13px}.ge-ball b{left:18px}.ge-ball i{left:23px}
 .ge-wordmark{font-style:italic;line-height:1;white-space:nowrap}
 .ge-wordmark span{color:#f7fbff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
 .ge-wordmark strong{color:#388cff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
@@ -17203,9 +17073,10 @@ def _render_saved_bets_page():
 
 def _render_more_page():
     st.markdown(
-        '<div class="mobile-page-head"><div class="mobile-page-kicker">CFB EDGE</div>'
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">ADVANCED</div>'
         '<div class="mobile-page-title">More</div>'
-        '<div class="mobile-page-sub">Research, advanced tools, downloads and model information.</div></div>',
+        '<div class="mobile-page-sub">Technical tools, raw exports and model information. '
+        'Nothing here is needed for normal use \u2014 the Slate and Games tabs cover that.</div></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -17230,9 +17101,17 @@ def _render_more_page():
             cg_prob, cg_odds, cg_conf, market_type=cg_type,
             projection_gap=gap, week=cg_week
         )
-        units = playable_stake(verdict, edge, cg_conf)
-        st.metric("Recommendation", display_grade(verdict))
-        st.caption(f"Edge {edge*100:+.1f}% • EV {ev*100:+.1f}% • Unit guide {units:.2f}u")
+        # Apply the same calibration shrinkage used everywhere else, so this
+        # tool cannot report a verdict that contradicts the Slate.
+        _cal_edge = edge * V50_SHRINK
+        _cal_ev = ev * V50_SHRINK
+        _qualifies = _cal_ev >= V50_MIN_EV
+        st.metric("Would this be an official bet?", "Yes" if _qualifies else "No")
+        st.caption(
+            f"After calibration: {_cal_edge*100:+.1f}% edge \u2022 {_cal_ev*100:+.1f}% EV. "
+            f"Threshold is {V50_MIN_EV*100:.1f}% EV. "
+            f"(Raw model output before calibration: {edge*100:+.1f}% edge, {ev*100:+.1f}% EV.)"
+        )
 
     st.markdown(
         """
@@ -17291,6 +17170,39 @@ def _cfb_nav_button(label, slug):
         st.session_state["cfb_page"] = label
         st.rerun()
 
+
+# --- First-run welcome ----------------------------------------------------
+# Shown once per session until dismissed, so a first-time visitor knows what
+# this is and what to do, without a wall of text for returning users.
+if not st.session_state.get("se_welcome_seen"):
+    with st.container(border=True):
+        st.markdown(
+            "#### Welcome to Saturday Edge\n"
+            "A college football model that compares its own fair line to the "
+            "betting market, then tells you honestly whether there is anything "
+            "worth betting."
+        )
+        st.markdown(
+            "**How to use it**\n"
+            "1. **Slate** — pick a date and press *Build Ranked Slate*.\n"
+            "2. **Official Bets** are the strict picks. Many days there are none — "
+            "that is normal, not a bug.\n"
+            "3. **Watch List** is always there: competitive games with a lean, "
+            "for interest rather than edge.\n"
+            "4. **Games** — analyse any single matchup on the same criteria.\n"
+            "5. **Tracker** — every pick is frozen at its line and graded "
+            "automatically once the game ends."
+        )
+        st.info(
+            "**Worth knowing up front.** Testing across 7,000+ games showed this "
+            "model does not beat the closing spread. Numbers shown are "
+            "calibration-adjusted to reflect that. Treat it as a research tool "
+            "and entertainment, not an edge."
+        )
+        if st.button("Got it", type="primary", use_container_width=True, key="se_welcome_ok"):
+            st.session_state["se_welcome_seen"] = True
+            st.rerun()
+    st.stop()
 
 # --- Slate reminder -------------------------------------------------------
 # Streamlit cannot push notifications, so this checks on open instead:
