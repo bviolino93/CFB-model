@@ -16587,7 +16587,16 @@ V50_MIN_EV = -0.0166
 # evidence-based edge threshold, so expect marginal plays near the line.
 # The number to watch is CLV: if it runs negative over a few dozen graded
 # bets, raise this.
-V50_FUN_COUNT = 5          # watch list size
+V50_FUN_COUNT = 5          # watch list CAP (not a quota — see V50_FUN_MIN_EV)
+
+# The watch list is a FILTER, not a fill. A play must clear this EV floor to
+# appear at all; if only two qualify you see two, and if none qualify you see
+# an empty watch list. Previously the list was padded to V50_FUN_COUNT by
+# rank alone, which pushed clearly negative-EV plays onto the card.
+# Set relative to the official bar, so these are genuine near-misses rather
+# than whatever happened to rank fifth. Tracks automatically when the
+# official threshold is raised.
+V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 
 # Stamp selection parameters into the version so tuning changes self-separate
 # in the tracker. Defined here because it depends on the constants above.
@@ -16706,15 +16715,33 @@ def _v50_apply_strict_selection(card):
 
     _p = pd.to_numeric(eligible.get("cover_probability"), errors="coerce").fillna(0.5)
     eligible["lean_strength"] = (_p - 0.5).abs()
+
+    # Screen on the SAME shrunk EV the card will display, before any slots are
+    # handed out. Ranking first and filling to a quota is what put negative-EV
+    # plays on the watch list; nothing gets a slot it did not earn.
+    _pe = 0.5 + V50_SHRINK * (_p - 0.5)
+    eligible["_fun_ev"] = [
+        _se_ev_from_prob(v, o) for v, o in
+        zip(_pe, eligible.get("odds", pd.Series(-110, index=eligible.index)))
+    ]
+    eligible = eligible[
+        pd.to_numeric(eligible["_fun_ev"], errors="coerce").fillna(-99)
+        >= V50_FUN_MIN_EV
+    ].copy()
     eligible = eligible.sort_values("lean_strength", ascending=False)
 
-    # Guarantee a mix: at least two spreads and two totals where available.
+    if eligible.empty:
+        return official, pd.DataFrame(columns=c.columns)
+
+    # Prefer a spread/total mix among what qualified. This never adds a play
+    # that failed the floor above — it only orders the survivors.
     _et = eligible["market_type"].astype(str).str.upper()
     spreads = eligible[_et != "TOTAL"]
     totals = eligible[_et == "TOTAL"]
     picked = pd.concat([spreads.head(2), totals.head(2)])
     rest = eligible[~eligible.index.isin(picked.index)]
     fun = pd.concat([picked, rest]).head(V50_FUN_COUNT)
+    fun = fun.drop(columns=["_fun_ev"], errors="ignore")
     fun = fun.sort_values("lean_strength", ascending=False)
 
     if not fun.empty:
