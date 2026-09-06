@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.4.0-REAL-TEAM-LOGOS"
+MODEL_VERSION = "4.5.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -15674,7 +15674,21 @@ V401_TRACKER_COLUMNS = [
     "reliability","model_confidence","data_completeness","selector_score",
     "suggested_units","frozen_at_et","status","result","units_result",
     "final_home_score","final_away_score","graded_at",
-    "closing_line","clv_points","bet_tier"
+    "closing_line","clv_points","bet_tier",
+    # --- analysis columns ---
+    "raw_cover_probability",   # model output BEFORE shrinkage
+    "shrink_param",            # V50_SHRINK in force at freeze
+    "min_ev_param",            # V50_MIN_EV in force at freeze
+    "result_margin",           # points the bet won/lost by (continuous)
+    "n_books",                 # provider count behind the line
+    "best_line",               # best number available at freeze
+    "best_book",               # who had it
+    "worst_line",              # worst number available at freeze
+    "line_spread_books",       # best minus worst — market disagreement
+    "week",                    # CFB week number
+    "neutral_site",
+    "conference_game",
+    "closing_captured_at"      # timestamp of the closing snapshot
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -15864,12 +15878,11 @@ def _v401_load_tracker():
 
 def _v401_save_tracker(df):
     x = _v401_clean_tracker(df)
-    # Safety net: never persist two records for the same game + market type,
-    # regardless of tier. Keep the first (earliest frozen) one.
+    # Dedup on the FULL key, which includes tier. Official and watch ledgers
+    # are kept separately on purpose.
     try:
         if not x.empty and "record_key" in x.columns:
-            _base = x["record_key"].astype(str).str.replace(r"\|W$", "", regex=True)
-            x = x[~_base.duplicated(keep="first")].copy()
+            x = x[~x["record_key"].astype(str).duplicated(keep="first")].copy()
     except Exception:
         pass
     ws = _v401_sheet()
@@ -15985,13 +15998,15 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
         if not gid:
             continue
         market_type = str(r.get("market_type") or "SPREAD").upper()
+        # Tier-specific key. The two ledgers are independent: a bet may sit
+        # on the watch list one build and qualify as official the next, and
+        # both are legitimate records of what the model said.
         key = f"{selected_date}|{gid}|{market_type}"
-        # Dedup on the BASE key, ignoring tier. A game+market is frozen once,
-        # ever — whichever tier catches it first. Without this, a bet that
-        # moves between Official and Watch on later builds gets stored twice.
-        if key in existing or f"{key}|W" in existing:
+        if tier != "OFFICIAL":
+            key = f"{key}|W"
+        if key in existing:
             continue
-        if any(rr.get("record_key") in (key, f"{key}|W") for rr in rows):
+        if any(rr.get("record_key") == key for rr in rows):
             continue
         if _v401_kickoff_has_started(r.get("kickoff_et"), selected_date):
             continue
@@ -16017,7 +16032,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
                 bet_line = float(m.group(1)) if m else None
 
         rows.append({
-            "record_key": key if tier == "OFFICIAL" else f"{key}|W",
+            "record_key": key,
             "bet_tier": tier,
             "model_version": MODEL_VERSION,
             "game_date": str(selected_date),
@@ -16054,6 +16069,23 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "final_home_score": None,
             "final_away_score": None,
             "graded_at": None,
+            "raw_cover_probability": fnum("raw_cover_probability"),
+            "shrink_param": V50_SHRINK,
+            "min_ev_param": V50_MIN_EV,
+            "result_margin": None,
+            "n_books": fnum("n_books"),
+            "best_line": fnum("best_line"),
+            "best_book": r.get("best_book"),
+            "worst_line": fnum("worst_line"),
+            "line_spread_books": (
+                (fnum("best_line") - fnum("worst_line"))
+                if fnum("best_line") is not None and fnum("worst_line") is not None
+                else None
+            ),
+            "week": r.get("week"),
+            "neutral_site": r.get("neutral_site"),
+            "conference_game": r.get("conference_game"),
+            "closing_captured_at": None,
         })
         existing.add(key)
 
@@ -16222,6 +16254,24 @@ def _v401_grade_tracker():
         df.loc[idx, "final_home_score"] = final["home_score"]
         df.loc[idx, "final_away_score"] = final["away_score"]
         df.loc[idx, "graded_at"] = now
+
+        # Continuous outcome: how many points the bet won (+) or lost (-)
+        # against the number we froze. Far more informative than W/L.
+        try:
+            _hs = float(final["home_score"])
+            _as = float(final["away_score"])
+            _bl = float(r.get("bet_line"))
+            _mt = str(r.get("market_type") or "").upper()
+            _sd = str(r.get("pick_side") or "").upper()
+            if _mt == "TOTAL":
+                _m = (_hs + _as) - _bl if _sd == "OVER" else _bl - (_hs + _as)
+            elif _sd == "HOME":
+                _m = (_hs - _as) + _bl
+            else:
+                _m = (_as - _hs) + _bl
+            df.loc[idx, "result_margin"] = round(float(_m), 2)
+        except Exception:
+            pass
 
         # Closing line value: how the number moved after we froze it.
         try:
@@ -16526,7 +16576,11 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
-V50_MIN_EV = 0.0175        # +1.75% EV after calibration — the ONLY volume control.
+# Threshold is now in DISPLAYED EV units (post-shrink). -0.0166 reproduces
+# the old raw-EV-times-0.25 behavior exactly, so this changes no selections.
+# It is a NEGATIVE EV floor, which is the honest description of what the
+# gate has always been. Raise toward 0.0 and past it once CLV works.
+V50_MIN_EV = -0.0166
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
@@ -16534,6 +16588,10 @@ V50_MIN_EV = 0.0175        # +1.75% EV after calibration — the ONLY volume con
 # The number to watch is CLV: if it runs negative over a few dozen graded
 # bets, raise this.
 V50_FUN_COUNT = 5          # watch list size
+
+# Stamp selection parameters into the version so tuning changes self-separate
+# in the tracker. Defined here because it depends on the constants above.
+MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-ev{V50_MIN_EV}"
 
 
 V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
@@ -16590,7 +16648,15 @@ def _v50_apply_strict_selection(card):
 
     c["shrunk_fair"] = mkt + V50_SHRINK * (fair - mkt)
     c["shrunk_edge"] = (c["shrunk_fair"] - mkt).abs()
-    c["shrunk_ev"] = pd.to_numeric(c.get("expected_value"), errors="coerce") * V50_SHRINK
+    # Gate on the SAME quantity the card displays: EV derived from the
+    # shrunk probability. Scaling raw EV by V50_SHRINK is a different
+    # number and made the threshold unreadable.
+    _p_pre = pd.to_numeric(c.get("cover_probability"), errors="coerce")
+    _ps_pre = 0.5 + V50_SHRINK * (_p_pre - 0.5)
+    c["shrunk_ev"] = [
+        _se_ev_from_prob(v, o) for v, o in
+        zip(_ps_pre, c.get("odds", pd.Series(-110, index=c.index)))
+    ]
     # The large-spread exclusion applies to SPREADS only. A total's market
     # number is 45-70, so applying a 28-point cap to it excluded every total
     # from ever qualifying.
@@ -16620,6 +16686,7 @@ def _v50_apply_strict_selection(card):
         official["point_edge"] = official["shrunk_edge"]
         _p = pd.to_numeric(official.get("cover_probability"), errors="coerce")
         _ps = 0.5 + V50_SHRINK * (_p - 0.5)
+        official["raw_cover_probability"] = _p
         official["cover_probability"] = _ps
         # EV comes FROM the shrunk probability, not from scaling raw EV.
         official["expected_value"] = [
@@ -16656,6 +16723,7 @@ def _v50_apply_strict_selection(card):
         # times larger than official bets on the same board.
         _pf = pd.to_numeric(fun.get("cover_probability"), errors="coerce")
         _pfs = 0.5 + V50_SHRINK * (_pf - 0.5)
+        fun["raw_cover_probability"] = _pf
         fun["cover_probability"] = _pfs
         fun["expected_value"] = [
             _se_ev_from_prob(v, o) for v, o in
