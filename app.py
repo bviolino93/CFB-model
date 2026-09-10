@@ -20148,6 +20148,14 @@ with tab_spread:
     away_spread_odds=s4.number_input("Away spread odds", value=-110, step=5)
 
 with tab_ml:
+    # CFBD often omits moneylines on huge spreads. Without this flag the
+    # widget defaults (+100 / -110) look like real prices and get graded.
+    ml_pulled = (selected_line.get("away_ml") is not None
+                 and selected_line.get("home_ml") is not None)
+    if not ml_pulled:
+        st.caption("No moneyline came back from this provider. Values below "
+                   "are placeholders and moneyline markets are excluded from "
+                   "the analysis.")
     m1,m2=st.columns(2)
     away_ml=m1.number_input(
         f"{p['away']} ML",
@@ -20212,11 +20220,12 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     adj_home_wp = 1.0 - NormalDist(mu=ml_margin, sigma=max(cal_margin_sd, 15.0)).cdf(0)
     adj_away_wp = 1.0 - adj_home_wp
 
-    for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
-        v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="moneyline",week=p["week"])
-        v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
-        v = apply_moneyline_guard(v, odds, p.get("fcs_fallback_used", False))
-        markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
+    if ml_pulled:
+        for name,prob,odds in [(f"{p['away']} ML",adj_away_wp,away_ml),(f"{p['home']} ML",adj_home_wp,home_ml)]:
+            v,e,ev,imp=grade(prob,odds,p["confidence"],market_type="moneyline",week=p["week"])
+            v = apply_fcs_guard(v, p.get("fcs_fallback_used", False))
+            v = apply_moneyline_guard(v, odds, p.get("fcs_fallback_used", False))
+            markets.append((v,name,odds,prob,e,ev,fair_ml(prob)))
 
     # UNIFIED ENGINE: use the SAME fundamental probability the Slate uses —
     # cover_probability() on the raw projection versus the market number —
@@ -20258,15 +20267,28 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     # identically in both views. Walk-forward testing showed public
     # fundamentals add ~nothing on top of the market, so the model's raw
     # disagreement is scaled toward a coin flip before display.
+    def _name_is_ml(nm):
+        n = str(nm).lower()
+        return n.endswith(" ml") or " ml " in f" {n} "
+
     _shrunk = []
     for (v, name, odds, prob, e, ev, fml) in markets:
+        if _name_is_ml(name):
+            # Shrinking toward a coin flip is right for a spread, where the
+            # market is a strong prior. It is meaningless for a moneyline on
+            # a huge favorite: a 99% win probability became 62%.
+            _shrunk.append((v, name, odds, prob, e, ev, fml))
+            continue
         try:
             _p = 0.5 + V50_SHRINK * (float(prob) - 0.5)
             _e = float(e) * V50_SHRINK
             _ev = float(ev) * V50_SHRINK
+            # Fair odds must come from the SAME probability now displayed,
+            # or the card shows one number beside fair odds implying another.
+            _fml = fair_ml(_p)
         except Exception:
-            _p, _e, _ev = prob, e, ev
-        _shrunk.append((v, name, odds, _p, _e, _ev, fml))
+            _p, _e, _ev, _fml = prob, e, ev, fml
+        _shrunk.append((v, name, odds, _p, _e, _ev, _fml))
     markets = _shrunk
 
     st.caption(
@@ -20297,6 +20319,18 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
             _qual.append((name, float(ev), float(prob)))
 
     _qual.sort(key=lambda x: -x[1])
+
+    try:
+        _oor = abs(float(home_spread)) > V50_MAX_SPREAD
+    except Exception:
+        _oor = False
+    if _oor:
+        st.warning(
+            f"**Outside the model's range.** At {float(home_spread):+.1f} this "
+            f"game is past the {V50_MAX_SPREAD:.0f}-point limit where the "
+            f"power ratings still extrapolate. Spread markets are excluded "
+            f"and every number below should be treated as unreliable."
+        )
 
     st.markdown("#### Should you bet this game?")
 
@@ -20367,6 +20401,14 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         if any(name == q[0] for q in _qual):
             continue
         _is_tot = name.lower().startswith(("over", "under"))
+        # If a market already qualified, its opposite side is the losing side
+        # of the same bet — not a lean worth listing.
+        _fam_taken = any(
+            (q[0].lower().startswith(("over", "under")) == _is_tot)
+            for q in _qual
+        )
+        if _fam_taken:
+            continue
         try:
             _ok = _is_tot or abs(float(home_spread)) <= V50_FUN_MAX_SPREAD
         except Exception:
