@@ -6562,6 +6562,21 @@ div[data-baseweb="notification"][kind="negative"]{
   border-color:rgba(240,90,102,.34)!important;
 }
 
+/* Moneyline flags. Self-contained rather than borrowing .ge-lean-row, whose
+   grid expects rank/logo/main/stats/pill and wraps the team name one letter
+   per line when those are missing. */
+.se-mlf{display:flex;align-items:center;gap:12px;padding:11px 14px;
+  border:1px solid rgba(232,178,58,.28);border-radius:12px;margin-bottom:8px;
+  background:linear-gradient(180deg,rgba(232,178,58,.08),rgba(232,178,58,.03))}
+.se-mlf-main{flex:1 1 auto;min-width:0}
+.se-mlf-main b{display:block;font-size:.98rem;font-weight:700;color:#eaf2fb;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-mlf-main small{display:block;font-size:.76rem;color:#8ea6bd;margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-mlf-stats{flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums}
+.se-mlf-stats b{display:block;font-size:.9rem;font-weight:700;color:#e8b23a}
+.se-mlf-stats span{display:block;font-size:.72rem;color:#8ea6bd}
+
 /* Tighter, quieter captions — they were reading as walls of grey text */
 [data-testid="stCaptionContainer"] p{
   font-size:.76rem!important;line-height:1.45!important;color:#7f97ae!important;
@@ -18125,55 +18140,83 @@ def _se_slate_map_svg(points, w=680, h=380):
             f'xmlns="http://www.w3.org/2000/svg" role="img">{grid}{"".join(dots)}</svg>')
 
 
-def _se_edge_scatter_svg(rows, thresh, w=680, h=250):
+def _se_edge_scatter_svg(rows, thresh, w=680, h=150):
     """
-    Every market on the slate, placed by EV alone. Spreads and totals cannot
-    share a market-number axis (-10.5 vs 55.5 are not comparable), so this
-    plots the one quantity that applies to both, with the threshold marked.
-    Dots are jittered vertically so overlaps stay visible.
+    Every market on the slate on ONE axis: expected value. The previous
+    version scattered dots vertically with meaningless jitter, which read as
+    a second variable. Height here carries no information and the layout
+    says so — a single line, with dots nudged only far enough to stay
+    distinguishable when they overlap.
     """
     if not rows:
         return ""
     evs = [r["ev"] for r in rows]
     lo = min(min(evs), -0.02)
-    hi = max(max(evs), thresh * 1.35)
-    pad_l, pad_r, pad_t, pad_b = 16, 16, 34, 40
-    iw, ih = w - pad_l - pad_r, h - pad_t - pad_b
-    def px(v): return pad_l + (v - lo) / (hi - lo or 1) * iw
+    hi = max(max(evs), thresh * 1.6)
+    span = (hi - lo) or 1.0
+    pad_l, pad_r, pad_t = 30, 30, 46
+    iw = w - pad_l - pad_r
+    base = pad_t + 26
 
-    band = [
+    def px(v):
+        return pad_l + (v - lo) / span * iw
+
+    parts = [
         f'<rect x="{px(thresh):.1f}" y="{pad_t}" '
-        f'width="{max(px(hi)-px(thresh),1):.1f}" height="{ih}" '
-        f'fill="#4ae0aa" opacity=".07"/>'
+        f'width="{max(px(hi) - px(thresh), 1):.1f}" height="52" '
+        f'fill="#4ae0aa" opacity=".07"/>',
+        f'<line x1="{pad_l}" y1="{base:.1f}" x2="{w - pad_r}" y2="{base:.1f}" '
+        f'stroke="rgba(120,154,188,.30)" stroke-width="1"/>',
     ]
-    ticks = []
-    for v in (0.0, thresh):
-        ticks.append(
-            f'<line x1="{px(v):.1f}" y1="{pad_t}" x2="{px(v):.1f}" y2="{pad_t+ih}" '
-            f'stroke="{"#f2c14e" if v == thresh else "rgba(120,154,188,.28)"}" '
-            f'stroke-width="{2 if v == thresh else 1}" '
-            f'{"stroke-dasharray=\"5 5\"" if v == thresh else ""}/>'
-        )
-    dots = []
-    for i, r in enumerate(sorted(rows, key=lambda x: x["bet"])):
-        y = pad_t + 14 + ((i * 37) % max(ih - 28, 1))
-        dots.append(
-            f'<circle cx="{px(r["ev"]):.1f}" cy="{y:.1f}" '
-            f'r="{5.4 if r["bet"] else 3.2}" '
+
+    # A readable scale, not just two markers.
+    step = 0.05 if span > 0.18 else 0.02
+    v = math.floor(lo / step) * step
+    while v <= hi + 1e-9:
+        if v >= lo - 1e-9:
+            parts.append(
+                f'<line x1="{px(v):.1f}" y1="{base - 5:.1f}" '
+                f'x2="{px(v):.1f}" y2="{base + 5:.1f}" '
+                f'stroke="rgba(120,154,188,.30)" stroke-width="1"/>'
+                f'<text x="{px(v):.1f}" y="{base + 20:.1f}" fill="#7f97ae" '
+                f'font-size="10.5" font-family="sans-serif" '
+                f'text-anchor="middle">{v * 100:.0f}%</text>'
+            )
+        v += step
+
+    parts.append(
+        f'<line x1="{px(thresh):.1f}" y1="{pad_t}" x2="{px(thresh):.1f}" '
+        f'y2="{base + 8:.1f}" stroke="#f2c14e" stroke-width="2" '
+        f'stroke-dasharray="5 5"/>'
+        f'<text x="{px(thresh):.1f}" y="{pad_t - 10}" fill="#f2c14e" '
+        f'font-size="11" font-family="sans-serif" text-anchor="middle">'
+        f'bet threshold {thresh:.0%}</text>'
+    )
+
+    # Stack only on collision, so height still means nothing but overlapping
+    # markets stay countable.
+    used = []
+    for r in sorted(rows, key=lambda x: x["ev"]):
+        x = px(r["ev"])
+        lvl = 0
+        while any(abs(x - ux) < 9 and lvl == ul for ux, ul in used):
+            lvl += 1
+        used.append((x, lvl))
+        y = base - 10 - lvl * 11
+        parts.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{5 if r["bet"] else 3.4}" '
             f'fill="{"#4ae0aa" if r["bet"] else "#7f97ae"}" '
-            f'opacity="{".95" if r["bet"] else ".42"}"/>'
+            f'opacity="{".95" if r["bet"] else ".45"}"/>'
         )
-    return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
-  {"".join(band)}{"".join(ticks)}{"".join(dots)}
-  <text x="{px(0):.1f}" y="{h-26}" fill="#7f97ae" font-size="10"
-        font-family="sans-serif" text-anchor="middle">0%</text>
-  <text x="{px(thresh):.1f}" y="{pad_t-10}" fill="#f2c14e" font-size="11"
-        font-family="sans-serif" text-anchor="middle">bet threshold {thresh:.0%}</text>
-  <text x="{pad_l}" y="{h-14}" fill="#7f97ae" font-size="10.5"
-        font-family="sans-serif">\u2190 model likes the other side</text>
-  <text x="{w-pad_r}" y="{h-14}" fill="#4ae0aa" font-size="10.5"
-        font-family="sans-serif" text-anchor="end">stronger edge \u2192</text>
-</svg>'''
+
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img">'
+        + "".join(parts) +
+        f'<text x="{pad_l}" y="{h - 6}" fill="#7f97ae" font-size="10.5" '
+        f'font-family="sans-serif">expected value per market</text></svg>'
+    )
+
 
 
 def _se_pick_label(row, is_bet):
@@ -18978,13 +19021,14 @@ def _render_home_page():
                     unsafe_allow_html=True)
         for _r in _f:
             st.markdown(
-                f'<div class="ge-lean-row">'
-                f'<div class="ge-lean-main"><b>{html.escape(_r["pick"])} '
-                f'{_r["odds"]:+d}</b>'
+                f'<div class="se-mlf">'
+                f'<div class="se-mlf-main">'
+                f'<b>{html.escape(_r["pick"])} {_r["odds"]:+d}</b>'
                 f'<small>{html.escape(_r["matchup"])}</small></div>'
-                f'<div class="ge-lean-stats"><span>{_r["prob"]*100:.1f}%</span>'
-                f'<span>{_r["ev"]*100:+.1f}% EV</span></div>'
-                f'<div class="ge-lean-pill">FLAG</div></div>',
+                f'<div class="se-mlf-stats">'
+                f'<b>{_r["ev"]*100:+.1f}% EV</b>'
+                f'<span>{_r["prob"]*100:.1f}% win</span></div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
         st.caption("Not part of the official record and not frozen.")
@@ -19326,12 +19370,21 @@ def _render_home_page():
             unsafe_allow_html=True,
         )
         _n_bet = sum(1 for r in _sc if r["bet"])
-        st.caption(
-            f"All {len(_sc)} markets on today's slate, placed by expected value. "
-            f"{_n_bet} clear the threshold. The pile-up near zero is the model "
-            "agreeing with the market \u2014 which is what an honest model does "
-            "most of the time."
+        _past = sum(1 for r in _sc if r["ev"] >= V50_MIN_EV and not r["bet"])
+        _cap = (
+            f"Every market on today's slate placed on one axis: expected "
+            f"value. Height means nothing \u2014 dots stack only where they "
+            f"would overlap. {_n_bet} of {len(_sc)} clear the threshold, and "
+            f"the cluster near zero is the model agreeing with the market, "
+            f"which is what it does most of the time."
         )
+        if _past:
+            _cap += (
+                f" {_past} sit past the line but still do not qualify: the "
+                f"spread is outside 28 points, or the game uses a fallback "
+                f"rating."
+            )
+        st.caption(_cap)
 
     # --- what the model can actually do -----------------------------------
     with st.expander("How good is this model?", expanded=False):
@@ -20063,22 +20116,17 @@ if run_mode == "Full Slate":
                 unsafe_allow_html=True,
             )
             for j, _r in enumerate(_mlf, start=1):
+                _sub = html.escape(_r["matchup"]) + (
+                    " \u00b7 " + html.escape(_r["kickoff"]) if _r["kickoff"] else "")
                 st.markdown(
-                    f'''
-                    <div class="ge-lean-row">
-                      <div class="ge-lean-rank">{j}</div>
-                      <div class="ge-lean-main">
-                        <b>{html.escape(_r["pick"])} {_r["odds"]:+d}</b>
-                        <small>{html.escape(_r["matchup"])}
-                        {(" \u00b7 " + html.escape(_r["kickoff"])) if _r["kickoff"] else ""}</small>
-                      </div>
-                      <div class="ge-lean-stats">
-                        <span>{_r["prob"]*100:.1f}%</span>
-                        <span>{_r["ev"]*100:+.1f}% EV</span>
-                      </div>
-                      <div class="ge-lean-pill">FLAG</div>
-                    </div>
-                    ''',
+                    f'<div class="se-mlf">'
+                    f'<div class="se-mlf-main">'
+                    f'<b>{html.escape(_r["pick"])} {_r["odds"]:+d}</b>'
+                    f'<small>{_sub}</small></div>'
+                    f'<div class="se-mlf-stats">'
+                    f'<b>{_r["ev"]*100:+.1f}% EV</b>'
+                    f'<span>{_r["prob"]*100:.1f}% win</span></div>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
 
