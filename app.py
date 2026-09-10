@@ -20587,10 +20587,14 @@ if True:
             continue
         try:
             _p = 0.5 + V50_SHRINK * (float(prob) - 0.5)
-            _e = float(e) * V50_SHRINK
-            _ev = float(ev) * V50_SHRINK
-            # Fair odds must come from the SAME probability now displayed,
-            # or the card shows one number beside fair odds implying another.
+            # Derive edge, EV and fair odds from the SHRUNK probability.
+            # Scaling raw EV by V50_SHRINK is a different transformation and
+            # produced numbers that did not match the probability beside them
+            # — a 53.3% cover was displayed next to +5.2% EV, which is the
+            # EV of a 55.1% cover.
+            _ev = _se_ev_from_prob(_p, odds)
+            _imp = implied_prob(odds)
+            _e = (_p - _imp) if _imp is not None else float(e) * V50_SHRINK
             _fml = fair_ml(_p)
         except Exception:
             _p, _e, _ev, _fml = prob, e, ev, fml
