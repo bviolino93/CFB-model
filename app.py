@@ -18844,17 +18844,57 @@ def _render_home_page():
 
     # Read today's frozen bets from the TRACKER, which survives restarts,
     # rather than session state, which is wiped on every redeploy.
+    # Home used to look at today only, so a card frozen for Saturday was
+    # invisible until the whole slate was rebuilt. Offer every frozen date
+    # instead, defaulting to today when it has bets and otherwise to the
+    # next one coming up.
     _trk_today = pd.DataFrame()
+    _frozen_dates = []
+    _view_date = _today
     try:
         _all = _v401_load_tracker()
         if not _all.empty:
-            _m = _all["game_date"].astype(str) == _today
+            _off_all = _all
             if "bet_tier" in _all.columns:
-                _m &= _all["bet_tier"].astype(str).str.upper() != "WATCH"
-            _trk_today = _all[_m]
+                _off_all = _all[_all["bet_tier"].astype(str).str.upper() != "WATCH"]
+            _frozen_dates = sorted(
+                {str(d) for d in _off_all["game_date"].astype(str) if str(d).strip()}
+            )
+
+            # Today is always offered, whether or not anything is frozen for
+            # it, so the picker exists on a blank day and the default never
+            # silently jumps to another date.
+            _opts = sorted(set(_frozen_dates) | {_today})
+            _default = _today
+
+            _idx = (_opts.index(st.session_state["se_home_date"])
+                    if st.session_state.get("se_home_date") in _opts
+                    else _opts.index(_default))
+
+            def _lbl(d):
+                try:
+                    _dt = pd.to_datetime(d)
+                except Exception:
+                    return str(d)
+                if str(d) == _today:
+                    _tag = " · today"
+                elif str(d) in _frozen_dates:
+                    _n = int((_off_all["game_date"].astype(str) == str(d)).sum())
+                    _tag = f" · {_n} bet" + ("" if _n == 1 else "s")
+                else:
+                    _tag = ""
+                return f"{_dt:%a, %b %-d}{_tag}"
+
+            _view_date = st.selectbox(
+                "Card date", _opts, index=_idx, format_func=_lbl,
+                key="se_home_date",
+            )
+
+            _trk_today = _off_all[_off_all["game_date"].astype(str) == _view_date]
     except Exception:
         pass
 
+    _looking_ahead = str(_view_date) != str(_today)
     _built = (not _trk_today.empty) or \
         st.session_state.get("cfb_v36_latest_date") == _today
 
@@ -18872,20 +18912,37 @@ def _render_home_page():
     _sub = f"{len(_tg)} games \u00b7 next kickoff {_next.strftime('%-I:%M %p')} ET" if _next \
         else (f"{len(_tg)} games \u00b7 all underway or final" if _tg else "No games scheduled")
 
-    st.markdown(
-        f'<div class="se-hero">'
-        f'<div class="se-hero-kicker">TODAY</div>'
-        f'<div class="se-hero-title">{_now.strftime("%A")} '
-        f'<em>{_now.strftime("%-m/%-d")}</em></div>'
-        f'<div class="se-hero-sub">{_sub}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    if _looking_ahead:
+        try:
+            _vd = pd.to_datetime(_view_date)
+            _kick_txt = f"{len(_trk_today)} frozen bet" + \
+                ("" if len(_trk_today) == 1 else "s")
+            st.markdown(
+                f'<div class="se-hero">'
+                f'<div class="se-hero-kicker">LOOKING AHEAD</div>'
+                f'<div class="se-hero-title">{_vd:%A} '
+                f'<em>{_vd:%-m/%-d}</em></div>'
+                f'<div class="se-hero-sub">{_kick_txt}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
+    else:
+        st.markdown(
+            f'<div class="se-hero">'
+            f'<div class="se-hero-kicker">TODAY</div>'
+            f'<div class="se-hero-title">{_now.strftime("%A")} '
+            f'<em>{_now.strftime("%-m/%-d")}</em></div>'
+            f'<div class="se-hero-sub">{_sub}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # --- today's bets, shown here rather than linked to -------------------
-    if not _tg:
+    if not _tg and not _looking_ahead:
         st.info("No college football today. A tragedy, but a survivable one.")
-    elif not _built:
+    elif not _built and not _looking_ahead:
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
         st.caption("No bets frozen yet today.")
         if st.button("Build today's slate", type="primary",
