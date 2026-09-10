@@ -6506,6 +6506,22 @@ div[class*="st-key-cfb_nav_"]{display:none!important}
   padding:14px 16px!important;
 }
 [data-testid="stAlert"] p{font-size:.86rem!important;line-height:1.5!important;margin:0!important}
+/* Streamlit nests its own padded container inside stAlert. Styling only the
+   outer element left the text sitting in a box within a box, reading as
+   off-centre. Flatten the inner wrapper so the padding above is the only
+   padding there is. */
+[data-testid="stAlert"] > div,
+[data-testid="stAlertContainer"],
+[data-testid="stAlertContentInfo"],
+[data-testid="stAlertContentSuccess"],
+[data-testid="stAlertContentWarning"],
+[data-testid="stAlertContentError"]{
+  background:transparent!important;border:0!important;box-shadow:none!important;
+  padding:0!important;margin:0!important;width:100%!important;
+}
+[data-testid="stAlert"]{display:block!important}
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"]{
+  padding:0!important;margin:0!important}
 [data-testid="stAlert"] [data-testid="stMarkdownContainer"]{color:#dbe7f5!important}
 
 /* success — qualifying bet */
@@ -16710,10 +16726,17 @@ def _v50_apply_strict_selection(card):
     # numbers than spreads and would otherwise dominate every slot.
     fun_pool = c[~c.index.isin(official.index)].copy()
     _is_total = fun_pool["market_type"].astype(str).str.upper().eq("TOTAL")
-    _competitive = pd.to_numeric(fun_pool.get("market_display"), errors="coerce").abs() <= V50_FUN_MAX_SPREAD
-    eligible = fun_pool[_is_total | _competitive.fillna(False)].copy()
-    if eligible.empty:
-        eligible = fun_pool.copy()
+    # Judge competitiveness by the GAME's spread, for totals as well as
+    # spreads. Totals used to bypass this check entirely, so a total in a
+    # 46-point blowout reached the watch list from ratings the app had
+    # already declared out of range. Both markets come from the same
+    # ratings, so both are excluded together.
+    _game_spread = pd.to_numeric(
+        fun_pool.get("market_home_spread_display"), errors="coerce").abs()
+    _competitive = _game_spread <= V50_FUN_MAX_SPREAD
+    # No fallback to the unfiltered pool: an empty watch list is a valid
+    # answer, and padding it was what surfaced unqualified plays.
+    eligible = fun_pool[_competitive.fillna(False)].copy()
 
     _p = pd.to_numeric(eligible.get("cover_probability"), errors="coerce").fillna(0.5)
     eligible["lean_strength"] = (_p - 0.5).abs()
@@ -17806,7 +17829,8 @@ try:
                     st.error(
                         f"**Today's slate has not been built.** First kickoff is in "
                         f"{_hrs:.1f} hours ({_first.strftime('%-I:%M %p')} ET). "
-                        "Build it now or these bets will not be recorded."
+                        "Build it to see whether anything qualifies — nothing "
+                        "is recorded until you do."
                     )
                 else:
                     st.warning(
@@ -19693,7 +19717,19 @@ if run_mode == "Full Slate":
 
         try:
             _v401_graded_now, _v401_df_now = _v401_grade_tracker()
-            _v401_sum_now = _v401_summary(_v401_df_now)
+            # This strip is labelled "Today's Tracker" and sits on the slate,
+            # so it must match: this date only, official tier only. It was
+            # summarising the entire tracker across every date and both
+            # tiers, which made it disagree with the Home season record.
+            _v401_today = _v401_df_now
+            try:
+                if not _v401_today.empty:
+                    _m = _v401_today["game_date"].astype(str) == str(selected_date)
+                    _m &= _v401_today["bet_tier"].astype(str).str.upper() != "WATCH"
+                    _v401_today = _v401_today[_m]
+            except Exception:
+                pass
+            _v401_sum_now = _v401_summary(_v401_today)
             if _v401_sum_now["bets"] > 0:
                 st.markdown(
                     f"""
