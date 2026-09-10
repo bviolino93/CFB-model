@@ -16576,11 +16576,13 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
-# Threshold is now in DISPLAYED EV units (post-shrink). -0.0166 reproduces
-# the old raw-EV-times-0.25 behavior exactly, so this changes no selections.
-# It is a NEGATIVE EV floor, which is the honest description of what the
-# gate has always been. Raise toward 0.0 and past it once CLV works.
-V50_MIN_EV = -0.0166
+# Threshold in DISPLAYED EV units (post-shrink). Held at -0.0166 while the
+# unit fix was verified; now raised to zero. Below zero the floor sits inside
+# the vig, so BOTH sides of the same market can clear it — the app was
+# recommending Under 60.5 at -0.8% EV and listing Over 60.5 at -1.5% as also
+# qualifying, which cannot both be true. At 0.0 only one side of a market can
+# ever qualify, and no official bet is negative-EV by construction.
+V50_MIN_EV = 0.0
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
@@ -20346,13 +20348,13 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
     for (v, name, odds, prob, e, ev, fml) in markets:
         if _is_ml(name):
             continue
-        _is_tot = name.lower().startswith(("over", "under"))
+        # If the ratings cannot be trusted for the spread, they cannot be
+        # trusted for the total on the same game either — both come from the
+        # same team ratings. An out-of-range game yields no official bet.
+        if _oor:
+            continue
         try:
-            _too_big = (not _is_tot) and abs(float(home_spread)) > V50_MAX_SPREAD
-        except Exception:
-            _too_big = False
-        try:
-            if float(ev) >= V50_MIN_EV and not _too_big:
+            if float(ev) >= V50_MIN_EV:
                 _qual.append((name, float(ev), float(prob)))
         except Exception:
             pass
@@ -20371,14 +20373,12 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
             )
     else:
         _why = []
-        try:
-            if abs(float(home_spread)) > V50_MAX_SPREAD:
-                _why.append(
-                    f"the spread ({home_spread:+.1f}) is beyond the "
-                    f"{V50_MAX_SPREAD:.0f}-point range where the ratings hold up"
-                )
-        except Exception:
-            pass
+        if _oor:
+            _why.append(
+                f"the spread ({float(home_spread):+.1f}) is beyond the "
+                f"{V50_MAX_SPREAD:.0f}-point range where the ratings hold up, "
+                f"so no market on this game qualifies"
+            )
         _sides = [m[5] for m in markets if not _is_ml(m[1])]
         _best_ev = max(_sides, default=None)
         if _best_ev is not None and _best_ev < V50_MIN_EV:
