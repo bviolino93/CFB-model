@@ -15362,7 +15362,7 @@ def _v36_live_feature_frame(games_today, slate_df):
     adv_cache = {}
     rows = []
 
-    for _, sr in slate_df.iterrows():
+    for _slate_pos, (_, sr) in enumerate(slate_df.iterrows()):
         gid = str(sr.get("game_id"))
         g = game_map.get(gid)
         if g is None:
@@ -15387,7 +15387,12 @@ def _v36_live_feature_frame(games_today, slate_df):
         except Exception:
             continue
 
-        row["row_index"] = len(rows)
+        # Position in slate_df, NOT in this output list. Using len(rows)
+        # meant every skipped game (no match, no line, failed projection)
+        # shifted the mapping by one, so downstream lookups by row_index
+        # pulled another game's line, logo and ratings.
+        row["row_index"] = _slate_pos
+        row["game_id"] = gid
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -15610,13 +15615,32 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
             "spread_residual_correction",
         ]
         _sl = slate_df.reset_index(drop=True)
+        # Join on game_id where both sides carry it: an identifier survives
+        # filtering and re-sorting, a position does not. Positional lookup
+        # stays only as a fallback for frames without game_id.
+        _by_gid = {}
+        if "game_id" in _sl.columns:
+            for _, _r in _sl.iterrows():
+                _k = str(_r.get("game_id"))
+                if _k and _k not in _by_gid:
+                    _by_gid[_k] = _r
+
+        def _lookup(_row, _col):
+            _k = str(_row.get("game_id") or "")
+            if _k and _k in _by_gid:
+                return _by_gid[_k].get(_col)
+            _i = _row.get("row_index")
+            try:
+                _i = int(_i)
+            except Exception:
+                return np.nan
+            if 0 <= _i < len(_sl):
+                return _sl.iloc[_i].get(_col)
+            return np.nan
+
         for _c in _lookup_cols:
             if _c in _sl.columns:
-                card[_c] = card["row_index"].map(
-                    lambda _i: _sl.iloc[int(_i)].get(_c)
-                    if pd.notna(_i) and 0 <= int(_i) < len(_sl)
-                    else np.nan
-                )
+                card[_c] = [_lookup(_r, _c) for _, _r in card.iterrows()]
 
     card["fair_home_spread"] = pd.to_numeric(
         card.get("fair_home_spread"), errors="coerce"
