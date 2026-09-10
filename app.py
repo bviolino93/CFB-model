@@ -42,7 +42,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.5.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.6.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -276,6 +276,13 @@ def residual_market_projection(p, market, residual_models=None):
         out["under_prob"] = None
 
     return out
+
+
+def _num_ok(v):
+    try:
+        return math.isfinite(float(v))
+    except Exception:
+        return False
 
 
 def cap_total_research_verdict(verdict):
@@ -16603,7 +16610,11 @@ V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
 # recommending Under 60.5 at -0.8% EV and listing Over 60.5 at -1.5% as also
 # qualifying, which cannot both be true. At 0.0 only one side of a market can
 # ever qualify, and no official bet is negative-EV by construction.
-V50_MIN_EV = 0.0
+# Minimum EV for an official bet, in DISPLAYED (post-shrink) units.
+# Zero admitted anything better than a coin flip after vig, which put 24 bets
+# on a single Saturday against a target of about ten. At 0.03 the model has
+# to claim a raw cover probability near 66% before a bet counts.
+V50_MIN_EV = 0.03
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
@@ -17657,6 +17668,154 @@ def _render_saved_bets_page():
         key="cfb_latest_bets_download",
     )
 
+
+# ===== Calibration: what shrink factor does the data actually support? =====
+def _cal_run(years, scope="Major FBS"):
+    """
+    Regress the actual result on BOTH the closing line and the model's own
+    number. The model's coefficient IS the empirically correct shrink: it is
+    the fraction of the model's disagreement that showed up in outcomes.
+    V50_SHRINK was set by hand; this measures it.
+    """
+    rows = []
+    for yr in years:
+        try:
+            games = get_backtest_games(yr)
+            lines = get_backtest_lines(yr)
+            data = _bt_prior_only_data(get_backtest_model_data(yr))
+        except Exception as e:
+            raise RuntimeError(f"{yr}: {e}")
+        by_game = {}
+        for ln in (lines or []):
+            by_game.setdefault(ln.get("id"), []).append(ln)
+        for g in (games or []):
+            if g.get("homePoints") is None or g.get("awayPoints") is None:
+                continue
+            if not _bt_game_scope(g, scope):
+                continue
+            mk = _bt_consensus_line(_cal_lines_for(by_game, g))
+            if mk.get("home_spread") is None:
+                continue
+            try:
+                pr = _bt_project_game(g, data)
+            except Exception:
+                continue
+            hm = float(g["homePoints"]) - float(g["awayPoints"])
+            tot = float(g["homePoints"]) + float(g["awayPoints"])
+            rows.append({
+                "season": yr, "week": g.get("week"),
+                "actual_margin": hm, "actual_total": tot,
+                "mkt_margin": -float(mk["home_spread"]),
+                "mkt_total": mk.get("total"),
+                "model_margin": -float(pr["model_home_spread"]),
+                "model_total": float(pr["model_total"]),
+            })
+    return pd.DataFrame(rows)
+
+
+def _cal_lines_for(by_game, g):
+    return by_game.get(g.get("id")) or []
+
+
+def _cal_fit(y, market, model):
+    ok = np.isfinite(y) & np.isfinite(market) & np.isfinite(model)
+    y, market, model = y[ok], market[ok], model[ok]
+    if len(y) < 200:
+        return None
+    X = np.column_stack([np.ones(len(y)), market, model])
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    r = y - X @ beta
+    se = np.sqrt(np.diag(np.linalg.inv(X.T @ X) * (r @ r / (len(y) - 3))))
+    return {"market": float(beta[1]), "model": float(beta[2]),
+            "t": float(beta[2] / se[2]), "n": int(len(y)),
+            "resid_sd": float(np.std(r))}
+
+
+def _render_calibration():
+    st.markdown("### Calibration")
+    st.write(
+        "V50_SHRINK is currently a hand-set 0.25. This measures what it "
+        "should be: the share of the model's disagreement with the closing "
+        "line that actually showed up in results."
+    )
+    yrs = st.multiselect("Seasons", list(range(2018, 2026)),
+                         default=[2021, 2022, 2023, 2024])
+    if not st.button("Run calibration", type="primary"):
+        return
+    with st.status("Refitting against closing lines\u2026"):
+        try:
+            df = _cal_run(sorted(yrs))
+        except Exception as e:
+            st.error(f"Calibration failed: {e}")
+            return
+    if df.empty:
+        st.error("No graded games with lines in that range.")
+        return
+
+    sp = _cal_fit(df.actual_margin.values, df.mkt_margin.values,
+                  df.model_margin.values)
+    tt = _cal_fit(pd.to_numeric(df.actual_total, errors="coerce").values,
+                  pd.to_numeric(df.mkt_total, errors="coerce").values,
+                  pd.to_numeric(df.model_total, errors="coerce").values)
+
+    st.caption(f"{len(df):,} games, seasons {df.season.min()}\u2013{df.season.max()}.")
+    for lab, fit, cur in (("Spreads", sp, V50_SHRINK), ("Totals", tt, V50_SHRINK)):
+        if not fit:
+            st.info(f"{lab}: not enough games.")
+            continue
+        st.markdown(f"**{lab}**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Measured shrink", f"{fit['model']:.3f}")
+        c2.metric("In use now", f"{cur:.3f}")
+        c3.metric("t-stat", f"{fit['t']:+.2f}")
+        if abs(fit["t"]) < 2:
+            st.error(
+                f"The model adds nothing measurable to the closing line "
+                f"(t = {fit['t']:+.2f} across {fit['n']:,} games). Any shrink "
+                f"above zero is generous."
+            )
+        elif fit["model"] < cur:
+            st.warning(
+                f"{cur:.3f} is too high. The data supports {fit['model']:.3f}, "
+                f"so the app is trusting the model roughly "
+                f"{cur/max(fit['model'],1e-6):.1f}x more than it earned — "
+                f"which is why so many bets qualify."
+            )
+        else:
+            st.success(
+                f"{cur:.3f} is conservative. The data supports "
+                f"{fit['model']:.3f}."
+            )
+        st.caption(
+            f"Closing-line coefficient {fit['market']:.3f} (1.00 = the market "
+            f"is perfectly calibrated). Residual SD {fit['resid_sd']:.2f} pts "
+            f"\u2014 the sigma this market should use."
+        )
+
+    st.markdown("**Are the cover probabilities honest?**")
+    d = df.copy()
+    d["edge"] = d.model_margin - d.mkt_margin
+    d["hit"] = np.where(d.edge > 0, d.actual_margin > d.mkt_margin,
+                        d.actual_margin < d.mkt_margin)
+    d = d[d.actual_margin != d.mkt_margin]
+    out = []
+    for lo, hi in [(0, 1), (1, 3), (3, 6), (6, 10), (10, 99)]:
+        b = d[(d.edge.abs() >= lo) & (d.edge.abs() < hi)]
+        if len(b) < 100:
+            continue
+        out.append({"Model edge": f"{lo}\u2013{hi} pts", "Games": len(b),
+                    "Actual cover": f"{b.hit.mean():.1%}",
+                    "Breakeven": "52.4%"})
+    if out:
+        st.dataframe(pd.DataFrame(out), hide_index=True,
+                     use_container_width=True)
+        st.caption(
+            "If the model has real edge, the cover rate rises with the size "
+            "of the disagreement. A flat column means the disagreements are "
+            "noise."
+        )
+
+
 def _render_more_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">ADVANCED</div>'
@@ -17670,6 +17829,9 @@ def _render_more_page():
         f'<div><span>VERSION</span><b>{html.escape(MODEL_VERSION)}</b></div></div>',
         unsafe_allow_html=True,
     )
+
+    with st.expander("Calibration", expanded=False):
+        _render_calibration()
 
     with st.expander("Grade a custom market", expanded=False):
         cg1, cg2 = st.columns(2)
@@ -19560,7 +19722,12 @@ if run_mode == "Full Slate":
                 "game_date": str(selected_date),
                 "slate": slate_choice,
                 "provider_rows_json": json.dumps(provider_rows or []),
-                "kickoff_et": k.strftime("%I:%M %p") if k is not None else "",
+                # Store the DATE as well as the time. Time-only values made
+                # _se_kick_dt fall back to "today" wherever the caller had no
+                # day to supply, so a Saturday 7:45 PM game counted down as if
+                # it kicked off tonight. _se_kick_dt already parses a full
+                # datetime, and _se_kick_label still prints only the clock.
+                "kickoff_et": k.strftime("%Y-%m-%d %I:%M %p") if k is not None else "",
                 "game_id": g.get("id"),
                 "away_team": gp["away"],
                 "home_team": gp["home"],
