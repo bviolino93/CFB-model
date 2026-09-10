@@ -18963,6 +18963,32 @@ def _render_home_page():
             unsafe_allow_html=True,
         )
 
+    def _render_ml_flags(_for_date):
+        """
+        Moneyline flags for a date, if that date's slate has been built this
+        session. They are not written to the tracker — moneylines stay out of
+        the official record — so unlike frozen bets they do not survive an
+        app restart.
+        """
+        _f = (st.session_state.get("se_ml_flags") or {}).get(str(_for_date))
+        if not _f:
+            return
+        _f = sorted(_f, key=lambda r: -r["ev"])
+        st.markdown('<div class="se-sec">MONEYLINES WORTH A LOOK</div>',
+                    unsafe_allow_html=True)
+        for _r in _f:
+            st.markdown(
+                f'<div class="ge-lean-row">'
+                f'<div class="ge-lean-main"><b>{html.escape(_r["pick"])} '
+                f'{_r["odds"]:+d}</b>'
+                f'<small>{html.escape(_r["matchup"])}</small></div>'
+                f'<div class="ge-lean-stats"><span>{_r["prob"]*100:.1f}%</span>'
+                f'<span>{_r["ev"]*100:+.1f}% EV</span></div>'
+                f'<div class="ge-lean-pill">FLAG</div></div>',
+                unsafe_allow_html=True,
+            )
+        st.caption("Not part of the official record and not frozen.")
+
     # --- today's bets, shown here rather than linked to -------------------
     if not _tg and not _looking_ahead:
         st.info("No college football today. A tragedy, but a survivable one.")
@@ -18976,6 +19002,7 @@ def _render_home_page():
     elif _off.empty:
         st.markdown('<div class="se-sec">TODAY\u2019S BETS</div>', unsafe_allow_html=True)
         st.info(_se_quip(SE_NO_BETS, _today))
+        _render_ml_flags(_view_date)
     else:
         # Front page shows the five strongest only; the Slate has the full set.
         try:
@@ -19331,6 +19358,8 @@ def _render_home_page():
             "the reason nothing here promises an edge."
         )
 
+    _render_ml_flags(_view_date)
+
     st.markdown('<div class="se-sec">SEASON RECORD</div>', unsafe_allow_html=True)
     if _t is None or _t.empty:
         st.caption(_se_quip(SE_EMPTY_RECORD))
@@ -19583,6 +19612,7 @@ if run_mode == "Full Slate":
                     line_cache[int(wk)] = []
 
         slate_rows = []
+        _ml_flags = []
 
         # Fit/load the historical residual correction once per slate run,
         # not once for every matchup.
@@ -19740,18 +19770,46 @@ if run_mode == "Full Slate":
             ).cdf(0)
             adjusted_away_wp = 1.0 - adjusted_home_wp
 
+            _ml_rows = []
             if market.get("away_ml") is not None:
                 v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_moneyline_guard(v, market["away_ml"], gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
+                _ml_rows.append((f"{gp['away']} ML", market["away_ml"],
+                                 float(adjusted_away_wp)))
             if market.get("home_ml") is not None:
                 v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
                                  market_type="moneyline", projection_gap=None, week=gp["week"])
                 v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
                 v = apply_moneyline_guard(v, market["home_ml"], gp.get("fcs_fallback_used", False))
                 candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
+                _ml_rows.append((f"{gp['home']} ML", market["home_ml"],
+                                 float(adjusted_home_wp)))
+
+            # Re-price on the SAME scale the rest of the board uses: shrink
+            # toward the market's implied probability, not toward a coin
+            # flip. Kept separate from the card — moneylines stay out of the
+            # official record while the historical feed is audited.
+            for _mn, _mo, _mp in _ml_rows:
+                _mi = implied_prob(_mo)
+                if _mi is None:
+                    continue
+                _mps = _mi + V50_SHRINK * (_mp - _mi)
+                _mev = _se_ev_from_prob(_mps, _mo)
+                if _mev is None or _mev < V50_MIN_EV:
+                    continue
+                if abs(float(market.get("home_spread") or 0)) > V50_MAX_SPREAD:
+                    continue
+                if gp.get("fcs_fallback_used", False):
+                    continue
+                _ml_flags.append({
+                    "matchup": f"{gp['away']} @ {gp['home']}",
+                    "pick": _mn, "odds": int(_mo),
+                    "prob": _mps, "ev": _mev,
+                    "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
+                })
 
             if market.get("home_spread") is not None:
                 spread_gap = residual_p["spread_correction"]
@@ -19981,6 +20039,46 @@ if run_mode == "Full Slate":
                       <div class="ge-lean-pill">WATCH</div>
                     </div>
                     """,
+                    unsafe_allow_html=True,
+                )
+
+        # Moneylines, flagged but never frozen. They are priced on the same
+        # scale as the rest of the board (shrunk toward the market's implied
+        # probability) but stay out of the official record while the
+        # historical moneyline feed is audited.
+        st.session_state.setdefault("se_ml_flags", {})
+        st.session_state["se_ml_flags"][str(selected_date)] = list(_ml_flags)
+
+        if _ml_flags:
+            _mlf = sorted(_ml_flags, key=lambda r: -r["ev"])
+            st.markdown(
+                '<div class="ge-leans-head"><div>'
+                '<div class="ge-section-title">Moneylines worth a look</div>'
+                '<div class="ge-section-sub">Priced on the same scale as the '
+                'board above. Not tracked \u2014 the moneyline feed is still '
+                'being audited.</div></div>'
+                f'<div class="ge-count amber">{len(_mlf)} '
+                f'{"FLAG" if len(_mlf)==1 else "FLAGS"}</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            for j, _r in enumerate(_mlf, start=1):
+                st.markdown(
+                    f'''
+                    <div class="ge-lean-row">
+                      <div class="ge-lean-rank">{j}</div>
+                      <div class="ge-lean-main">
+                        <b>{html.escape(_r["pick"])} {_r["odds"]:+d}</b>
+                        <small>{html.escape(_r["matchup"])}
+                        {(" \u00b7 " + html.escape(_r["kickoff"])) if _r["kickoff"] else ""}</small>
+                      </div>
+                      <div class="ge-lean-stats">
+                        <span>{_r["prob"]*100:.1f}%</span>
+                        <span>{_r["ev"]*100:+.1f}% EV</span>
+                      </div>
+                      <div class="ge-lean-pill">FLAG</div>
+                    </div>
+                    ''',
                     unsafe_allow_html=True,
                 )
 
@@ -20580,10 +20678,20 @@ if True:
     _shrunk = []
     for (v, name, odds, prob, e, ev, fml) in markets:
         if _name_is_ml(name):
-            # Shrinking toward a coin flip is right for a spread, where the
-            # market is a strong prior. It is meaningless for a moneyline on
-            # a huge favorite: a 99% win probability became 62%.
-            _shrunk.append((v, name, odds, prob, e, ev, fml))
+            # Shrink toward the MARKET's implied probability, not toward a
+            # coin flip. 50% is the right anchor for a spread priced near
+            # pick'em; for a moneyline it turned a 99% favourite into 62%.
+            # Leaving moneylines unshrunk was no better — it put them on a
+            # different scale from every other market on the card, so they
+            # topped the EV ranking on essentially every game.
+            _imp_ml = implied_prob(odds)
+            if _imp_ml is None:
+                _shrunk.append((v, name, odds, prob, e, ev, fml))
+                continue
+            _pm = _imp_ml + V50_SHRINK * (float(prob) - _imp_ml)
+            _shrunk.append((v, name, odds, _pm,
+                            _pm - _imp_ml, _se_ev_from_prob(_pm, odds),
+                            fair_ml(_pm)))
             continue
         try:
             _p = 0.5 + V50_SHRINK * (float(prob) - 0.5)
@@ -20698,6 +20806,27 @@ if True:
             "**No — this would not be an official bet.** "
             + ("Because " + "; and ".join(_why) + "." if _why else
                "Nothing here clears the threshold.")
+        )
+
+    # Moneylines stay out of the official record, but a genuinely priced one
+    # is worth surfacing now that it is on the same scale as everything else.
+    _ml_best = None
+    for (v, name, odds, prob, e, ev, fml) in markets:
+        if not _is_ml(name):
+            continue
+        try:
+            _evm = float(ev)
+        except Exception:
+            continue
+        if _evm >= V50_MIN_EV and (_ml_best is None or _evm > _ml_best[1]):
+            _ml_best = (name, _evm, float(prob), odds)
+    if _ml_best and not _oor:
+        st.info(
+            f"**Moneyline worth a look — {_ml_best[0]} "
+            f"({int(_ml_best[3]):+d}).** {_ml_best[1]*100:+.1f}% EV at "
+            f"{_ml_best[2]*100:.1f}% win probability after calibration. "
+            f"Moneylines stay out of the official record while the "
+            f"historical feed is audited, so this is not a tracked bet."
         )
 
     # Watch List check: would this game make the entertainment card?
