@@ -19155,6 +19155,29 @@ if run_mode == "Full Slate":
         st.warning("No games are in this time window with the current game-level filter.")
         st.stop()
 
+    # ---- Gate: nothing below runs until date, conference and window are set.
+    # Everything used to render at once — line settings, the build button, a
+    # status box and results — while the three choices were still being made.
+    # Changing any one of them invalidates whatever was built, so the page
+    # returns here rather than showing a slate that no longer matches.
+    _sig = (str(selected_date), str(slate_filter), str(slate_choice))
+    if st.session_state.get("se_filter_sig") != _sig:
+        st.session_state["se_filter_sig"] = _sig
+        st.session_state["se_ready"] = False
+        st.session_state["cfb_build_requested"] = False
+
+    if not st.session_state.get("se_ready"):
+        st.caption(
+            f"{selected_date:%a, %b %-d} · {slate_filter} · {slate_choice} · "
+            f"{len(slate_games)} games. Change anything above, then continue."
+        )
+        if st.button("Continue", type="primary", use_container_width=True,
+                     key="se_confirm_filters"):
+            st.session_state["se_ready"] = True
+            st.session_state["se_edit_filters"] = False
+            st.rerun()
+        st.stop()
+
     with st.container(key="se_line_settings"), st.expander("Line settings", expanded=False):
         include_lines = st.checkbox(
             "Use live sportsbook lines",
@@ -19179,12 +19202,10 @@ if run_mode == "Full Slate":
             )
         with _sc2:
             if st.button("Change", use_container_width=True, key="se_edit_btn"):
+                # Back to the gate, so a rebuild always restates the three
+                # choices instead of silently reusing them.
+                st.session_state["se_ready"] = False
                 st.session_state["se_edit_filters"] = True
-                st.rerun()
-    else:
-        if st.session_state.get("se_edit_filters"):
-            if st.button("Done", use_container_width=True, key="se_edit_done"):
-                st.session_state["se_edit_filters"] = False
                 st.rerun()
 
     # Show what is already frozen for this date, so the three windows can be
@@ -19276,15 +19297,25 @@ if run_mode == "Full Slate":
     _build_clicked = st.button(_build_label, type="primary", use_container_width=True, key="v420_run_slate")
     if _build_clicked:
         _was_built = bool(st.session_state.get("cfb_build_requested"))
+        _panel_open = bool(st.session_state.get("se_edit_filters"))
         st.session_state["cfb_build_requested"] = True
         st.session_state["se_edit_filters"] = False
-        # The collapse check runs near the top of the script, before this
-        # point, so it needs one refresh to see the new state. Guarded so it
-        # only fires on the first build — no rerun loop.
-        if not _was_built:
+        # Refresh whenever the panel was open, so the collapse lands before
+        # the build renders anything. Doing both in one pass is what left a
+        # stale spinner behind. Guarded against a rerun loop.
+        if not _was_built or _panel_open:
             st.rerun()
+    # A container declared unconditionally holds one stable slot in the
+    # element tree. Without it the status box was created at a position that
+    # moved whenever the filter panel collapsed on the same click, and
+    # Streamlit — which diffs elements by position — left the previous
+    # frame's spinner on screen next to the new one.
+    _status_slot = st.container()
+
     if st.session_state.get("cfb_build_requested"):
-        _build_status = st.status(_se_quip(SE_BUILDING, selected_date), expanded=False)
+        with _status_slot:
+            _build_status = st.status(_se_quip(SE_BUILDING, selected_date),
+                                      expanded=False)
         try:
             model_data_s = get_model_data(year)
         except Exception as e:
