@@ -20118,13 +20118,7 @@ with st.expander("Advanced model settings", expanded=False):
     )
 p=project_game(game,model_data,hfa=hfa)
 
-st.markdown(
-    '<div class="workflow-step"><div class="workflow-num">2</div><div>'
-    '<div class="workflow-title">Model projection</div>'
-    '<div class="workflow-sub">The model’s expected score, spread, total, and win probabilities.</div>'
-    '</div></div>',
-    unsafe_allow_html=True,
-)
+st.markdown('<div class="se-sec">Projection</div>', unsafe_allow_html=True)
 
 st.markdown(
     f"""
@@ -20389,15 +20383,9 @@ def build_export_row(p, game, selected_date, market=None):
     return add_result_fields(row, p)
 
 st.divider()
-st.markdown(
-    '<div class="workflow-step"><div class="workflow-num">3</div><div>'
-    '<div class="workflow-title">Load market odds</div>'
-    '<div class="workflow-sub">Pull available lines, then edit them to match your sportsbook.</div>'
-    '</div></div>',
-    unsafe_allow_html=True,
-)
-
-st.caption("Use the automatic line pull as a starting point. Your sportsbook price should be the final input.")
+_lines_box = st.expander("Lines", expanded=False)
+_lines_ctx = _lines_box.__enter__()
+st.caption("Pulled automatically. Edit any value to match your sportsbook.")
 
 line_rows = []
 providers = []
@@ -20503,16 +20491,12 @@ st.session_state["cfb_latest_projection_filename"] = (
     f"cfb_projection_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv"
 )
 
-st.markdown(
-    '<div class="workflow-step"><div class="workflow-num">4</div><div>'
-    '<div class="workflow-title">Analyze the markets</div>'
-    '<div class="workflow-sub">How the model prices each market on this game, '
-    'and whether any of it clears the official-bet threshold.</div>'
-    '</div></div>',
-    unsafe_allow_html=True,
-)
+_lines_box.__exit__(None, None, None)
 
-if st.button("Analyze Markets",type="primary",use_container_width=True):
+# The verdict used to sit behind a button at the bottom of four numbered
+# steps, and vanished whenever any input was touched. It is the reason the
+# page exists, so it runs on load and stays put.
+if True:
     markets=[]
 
     # v0.4 market-baseline residual layer.
@@ -20736,9 +20720,15 @@ if st.button("Analyze Markets",type="primary",use_container_width=True):
         if not _ok:
             continue
         try:
-            _watch.append((name, abs(float(prob) - 0.5), float(prob)))
+            _pw = float(prob)
         except Exception:
-            pass
+            continue
+        # Only ever surface the side the model actually favours. Ranking by
+        # distance from a coin flip treats 49.2% and 50.8% as equally strong,
+        # so the losing side of a market could be presented as the lean.
+        if _pw <= 0.5:
+            continue
+        _watch.append((name, _pw - 0.5, _pw))
     _watch.sort(key=lambda x: -x[1])
 
     if _watch:
