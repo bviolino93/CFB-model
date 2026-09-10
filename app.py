@@ -279,8 +279,13 @@ def residual_market_projection(p, market, residual_models=None):
 
 
 def cap_total_research_verdict(verdict):
-    """Totals remain research-only until the residual model passes validation."""
-    return "LEAN" if verdict in {"BET", "STRONG BET"} else verdict
+    """
+    Totals are live. This previously downgraded every total from BET or
+    STRONG BET to LEAN, which meant no total could ever be frozen as an
+    official bet. Kept as a pass-through so the four call sites stay put and
+    the cap can be reinstated by restoring one line.
+    """
+    return verdict
 
 def calibrated_sigmas(margin_sd, total_sd, week):
     """Extra uncertainty in Weeks 0-2/1-2 while priors dominate."""
