@@ -20713,10 +20713,13 @@ if True:
         )
         if _fam_taken:
             continue
+        # Judge by the GAME's spread for totals as well as spreads. Totals
+        # used to bypass this, so a game the app had just called out of range
+        # still offered its total as a watch play.
         try:
-            _ok = _is_tot or abs(float(home_spread)) <= V50_FUN_MAX_SPREAD
+            _ok = abs(float(home_spread)) <= V50_FUN_MAX_SPREAD
         except Exception:
-            _ok = _is_tot
+            _ok = False
         if not _ok:
             continue
         try:
