@@ -15968,6 +15968,23 @@ def _v401_save_tracker(df):
             x = x[~x["record_key"].astype(str).duplicated(keep="first")].copy()
     except Exception:
         pass
+
+    # Official supersedes watch for the same game + market. Tier-specific keys
+    # stop a qualifying bet being dropped because a watch row already existed,
+    # but they also let a rebuild at a moved line freeze BOTH sides of the same
+    # market — Texas A&M -14.0 official next to Texas A&M -14.5 watch. One
+    # market, one record: the watch row goes.
+    try:
+        if not x.empty and "record_key" in x.columns:
+            _k = x["record_key"].astype(str)
+            _base = _k.str.replace(r"\|W$", "", regex=True)
+            _is_watch = _k.str.endswith("|W")
+            _official_bases = set(_base[~_is_watch])
+            _drop = _is_watch & _base.isin(_official_bases)
+            if _drop.any():
+                x = x[~_drop].copy()
+    except Exception:
+        pass
     ws = _v401_sheet()
     if ws is not None:
         try:
@@ -16659,6 +16676,17 @@ def _v410_total_card(slate_df):
 
 V50_SHRINK = 0.25          # how much of the model's disagreement to believe
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
+
+# Totals get their own cap. Margin and total are different quantities: the
+# ratings can be poor at placing two mismatched teams relative to each other
+# while still estimating how many points get scored. Blowouts also have their
+# own scoring dynamics — running clock, backups, garbage-time tempo — which
+# the market may price imperfectly, so large-spread totals may be a source of
+# edge rather than a trap. Set to 50, which in practice lets through almost
+# every FBS game while still excluding the most extreme FCS mismatches.
+# UNMEASURED: the calibration split (More > Calibration) tests whether totals
+# actually hold up past 28 points. Until it has been run, this is a judgement.
+V50_MAX_SPREAD_TOTAL = 50.0
 # Threshold in DISPLAYED EV units (post-shrink). Held at -0.0166 while the
 # unit fix was verified; now raised to zero. Below zero the floor sits inside
 # the vig, so BOTH sides of the same market can clear it — the app was
@@ -16755,11 +16783,17 @@ def _v50_apply_strict_selection(card):
         _se_ev_from_prob(v, o) for v, o in
         zip(_ps_pre, c.get("odds", pd.Series(-110, index=c.index)))
     ]
-    # The large-spread exclusion applies to SPREADS only. A total's market
-    # number is 45-70, so applying a 28-point cap to it excluded every total
-    # from ever qualifying.
+    # Judge every market by the GAME's spread, never by its own market number.
+    # Comparing a total's number (45-70) against a 28-point cap excluded every
+    # total, and the fix for that — skipping totals entirely — let a total
+    # through on a 35-point blowout the app had already ruled out of range.
+    # Both markets come from the same team ratings, so both stand or fall on
+    # whether those ratings extrapolate to this game.
+    _game_spread = pd.to_numeric(
+        c.get("market_home_spread_display"), errors="coerce").abs()
     _is_total = c["market_type"].astype(str).str.upper().eq("TOTAL")
-    c["excluded"] = ((~_is_total) & (mkt.abs() > V50_MAX_SPREAD)).fillna(False)
+    _cap = np.where(_is_total, V50_MAX_SPREAD_TOTAL, V50_MAX_SPREAD)
+    c["excluded"] = (_game_spread > _cap).fillna(False)
 
     qualifies = (
         c["verdict"].isin(["BET", "BEST BET"])
@@ -17846,6 +17880,35 @@ def _render_calibration():
             f"is perfectly calibrated). Residual SD {fit['resid_sd']:.2f} pts "
             f"\u2014 the sigma this market should use."
         )
+
+    # Does the totals model actually degrade on lopsided games? The 28-point
+    # cap on totals is an assumption, not a finding — this is the test.
+    if tt and "mkt_margin" in df.columns:
+        st.markdown("**Do totals hold up on lopsided games?**")
+        d2 = df.dropna(subset=["pred_total", "mkt_total", "actual_total"]).copy()
+        d2["gap"] = d2["mkt_margin"].abs()
+        out2 = []
+        for lo, hi in [(0, 14), (14, 21), (21, 28), (28, 40), (40, 99)]:
+            b = d2[(d2.gap >= lo) & (d2.gap < hi)]
+            if len(b) < 150:
+                continue
+            f = _cal_fit(b.actual_total.values, b.mkt_total.values,
+                         b.pred_total.values)
+            if not f:
+                continue
+            out2.append({"Game spread": f"{lo}\u2013{hi} pts",
+                         "Games": f["n"],
+                         "Measured shrink": round(f["model"], 3),
+                         "t": round(f["t"], 2)})
+        if out2:
+            st.dataframe(pd.DataFrame(out2), hide_index=True,
+                         use_container_width=True)
+            st.caption(
+                f"If the last rows hold up as well as the first, the "
+                f"{V50_MAX_SPREAD_TOTAL:.0f}-point cap on totals is costing "
+                f"you bets for no reason. If they collapse, it is earning "
+                f"its keep."
+            )
 
     st.markdown("**Are the cover probabilities honest?**")
     d = df.copy()
@@ -20185,7 +20248,9 @@ if run_mode == "Full Slate":
                         <b>{html.escape(str(fr.get("selection","")))}</b>
                         <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
                       </div>
-                      <div class="ge-lean-stats"><span>{_v390_prob_text(fr.get("cover_probability"))}</span></div>
+                      <div class="ge-lean-stats">
+                        <span>{_v390_prob_text(fr.get("expected_value"))} EV</span>
+                      </div>
                       <div class="ge-lean-pill">WATCH</div>
                     </div>
                     """,
