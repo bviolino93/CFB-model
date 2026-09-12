@@ -36,6 +36,7 @@ from pathlib import Path
 # ===== Embedded CFB v0.2.0 model engine =====
 
 import math
+import time
 import requests
 from statistics import NormalDist, mean, pstdev
 from functools import lru_cache
@@ -104,7 +105,12 @@ def calibrated_market_projection(raw_value, market_value, week, market_type):
 # ===== v0.4 residual-market layer =====
 # The sportsbook line is now the baseline forecast. The football model only
 # supplies a regularized estimate of the market's residual error.
-RESIDUAL_TRAIN_START = 2018
+# How far back the residual models train. Each season here is three CFBD
+# pulls, paid on the first build after every app restart — and a code push
+# restarts the app, clearing the cache. 2018 meant ~24 season-sized fetches
+# before the first slate would render. Recent seasons carry most of the
+# signal anyway; raise this if you want a longer history and can wait.
+RESIDUAL_TRAIN_START = 2021
 RESIDUAL_RIDGE_ALPHA = 12.0
 RESIDUAL_SPREAD_CAP = 4.0
 RESIDUAL_TOTAL_CAP = 3.0
@@ -19711,7 +19717,10 @@ if run_mode == "Full Slate":
             _build_status = st.status(_se_quip(SE_BUILDING, selected_date),
                                       expanded=False)
         try:
+            _t_phase = {}
+            _t0 = time.perf_counter()
             model_data_s = get_model_data(year)
+            _t_phase["ratings"] = time.perf_counter() - _t0
         except Exception as e:
             _build_status.update(label="Build failed", state="error")
             st.error(f"CFBD model-data request failed: {e}")
@@ -19719,6 +19728,7 @@ if run_mode == "Full Slate":
 
         # Efficiently pull all line data by unique week rather than one request per game.
         line_cache = {}
+        _t0 = time.perf_counter()
         if include_lines:
             weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
             for wk in weeks:
@@ -19727,13 +19737,29 @@ if run_mode == "Full Slate":
                     line_cache[int(wk)] = raw
                 except Exception:
                     line_cache[int(wk)] = []
+        _t_phase["lines"] = time.perf_counter() - _t0
 
         slate_rows = []
         _ml_flags = []
 
         # Fit/load the historical residual correction once per slate run,
         # not once for every matchup.
+        try:
+            _build_status.update(
+                label=f"Training residual models on "
+                      f"{int(year) - RESIDUAL_TRAIN_START} prior seasons "
+                      f"(first build after a restart only)\u2026"
+            )
+        except Exception:
+            pass
+        _t0 = time.perf_counter()
         residual_models = fit_live_residual_models(int(year), "Major FBS")
+        _t_phase["residual fit"] = time.perf_counter() - _t0
+        try:
+            _build_status.update(label=_se_quip(SE_BUILDING, selected_date))
+        except Exception:
+            pass
+        _t0 = time.perf_counter()
 
         for g in slate_games:
             gp = project_game(g, model_data_s, hfa=2.5)
@@ -20121,7 +20147,14 @@ if run_mode == "Full Slate":
                 pass
 
         try:
+            _t_phase["pricing games"] = time.perf_counter() - _t0
             _build_status.update(label="Slate ready", state="complete")
+            st.caption(
+                "Build time \u2014 "
+                + " \u00b7 ".join(f"{k} {v:.1f}s"
+                                  for k, v in sorted(_t_phase.items(),
+                                                     key=lambda x: -x[1]))
+            )
         except Exception:
             pass
 
