@@ -6751,7 +6751,9 @@ div[class*="st-key-v420_run_slate"] button{
 .se-hero-bet-copy{flex:1;min-width:0}
 .se-hero-bet-copy b{display:block;font-size:1.18rem;color:#fff;font-weight:800;letter-spacing:-.01em}
 .se-hero-bet-copy small{display:block;font-size:.72rem;color:#9db4cb;margin-top:2px}
-.se-hero-meta{margin-top:6px;font-size:.7rem;color:#8fa6bd;font-weight:600}
+.se-hero-meta{margin-top:6px;font-size:.7rem;color:#8fa6bd;font-weight:600;
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
+.se-hm-item{display:inline-flex;align-items:baseline;gap:5px;white-space:nowrap}
 .se-hero-meta b{color:#dbe7f5;font-weight:800}
 .se-hero-meta .soon{color:#f2c14e;font-weight:800}
 .se-hero-meta .live{color:#4ae0aa;font-weight:800}
@@ -18722,7 +18724,12 @@ def _se_hero_meta(row, now, day=None):
         pass
     label, state = _se_time_to_kick(row, now, day)
     bits.append(f"<span class='{state}'>{html.escape(label)}</span>")
-    return f'<div class="se-hero-meta">{" &middot; ".join(bits)}</div>'
+    # Wrapped in items rather than joined by a middot: the values render as
+    # block-level, so a text separator ended up orphaned on its own line
+    # and read as a stray full stop.
+    return ('<div class="se-hero-meta">'
+            + "".join(f'<span class="se-hm-item">{b}</span>' for b in bits)
+            + '</div>')
 
 
 def _se_card_meta(row, now, day=None, lean=False):
@@ -19271,7 +19278,8 @@ def _render_home_page():
             ), height=330)
             _nb = sum(1 for p in _pts if p["bet"])
             st.caption(
-                f"Green marks all {_nb} official bet(s) today, sized by expected "
+                f"Green marks {_nb} official {'bet' if _nb == 1 else 'bets'} today, "
+                f"sized by expected "
                 f"value. Grey dots are other games on the board. Tap for detail."
             )
 
@@ -19330,9 +19338,12 @@ def _render_home_page():
             unsafe_allow_html=True,
         )
         if _hero_svg:
+            _hm = html.escape(str(_h.get("home_team", "the home team")))
             st.caption(
-                "Gold is the market number, green the model's. The shaded area "
-                "is where this bet covers."
+                f"The curve is {_hm}'s final margin, so its sign is from the "
+                f"home side \u2014 the pick above is stated from the side being "
+                f"bet. Gold is the market number, green the model's, and the "
+                f"shaded area is where this bet covers."
             )
 
         # Split the rest into spreads and totals, top five of each, so one
