@@ -6562,6 +6562,14 @@ div[data-baseweb="notification"][kind="negative"]{
   border-color:rgba(240,90,102,.34)!important;
 }
 
+.se-sat{border:1px solid rgba(74,224,170,.25);border-radius:12px;
+  padding:14px 16px;margin:0 0 14px;
+  background:linear-gradient(180deg,rgba(74,224,170,.10),rgba(74,224,170,.03))}
+.se-sat-line{font-size:1.02rem;font-weight:600;color:#d8ead8;
+  letter-spacing:-.01em}
+.se-sat-fact{margin-top:8px;padding-top:8px;font-size:.83rem;color:#8fb3a4;
+  border-top:1px solid rgba(74,224,170,.16)}
+
 /* Moneyline flags. Self-contained rather than borrowing .ge-lean-row, whose
    grid expects rank/logo/main/stats/pill and wraps the team name one letter
    per line when those are missing. */
@@ -18255,6 +18263,22 @@ SE_BUILDING = [
     "Politely arguing with the closing line\u2026",
 ]
 
+# Saturday mornings only. Nothing here claims the model is hot or the card is
+# good — that is what the record is for. It is just an acknowledgement that
+# it is a football Saturday.
+SE_SATURDAY = [
+    "It\u2019s Saturday. The whole board is in front of you.",
+    "Kickoff weather, top to bottom.",
+    "College football Saturday. Nothing else scheduled.",
+    "Twelve hours of it ahead. Pace yourself.",
+    "Somebody\u2019s undefeated season ends today.",
+    "The good chaos starts at noon.",
+    "A hundred teams think this is their year. Most are wrong.",
+    "Every week someone wins by forty and nobody saw it coming.",
+    "Rivalry math, tempo mismatches, a kicker who has no idea yet.",
+    "Best day on the sports calendar. Not close.",
+]
+
 SE_NO_BETS = [
     "Nothing cleared the bar. The model looked at every game and shrugged.",
     "No bets today. Somewhere, a bookmaker sleeps soundly.",
@@ -18277,6 +18301,23 @@ SE_TOCK = [
     "Chris Tock is not on the record for this one.",
     "Chris Tock declined to comment on today's card.",
     "Somewhere, Chris Tock is quietly fading all of this.",
+]
+
+
+# Same deadpan register as SE_TOCK: tall tales, not biography.
+SE_TOCK_FACTS = [
+    "Chris Tock has never once looked up a line. He simply knows.",
+    "Chris Tock once called a game correctly before the schedule was released.",
+    "Chris Tock does not believe in the concept of a road team.",
+    "Chris Tock has been to a game in every time zone, all on the same Saturday.",
+    "Chris Tock refuses to acknowledge overtime. As far as he is concerned it ended in a tie.",
+    "Chris Tock can identify any offense from a single still frame of the huddle.",
+    "Chris Tock has never watched a fourth quarter. He leaves when he knows.",
+    "Chris Tock has a spreadsheet. Nobody has seen it.",
+    "Chris Tock turned down a job in a front office because Saturdays were not guaranteed off.",
+    "Chris Tock once went 0-7 and described the day as instructive.",
+    "Chris Tock does not tail. Chris Tock does not fade. Chris Tock observes.",
+    "Chris Tock has strong opinions about kickers and will not be sharing them.",
 ]
 
 
@@ -18893,6 +18934,18 @@ def _se_margin_curve_svg(mu, sigma, market, home, away, w=680, h=190):
 def _render_home_page():
     _now = pd.Timestamp.now(tz="America/New_York")
     _today = _now.strftime("%Y-%m-%d")
+
+    # Saturday mornings, before the first wave kicks off.
+    if _now.dayofweek == 5 and _now.hour < 12:
+        st.markdown(
+            f'<div class="se-sat">'
+            f'<div class="se-sat-line">'
+            f'{html.escape(_se_quip(SE_SATURDAY, _today))}</div>'
+            f'<div class="se-sat-fact">'
+            f'{html.escape(_se_quip(SE_TOCK_FACTS, _today))}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     try:
         _tg = [g for g in (get_games(_now.year) or [])
@@ -20529,8 +20582,13 @@ def build_export_row(p, game, selected_date, market=None):
     return add_result_fields(row, p)
 
 st.divider()
-_lines_box = st.expander("Lines", expanded=False)
-_lines_ctx = _lines_box.__enter__()
+# NOTE: deliberately NOT an expander. Opening one with a manual __enter__()
+# here and closing it further down left Streamlit's element cursor inside a
+# container across a long stretch of top-level script; when the depth did not
+# match the previous run, stale elements from the previously viewed page were
+# left on screen. Collapsing this section needs the widgets moved into a
+# function first.
+st.markdown('<div class="se-sec">Lines</div>', unsafe_allow_html=True)
 st.caption("Pulled automatically. Edit any value to match your sportsbook.")
 
 line_rows = []
@@ -20636,8 +20694,6 @@ st.session_state["cfb_latest_projection_csv"] = projection_only_df.to_csv(index=
 st.session_state["cfb_latest_projection_filename"] = (
     f"cfb_projection_{p['away'].replace(' ','_')}_at_{p['home'].replace(' ','_')}.csv"
 )
-
-_lines_box.__exit__(None, None, None)
 
 # The verdict used to sit behind a button at the bottom of four numbered
 # steps, and vanished whenever any input was touched. It is the reason the
