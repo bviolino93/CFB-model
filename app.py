@@ -17879,6 +17879,62 @@ def _cal_fit(y, market, model):
             "resid_sd": float(np.std(r))}
 
 
+def _cal_spread_diagnostic(df):
+    """
+    Spreads lose at 46.7% over 835 holdout games. That is too consistent to
+    be variance, and 46.7% is close to the mirror of 53.3% — the signature of
+    a sign or convention error rather than a weak model. Four checks:
+
+      1. Does betting the OPPOSITE side win? A clean mirror means a flip.
+      2. Is the loss uniform, or concentrated in blowouts where the ratings
+         extrapolate?
+      3. Does the model's home margin correlate POSITIVELY with the actual
+         home margin? If it is negative, the sign is inverted at the source.
+      4. Does the market line correlate the way it should? If not, the
+         convention mismatch is on the market side.
+    """
+    d = df.dropna(subset=["model_margin", "mkt_margin", "actual_margin"]).copy()
+    for c in ("model_margin", "mkt_margin", "actual_margin"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["actual_margin"] != d["mkt_margin"]]
+    if len(d) < 200:
+        return None
+
+    d["gap"] = d["model_margin"] - d["mkt_margin"]
+    d["model_side_wins"] = np.where(
+        d["gap"] > 0, d["actual_margin"] > d["mkt_margin"],
+        d["actual_margin"] < d["mkt_margin"])
+
+    out = {"n": len(d)}
+    out["as_is"] = float(d["model_side_wins"].mean())
+    out["flipped"] = 1.0 - out["as_is"]
+    out["corr_model"] = float(np.corrcoef(d["model_margin"],
+                                          d["actual_margin"])[0, 1])
+    out["corr_market"] = float(np.corrcoef(d["mkt_margin"],
+                                           d["actual_margin"])[0, 1])
+    out["mean_model"] = float(d["model_margin"].mean())
+    out["mean_market"] = float(d["mkt_margin"].mean())
+    out["mean_actual"] = float(d["actual_margin"].mean())
+
+    bands = []
+    for lo, hi, lab in [(0, 7, "0-7"), (7, 14, "7-14"), (14, 21, "14-21"),
+                        (21, 28, "21-28"), (28, 99, "28+")]:
+        b = d[(d["mkt_margin"].abs() >= lo) & (d["mkt_margin"].abs() < hi)]
+        if len(b) < 60:
+            continue
+        bands.append({"Market spread": lab, "Games": len(b),
+                      "Model side wins": f"{b['model_side_wins'].mean():.1%}"})
+    out["bands"] = pd.DataFrame(bands)
+
+    # Which side does the model favour, home or away?
+    out["pct_home"] = float((d["gap"] > 0).mean())
+    home = d[d["gap"] > 0]
+    away = d[d["gap"] < 0]
+    out["home_hit"] = float(home["model_side_wins"].mean()) if len(home) else None
+    out["away_hit"] = float(away["model_side_wins"].mean()) if len(away) else None
+    return out
+
+
 def _cal_threshold_sweep(df):
     """
     What would betting at each disagreement threshold have returned?
@@ -18020,6 +18076,46 @@ def _render_calibration():
             )
     except Exception as _e:
         st.caption(f"Spread-size split unavailable: {type(_e).__name__}.")
+
+    _dg = _cal_spread_diagnostic(df)
+    if _dg:
+        st.markdown("**Why are spreads losing?**")
+        c1, c2 = st.columns(2)
+        c1.metric("Model's side wins", f"{_dg['as_is']:.1%}")
+        c2.metric("Opposite side wins", f"{_dg['flipped']:.1%}")
+        st.caption(
+            f"{_dg['n']:,} graded games. If the second number is comfortably "
+            f"above 52.4% while the first is below, the side is being "
+            f"selected backwards somewhere."
+        )
+        st.markdown(
+            '<table class="se-kv">'
+            f'<tr><td>Model margin vs actual, correlation</td>'
+            f'<td>{_dg["corr_model"]:+.3f}</td></tr>'
+            f'<tr><td>Market margin vs actual, correlation</td>'
+            f'<td>{_dg["corr_market"]:+.3f}</td></tr>'
+            f'<tr><td>Mean model margin</td><td>{_dg["mean_model"]:+.2f}</td></tr>'
+            f'<tr><td>Mean market margin</td><td>{_dg["mean_market"]:+.2f}</td></tr>'
+            f'<tr><td>Mean actual margin</td><td>{_dg["mean_actual"]:+.2f}</td></tr>'
+            f'<tr><td>Model favours the home side</td>'
+            f'<td>{_dg["pct_home"]:.1%} of games</td></tr>'
+            + (f'<tr><td>...and wins those</td>'
+               f'<td>{_dg["home_hit"]:.1%}</td></tr>'
+               if _dg["home_hit"] is not None else "")
+            + (f'<tr><td>...wins away picks</td>'
+               f'<td>{_dg["away_hit"]:.1%}</td></tr>'
+               if _dg["away_hit"] is not None else "")
+            + '</table>', unsafe_allow_html=True)
+        st.caption(
+            "Both correlations should be strongly positive and similar. A "
+            "negative model correlation means the sign is inverted at the "
+            "source. A large home/away split means the convention breaks on "
+            "one side only."
+        )
+        if not _dg["bands"].empty:
+            st.caption("Is the loss uniform, or concentrated in blowouts?")
+            st.dataframe(_dg["bands"], hide_index=True,
+                         use_container_width=True)
 
     st.markdown("**What disagreement threshold actually works?**")
     _sw, _cut = _cal_threshold_sweep(df)
