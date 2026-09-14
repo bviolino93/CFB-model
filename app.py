@@ -17846,8 +17846,18 @@ def _cal_run(years, scope="Major FBS"):
                 continue
             hm = float(g["homePoints"]) - float(g["awayPoints"])
             tot = float(g["homePoints"]) + float(g["awayPoints"])
+            _hc = str(g.get("homeConference") or "")
+            _ac = str(g.get("awayConference") or "")
+            _major = {"ACC", "SEC", "Big Ten", "Big 12", "Pac-12"}
+            if _hc in _major and _ac in _major:
+                _tier = "Both major"
+            elif _hc in _major or _ac in _major:
+                _tier = "One major"
+            else:
+                _tier = "Neither major"
             rows.append({
                 "season": yr, "week": g.get("week"),
+                "tier": _tier, "home_conf": _hc, "away_conf": _ac,
                 "actual_margin": hm, "actual_total": tot,
                 "mkt_margin": -float(mk["home_spread"]),
                 "mkt_total": mk.get("total"),
@@ -17877,6 +17887,49 @@ def _cal_fit(y, market, model):
     return {"market": float(beta[1]), "model": float(beta[2]),
             "t": float(beta[2] / se[2]), "n": int(len(y)),
             "resid_sd": float(np.std(r))}
+
+
+def _cal_segment_splits(df):
+    """
+    The calibration runs on Major FBS — the most heavily bet, most tightly
+    priced games in the sport. If an edge exists in college football it
+    should be in the games nobody prices carefully, not the ones on national
+    television. Split by conference tier and by week of season.
+    """
+    d = df.dropna(subset=["model_margin", "mkt_margin", "actual_margin"]).copy()
+    for c in ("model_margin", "mkt_margin", "actual_margin"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["actual_margin"] != d["mkt_margin"]]
+    d["gap"] = d["model_margin"] - d["mkt_margin"]
+    d["hit"] = np.where(d["gap"] > 0, d["actual_margin"] > d["mkt_margin"],
+                        d["actual_margin"] < d["mkt_margin"])
+    d["wk"] = pd.to_numeric(d.get("week"), errors="coerce")
+
+    def tbl(col, order=None, label="Segment"):
+        rows = []
+        keys = order or sorted(d[col].dropna().unique())
+        for k in keys:
+            b = d[d[col] == k]
+            if len(b) < 80:
+                continue
+            big = b[b["gap"].abs() >= 6]
+            rows.append({
+                label: str(k), "Games": len(b),
+                "Hit": f"{b['hit'].mean():.1%}",
+                "6+ pt gap": (f"{big['hit'].mean():.1%} ({len(big)})"
+                              if len(big) >= 40 else "-"),
+            })
+        return pd.DataFrame(rows)
+
+    out = {}
+    if "tier" in d.columns:
+        out["tier"] = tbl("tier",
+                          ["Both major", "One major", "Neither major"],
+                          "Conference tier")
+    d["wkband"] = pd.cut(d["wk"], [0, 4, 8, 12, 20],
+                         labels=["wk 1-4", "wk 5-8", "wk 9-12", "wk 13+"])
+    out["week"] = tbl("wkband", label="Part of season")
+    return out
 
 
 def _cal_hfa_sweep(df):
@@ -18029,11 +18082,21 @@ def _render_calibration():
     )
     yrs = st.multiselect("Seasons", list(range(2018, 2026)),
                          default=[2021, 2022, 2023, 2024])
+    # The whole thesis for beating college football is that small games are
+    # thinly priced. Calibrating only on Major FBS tests the model against
+    # the sharpest lines in the sport, which is the hardest possible case.
+    _scope = st.selectbox(
+        "Game universe", ["Major FBS", "All FBS", "All college games"],
+        index=0,
+        help="Major FBS is power-conference games — the most heavily bet. "
+             "All FBS adds the Group of Five. All college games adds "
+             "everything the feed carries.",
+    )
     if not st.button("Run calibration", type="primary"):
         return
     with st.status("Refitting against closing lines\u2026"):
         try:
-            df = _cal_run(sorted(yrs))
+            df = _cal_run(sorted(yrs), scope=_scope)
         except Exception as e:
             st.error(f"Calibration failed: {e}")
             return
@@ -18117,6 +18180,23 @@ def _render_calibration():
             )
     except Exception as _e:
         st.caption(f"Spread-size split unavailable: {type(_e).__name__}.")
+
+    _seg = _cal_segment_splits(df)
+    for _k, _lab, _why in (
+            ("tier", "Does it depend on who is playing?",
+             "Major-conference games are the most heavily bet in the sport. "
+             "If an edge exists it should show up where the books pay less "
+             "attention. Note this run is already filtered to Major FBS, so "
+             "'Neither major' here means neither team is in a power "
+             "conference but one side still drew the scope filter."),
+            ("week", "Does it depend on when in the season?",
+             "Early-season ratings lean on preseason priors; by November "
+             "they are mostly current-year results.")):
+        _t = _seg.get(_k)
+        if _t is not None and not _t.empty:
+            st.markdown(f"**{_lab}**")
+            st.caption(_why)
+            st.dataframe(_t, hide_index=True, use_container_width=True)
 
     _hf, _hcut = _cal_hfa_sweep(df)
     if not _hf.empty:
