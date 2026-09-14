@@ -16593,6 +16593,32 @@ def _v401_render_official_tracker():
             t["Units"] = t["Units"].map(lambda v: f"{v:+.2f}")
             st.dataframe(t, use_container_width=True, hide_index=True)
 
+    # One tidy file with everything needed to analyse the record, rather
+    # than the raw tracker with its bookkeeping columns.
+    _cols = ["game_date", "kickoff_et", "matchup", "market_type", "selection",
+             "bet_tier", "verdict", "reliability", "bet_line", "odds",
+             "point_edge", "cover_probability", "expected_value",
+             "raw_cover_probability", "model_version", "shrink_param",
+             "min_ev_param", "market_home_spread", "result", "units_result",
+             "result_margin", "final_home_score", "final_away_score",
+             "closing_line", "clv_points", "week"]
+    _an = df[[c for c in _cols if c in df.columns]].copy()
+    if "game_date" in _an.columns:
+        _an = _an.sort_values("game_date")
+    st.download_button(
+        f"Download analysis file \u2014 {len(_an)} bets",
+        data=_an.to_csv(index=False).encode("utf-8"),
+        file_name="saturday_edge_analysis.csv",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary",
+        key="download_v401_analysis",
+    )
+    st.caption(
+        "One row per frozen bet with the model's inputs, the price taken, "
+        "and the result. This is the file to hand over for analysis."
+    )
+
     with st.expander("Full bet history", expanded=False):
         st.caption("Every frozen bet, newest first. Also saved in your Google Sheet.")
         show = df[[c for c in [
