@@ -17928,7 +17928,9 @@ def _cal_segment_splits(df):
                           "Conference tier")
     d["wkband"] = pd.cut(d["wk"], [0, 4, 8, 12, 20],
                          labels=["wk 1-4", "wk 5-8", "wk 9-12", "wk 13+"])
-    out["week"] = tbl("wkband", label="Part of season")
+    out["week"] = tbl("wkband",
+                      ["wk 1-4", "wk 5-8", "wk 9-12", "wk 13+"],
+                      "Part of season")
     return out
 
 
@@ -17971,6 +17973,87 @@ def _cal_hfa_sweep(df):
         rec["Holdout, 0-7 pt games"] = f"{hit.mean():.1%}" if len(close) else "-"
         rows.append(rec)
     return pd.DataFrame(rows), cut
+
+
+def _cal_scale_sweep(df):
+    """
+    The HFA sweep tests ADDING points. This tests MULTIPLYING them.
+
+    Mean model margin runs ~0.6 pts under both the market and the actual
+    result, which a constant shift cannot explain if the shortfall grows
+    with the size of the game. If the model compresses spreads (k > 1
+    wins) or exaggerates them (k < 1 wins), that is a rating-scale error,
+    and no amount of home-field tuning finds it. Same train/holdout split
+    as the HFA sweep so the answer is not fitted.
+    """
+    d = df.dropna(subset=["model_margin", "mkt_margin", "actual_margin"]).copy()
+    for c in ("model_margin", "mkt_margin", "actual_margin"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["actual_margin"] != d["mkt_margin"]]
+    if len(d) < 300:
+        return pd.DataFrame(), None
+    seasons = sorted(d["season"].unique())
+    cut = seasons[len(seasons) // 2]
+
+    rows = []
+    for k in (0.70, 0.80, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20, 1.30):
+        rec = {"Scale": f"{k:.2f}x"}
+        for lab, part in (("Train", d[d.season < cut]),
+                          ("Holdout", d[d.season >= cut])):
+            gap = (part["model_margin"] * k) - part["mkt_margin"]
+            hit = np.where(gap > 0,
+                           part["actual_margin"] > part["mkt_margin"],
+                           part["actual_margin"] < part["mkt_margin"])
+            rec[lab] = f"{hit.mean():.1%}" if len(part) else "-"
+        hold = d[d.season >= cut]
+        rec["Holdout n"] = len(hold)
+        # Scaling only moves the pick where the model is far from zero, so
+        # the diagnostic bite is in big spreads, not the 0-7 band.
+        big = hold[hold["mkt_margin"].abs() >= 14]
+        gap = (big["model_margin"] * k) - big["mkt_margin"]
+        hit = np.where(gap > 0,
+                       big["actual_margin"] > big["mkt_margin"],
+                       big["actual_margin"] < big["mkt_margin"])
+        rec["Holdout, 14+ pt games"] = f"{hit.mean():.1%}" if len(big) else "-"
+        # Points of error left on the table at this scale.
+        mae = float((hold["model_margin"] * k - hold["actual_margin"]).abs().mean())
+        rec["Holdout MAE"] = f"{mae:.2f}"
+        rows.append(rec)
+    return pd.DataFrame(rows), cut
+
+
+def _cal_tier_bias(df):
+    """
+    Hit rate says WHETHER a segment loses; it does not say why. This reports
+    the signed point error by conference tier for the model and the market
+    side by side.
+
+    A hit rate near 50% with a signed bias near zero is an accuracy problem.
+    A hit rate below 50% with a signed bias of a point or more is a scale
+    problem in that tier — most likely the ratings mis-price power vs
+    non-power strength, which is fixable without touching anything else.
+    """
+    need = ["model_margin", "mkt_margin", "actual_margin"]
+    if not all(c in df.columns for c in need) or "tier" not in df.columns:
+        return pd.DataFrame()
+    d = df.dropna(subset=need).copy()
+    for c in need:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=need)
+    rows = []
+    for tier in ["Both major", "One major", "Neither major"]:
+        b = d[d["tier"] == tier]
+        if len(b) < 80:
+            continue
+        rows.append({
+            "Conference tier": tier,
+            "Games": len(b),
+            "Model bias": f"{(b.model_margin - b.actual_margin).mean():+.2f}",
+            "Market bias": f"{(b.mkt_margin - b.actual_margin).mean():+.2f}",
+            "Model MAE": f"{(b.model_margin - b.actual_margin).abs().mean():.2f}",
+            "Market MAE": f"{(b.mkt_margin - b.actual_margin).abs().mean():.2f}",
+        })
+    return pd.DataFrame(rows)
 
 
 def _cal_spread_diagnostic(df):
@@ -18154,15 +18237,17 @@ def _render_calibration():
     try:
       if tt and "mkt_margin" in df.columns:
         st.markdown("**Do totals hold up on lopsided games?**")
-        d2 = df.dropna(subset=["pred_total", "mkt_total", "actual_total"]).copy()
+        d2 = df.dropna(subset=["model_total", "mkt_total", "actual_total"]).copy()
         d2["gap"] = d2["mkt_margin"].abs()
         out2 = []
         for lo, hi in [(0, 14), (14, 21), (21, 28), (28, 40), (40, 99)]:
             b = d2[(d2.gap >= lo) & (d2.gap < hi)]
             if len(b) < 150:
                 continue
-            f = _cal_fit(b.actual_total.values, b.mkt_total.values,
-                         b.pred_total.values)
+            f = _cal_fit(
+                pd.to_numeric(b.actual_total, errors="coerce").values,
+                pd.to_numeric(b.mkt_total, errors="coerce").values,
+                pd.to_numeric(b.model_total, errors="coerce").values)
             if not f:
                 continue
             out2.append({"Game spread": f"{lo}\u2013{hi} pts",
@@ -18212,6 +18297,34 @@ def _render_calibration():
             "A peak that appears in Train but not Holdout is noise. A peak "
             "in both, largest in the 0-7 point column, is the correction."
         )
+
+    _sc, _scut = _cal_scale_sweep(df)
+    if not _sc.empty:
+        st.markdown("**Is the model's scale wrong?**")
+        st.caption(
+            f"The offset table above tests ADDING points. This one tests "
+            f"MULTIPLYING them. If the hit rate peaks away from 1.00x in the "
+            f"HOLDOUT column, the ratings are compressing (k>1) or "
+            f"exaggerating (k<1) team strength. Chosen before {_scut}, "
+            f"scored {_scut} onward."
+        )
+        st.dataframe(_sc, hide_index=True, use_container_width=True)
+        st.caption(
+            "A shift cannot fix a scale error and a scale cannot fix a shift. "
+            "If MAE falls but the hit rate does not, the model is getting "
+            "closer to the result without getting closer to the line."
+        )
+
+    _tb = _cal_tier_bias(df)
+    if not _tb.empty:
+        st.markdown("**Where is the error coming from?**")
+        st.caption(
+            "Signed point error by tier, model vs market. Bias is the "
+            "direction of the miss; MAE is its size. A tier where the model "
+            "bias is a point or more away from the market's is a rating-scale "
+            "problem in that tier, not bad luck."
+        )
+        st.dataframe(_tb, hide_index=True, use_container_width=True)
 
     _dg = _cal_spread_diagnostic(df)
     if _dg:
