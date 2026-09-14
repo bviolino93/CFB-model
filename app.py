@@ -324,15 +324,19 @@ def cfbd_get(path, api_key, params=None):
     r.raise_for_status()
     return r.json()
 
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_games(api_key, year):
     return cfbd_get("/games", api_key, {"year": year, "seasonType": "regular"})
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_sp(api_key, year):
     return cfbd_get("/ratings/sp", api_key, {"year": year})
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_srs(api_key, year):
     return cfbd_get("/ratings/srs", api_key, {"year": year})
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_ppa(api_key, year):
     return cfbd_get(
         "/ppa/teams",
@@ -344,6 +348,7 @@ def fetch_ppa(api_key, year):
         },
     )
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_advanced(api_key, year):
     return cfbd_get(
         "/stats/season/advanced",
@@ -355,31 +360,40 @@ def fetch_advanced(api_key, year):
         },
     )
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_talent(api_key, year):
     return cfbd_get("/talent", api_key, {"year": year})
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_returning(api_key, year):
     return cfbd_get("/player/returning", api_key, {"year": year})
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_fbs_teams(api_key, year):
     return cfbd_get("/teams/fbs", api_key, {"year": year})
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_venues(api_key):
     return cfbd_get("/venues", api_key, {})
 
 # ===== v3.0 richer-data endpoints =====
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_core(api_key, year):
     return cfbd_get("/ratings/core", api_key, {"year": int(year)})
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_fpi(api_key, year):
     return cfbd_get("/ratings/fpi", api_key, {"year": int(year)})
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_recruiting_teams(api_key, year):
     return cfbd_get("/recruiting/teams", api_key, {"year": int(year)})
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_portal(api_key, year):
     return cfbd_get("/player/portal", api_key, {"year": int(year)})
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def fetch_advanced_through_week(api_key, year, end_week):
     if end_week is None or int(end_week) < 1:
         return []
@@ -1145,6 +1159,7 @@ def _adv_fields(row):
         "def_havoc": _num(def_havoc.get("total")),
     }
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_model_data(api_key, year):
     """
     Bulk-loads the model inputs. Every endpoint has a graceful fallback so
