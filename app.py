@@ -16798,7 +16798,10 @@ V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 
 # Stamp selection parameters into the version so tuning changes self-separate
 # in the tracker. Defined here because it depends on the constants above.
-MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-ev{V50_MIN_EV}"
+# The threshold is part of the version, as in Sunday Edge: change the bar and
+# the record it produces is no longer comparable with what came before. The
+# gate is now the gap, so the gap belongs in the string.
+MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}"
 
 
 V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
@@ -16876,24 +16879,40 @@ def _v50_apply_strict_selection(card):
     _cap = np.where(_is_total, V50_MAX_SPREAD_TOTAL, V50_MAX_SPREAD)
     c["excluded"] = (_game_spread > _cap).fillna(False)
 
-    # Raw model-vs-market gap: point_edge is measured after the shrink, so
-    # divide back out to get the disagreement the model actually had.
-    c["raw_gap"] = (pd.to_numeric(c.get("point_edge"), errors="coerce").abs()
-                    / max(V50_SHRINK, 1e-6))
+    # Gap is measured the way Sunday Edge measures it: straight off the two
+    # numbers on the card, |model - market|, before any blend. Deriving it
+    # from point_edge invited the scaling bug that made a stated 6.0 bar
+    # bite at 1.5 points. There is nothing to divide back out here.
+    c["raw_gap"] = (fair - mkt).abs()
+
+    # Sunday Edge gates on gap alone. The verdict-quality tier is gone: a
+    # market makes the card on the size of the disagreement, full stop.
+    #
+    # The FCS guard used to ride in on that verdict (apply_fcs_guard caps
+    # BET -> LEAN when team inputs are missing), so dropping the verdict
+    # test would have silently dropped the guard with it. It is now tested
+    # directly on its own flag, which is what it always should have been —
+    # a game with no real inputs for one team is not a disagreement, it is
+    # a guess. The NFL app needs no equivalent because it has no FCS.
+    _fcs = c.get("fcs_fallback_used")
+    _fcs = (pd.Series(False, index=c.index) if _fcs is None
+            else _fcs.fillna(False).astype(bool))
 
     qualifies = (
-        c["verdict"].isin(["BET", "BEST BET"])
+        (~_fcs)
         & (~c["excluded"])
         & (c["raw_gap"] >= V50_MIN_GAP_PTS)
     )
 
     official = c[qualifies].copy()
     if not official.empty:
-        # No cap. If a bet clears the threshold, it qualifies. Volume is
-        # controlled by the threshold itself, not by an arbitrary count —
-        # a cap would discard bets the criteria already approved.
+        # Ranked by disagreement, not EV. Both sides of a spread or total
+        # are playable at the same number, so the size of the model's
+        # disagreement is what separates them. No cap: some Saturdays the
+        # board is full of disagreements and some are not, and the card
+        # should say so.
         official = official.sort_values(
-            ["shrunk_ev", "cover_probability"], ascending=[False, False]
+            ["raw_gap", "shrunk_ev"], ascending=[False, False]
         )
         official["verdict"] = "BET"
         official.iloc[0, official.columns.get_loc("verdict")] = "BEST BET"
