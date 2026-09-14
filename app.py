@@ -16230,8 +16230,23 @@ def _v401_fetch_finals(date_strings):
             gid = str(g.get("id") or "")
             if not gid:
                 continue
-            start = str(g.get("startDate") or g.get("start_date") or "")[:10]
-            if dates and start and start not in dates:
+            # CFBD startDate is UTC. Slicing it raw tagged any kickoff after
+            # ~8pm ET with the NEXT day's date, while the tracker stores the
+            # ET date — so late games never matched and stayed pending
+            # forever. Convert the same way game_date_et() does, and keep the
+            # UTC date as a fallback so old rows written under the previous
+            # behaviour still grade.
+            _raw = str(g.get("startDate") or g.get("start_date") or "")
+            _cands = set()
+            if _raw:
+                _cands.add(_raw[:10])
+                try:
+                    _cands.add(pd.to_datetime(_raw, utc=True)
+                               .tz_convert("America/New_York")
+                               .strftime("%Y-%m-%d"))
+                except Exception:
+                    pass
+            if dates and _cands and not (_cands & dates):
                 continue
             if g.get("homePoints") is None or g.get("awayPoints") is None:
                 continue
