@@ -16734,10 +16734,21 @@ V50_MAX_SPREAD_TOTAL = 50.0
 # claim the record can actually settle.
 V50_MIN_EV = 0.03   # retained for the Games tab's pricing detail only
 
-# Minimum raw disagreement, in points, before the blend. Starting value —
-# tune it by how many plays a Saturday produces. CFB runs 40+ games, so this
-# sits higher than the NFL app's 4.0.
-V50_MIN_GAP_PTS = 6.0
+# Minimum raw disagreement, in points, before the blend. Set to 4.0 by
+# choice, matching the NFL app.
+#
+# MEASURED, NOT ASSUMED: the calibration run (More > Calibration) grades
+# 3,363 games and finds the model side winning 48.5%, with the closing-line
+# regression returning t = -1.52 — the model adds nothing to the market
+# number. The segment tables are worse at 6+ point gaps than at baseline in
+# every single tier and every week band, so a HIGHER threshold was not
+# filtering toward edge. Lowering it to 4.0 moves each pick closer to the
+# 48.5% baseline while roughly doubling the number of plays.
+#
+# Breakeven at -110 is 52.4%. Nothing in the backtest clears it at any
+# threshold. Treat output as paper picks until the tracker shows positive
+# CLV over a meaningful sample.
+V50_MIN_GAP_PTS = 4.0
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
