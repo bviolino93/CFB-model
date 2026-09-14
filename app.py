@@ -17800,9 +17800,19 @@ def _cal_run(years, scope="Major FBS"):
             data = _bt_prior_only_data(get_backtest_model_data(yr))
         except Exception as e:
             raise RuntimeError(f"{yr}: {e}")
+        # Raw CFBD line rows must go through normalize_game_lines() before
+        # _bt_consensus_line can read them — it looks for home_spread/total,
+        # which only exist after normalisation. Skipping that step made every
+        # game look like it had no line. Key coerced to int to match the
+        # backtest's own convention.
         by_game = {}
-        for ln in (lines or []):
-            by_game.setdefault(ln.get("id"), []).append(ln)
+        for lr in (lines or []):
+            gid = lr.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            by_game[key] = normalize_game_lines([lr], game_id=gid)
         for g in (games or []):
             if g.get("homePoints") is None or g.get("awayPoints") is None:
                 continue
@@ -17829,7 +17839,11 @@ def _cal_run(years, scope="Major FBS"):
 
 
 def _cal_lines_for(by_game, g):
-    return by_game.get(g.get("id")) or []
+    gid = g.get("id")
+    try:
+        return by_game.get(int(gid)) or by_game.get(gid) or []
+    except Exception:
+        return by_game.get(gid) or []
 
 
 def _cal_fit(y, market, model):
@@ -17864,8 +17878,13 @@ def _render_calibration():
             st.error(f"Calibration failed: {e}")
             return
     if df.empty:
-        st.error("No graded games with lines in that range.")
+        st.error(
+            "No graded games with lines in that range. If this persists, the "
+            "line feed and the schedule are not matching on game id."
+        )
         return
+    st.caption(f"Matched {len(df):,} graded games with both a line and a "
+               f"projection.")
 
     sp = _cal_fit(df.actual_margin.values, df.mkt_margin.values,
                   df.model_margin.values)
