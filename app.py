@@ -17879,6 +17879,47 @@ def _cal_fit(y, market, model):
             "resid_sd": float(np.std(r))}
 
 
+def _cal_hfa_sweep(df):
+    """
+    The model's mean margin sits ~0.5 pts below the market's while actual
+    tracks the market, and the losses concentrate entirely in 0-7 point
+    games — the band where half a point flips the side. That is the exact
+    signature of a home-field constant set too low.
+
+    Shift every model margin by a candidate offset and re-score. The offset
+    that maximises the hit rate is the HFA correction; add it to
+    DEFAULT_HFA. Split train/holdout so the answer is not fitted.
+    """
+    d = df.dropna(subset=["model_margin", "mkt_margin", "actual_margin"]).copy()
+    for c in ("model_margin", "mkt_margin", "actual_margin"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["actual_margin"] != d["mkt_margin"]]
+    if len(d) < 300:
+        return pd.DataFrame(), None
+    seasons = sorted(d["season"].unique())
+    cut = seasons[len(seasons) // 2]
+
+    rows = []
+    for off in (-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
+        rec = {"Offset": off}
+        for lab, part in (("Train", d[d.season < cut]),
+                          ("Holdout", d[d.season >= cut])):
+            gap = (part["model_margin"] + off) - part["mkt_margin"]
+            hit = np.where(gap > 0,
+                           part["actual_margin"] > part["mkt_margin"],
+                           part["actual_margin"] < part["mkt_margin"])
+            rec[lab] = f"{hit.mean():.1%}"
+            rec[f"{lab} n"] = len(part)
+        close = d[(d.season >= cut) & (d["mkt_margin"].abs() < 7)]
+        gap = (close["model_margin"] + off) - close["mkt_margin"]
+        hit = np.where(gap > 0,
+                       close["actual_margin"] > close["mkt_margin"],
+                       close["actual_margin"] < close["mkt_margin"])
+        rec["Holdout, 0-7 pt games"] = f"{hit.mean():.1%}" if len(close) else "-"
+        rows.append(rec)
+    return pd.DataFrame(rows), cut
+
+
 def _cal_spread_diagnostic(df):
     """
     Spreads lose at 46.7% over 835 holdout games. That is too consistent to
@@ -18076,6 +18117,21 @@ def _render_calibration():
             )
     except Exception as _e:
         st.caption(f"Spread-size split unavailable: {type(_e).__name__}.")
+
+    _hf, _hcut = _cal_hfa_sweep(df)
+    if not _hf.empty:
+        st.markdown("**Is home field set too low?**")
+        st.caption(
+            f"Every model margin shifted by the offset, then re-scored. "
+            f"DEFAULT_HFA is {DEFAULT_HFA:g} now; if the hit rate peaks at a "
+            f"positive offset in the HOLDOUT column, add that to it. Chosen "
+            f"before {_hcut}, scored {_hcut} onward."
+        )
+        st.dataframe(_hf, hide_index=True, use_container_width=True)
+        st.caption(
+            "A peak that appears in Train but not Holdout is noise. A peak "
+            "in both, largest in the 0-7 point column, is the correction."
+        )
 
     _dg = _cal_spread_diagnostic(df)
     if _dg:
