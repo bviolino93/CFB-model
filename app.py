@@ -16723,7 +16723,21 @@ V50_MAX_SPREAD_TOTAL = 50.0
 # Zero admitted anything better than a coin flip after vig, which put 24 bets
 # on a single Saturday against a target of about ten. At 0.03 the model has
 # to claim a raw cover probability near 66% before a bet counts.
-V50_MIN_EV = 0.03
+# EV is no longer the gate. Calibration measured the shrink at -0.065 for
+# spreads and -0.088 for totals against the 0.25 in use, which means every
+# positive EV this app has ever shown was an artifact of that constant. At
+# the measured value every bet prices at -4.55% and nothing qualifies.
+#
+# So the card now works the way Sunday Edge does: rank by how far the model
+# sits from the line, take everything past a threshold, show the price, and
+# let the tracker answer whether those picks land above 52.4%. That is a
+# claim the record can actually settle.
+V50_MIN_EV = 0.03   # retained for the Games tab's pricing detail only
+
+# Minimum raw disagreement, in points, before the blend. Starting value —
+# tune it by how many plays a Saturday produces. CFB runs 40+ games, so this
+# sits higher than the NFL app's 4.0.
+V50_MIN_GAP_PTS = 6.0
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
@@ -16821,10 +16835,15 @@ def _v50_apply_strict_selection(card):
     _cap = np.where(_is_total, V50_MAX_SPREAD_TOTAL, V50_MAX_SPREAD)
     c["excluded"] = (_game_spread > _cap).fillna(False)
 
+    # Raw model-vs-market gap: point_edge is measured after the shrink, so
+    # divide back out to get the disagreement the model actually had.
+    c["raw_gap"] = (pd.to_numeric(c.get("point_edge"), errors="coerce").abs()
+                    / max(V50_SHRINK, 1e-6))
+
     qualifies = (
         c["verdict"].isin(["BET", "BEST BET"])
         & (~c["excluded"])
-        & (c["shrunk_ev"] >= V50_MIN_EV)
+        & (c["raw_gap"] >= V50_MIN_GAP_PTS)
     )
 
     official = c[qualifies].copy()
@@ -17860,6 +17879,50 @@ def _cal_fit(y, market, model):
             "resid_sd": float(np.std(r))}
 
 
+def _cal_threshold_sweep(df):
+    """
+    What would betting at each disagreement threshold have returned?
+
+    Fit nothing here — the threshold IS the strategy. But choose it on the
+    early seasons and score it on the later ones, because picking the
+    threshold that looks best on the same games it is measured against will
+    always find one, and it will always be noise.
+    """
+    rows = []
+    seasons = sorted(df["season"].unique())
+    if len(seasons) < 2:
+        return pd.DataFrame(), None
+    cut = seasons[len(seasons) // 2]
+
+    for mkt, mcol, kcol, acol in (
+            ("Spread", "model_margin", "mkt_margin", "actual_margin"),
+            ("Total", "model_total", "mkt_total", "actual_total")):
+        d = df.dropna(subset=[mcol, kcol, acol]).copy()
+        if len(d) < 200:
+            continue
+        d["gap"] = (pd.to_numeric(d[mcol], errors="coerce")
+                    - pd.to_numeric(d[kcol], errors="coerce"))
+        # Bet the side the model favours; push on an exact landing.
+        d["hit"] = np.where(d["gap"] > 0, d[acol] > d[kcol], d[acol] < d[kcol])
+        d = d[d[acol] != d[kcol]]
+        for thr in (2, 3, 4, 4.5, 5, 6, 8, 10, 12):
+            for lab, part in (("train", d[d.season < cut]),
+                              ("holdout", d[d.season >= cut])):
+                sel = part[part["gap"].abs() >= thr]
+                if len(sel) < 40:
+                    continue
+                w = int(sel["hit"].sum())
+                n = len(sel)
+                rows.append({
+                    "Market": mkt, "Period": lab, "Threshold": thr,
+                    "Bets": n, "Record": f"{w}-{n - w}",
+                    "Hit": f"{w / n:.1%}",
+                    "ROI": f"{(w * (100 / 110) - (n - w)) / n:+.1%}",
+                    "_hit": w / n,
+                })
+    return pd.DataFrame(rows), cut
+
+
 def _render_calibration():
     st.markdown("### Calibration")
     st.write(
@@ -17928,7 +17991,8 @@ def _render_calibration():
 
     # Does the totals model actually degrade on lopsided games? The 28-point
     # cap on totals is an assumption, not a finding — this is the test.
-    if tt and "mkt_margin" in df.columns:
+    try:
+      if tt and "mkt_margin" in df.columns:
         st.markdown("**Do totals hold up on lopsided games?**")
         d2 = df.dropna(subset=["pred_total", "mkt_total", "actual_total"]).copy()
         d2["gap"] = d2["mkt_margin"].abs()
@@ -17954,6 +18018,34 @@ def _render_calibration():
                 f"you bets for no reason. If they collapse, it is earning "
                 f"its keep."
             )
+    except Exception as _e:
+        st.caption(f"Spread-size split unavailable: {type(_e).__name__}.")
+
+    st.markdown("**What disagreement threshold actually works?**")
+    _sw, _cut = _cal_threshold_sweep(df)
+    if _sw.empty:
+        st.info("Not enough games for a threshold sweep.")
+    else:
+        st.caption(
+            f"Chosen on seasons before {_cut}, scored on {_cut} onward. "
+            f"Breakeven at -110 is 52.4%. If the holdout column is flat "
+            f"across thresholds, the size of the disagreement does not "
+            f"matter and the number is only a volume control."
+        )
+        for _m in _sw["Market"].unique():
+            st.markdown(f"*{_m}*")
+            _p = _sw[_sw["Market"] == _m].pivot(
+                index="Threshold", columns="Period", values="Hit")
+            _n = _sw[_sw["Market"] == _m].pivot(
+                index="Threshold", columns="Period", values="Bets")
+            _out = pd.DataFrame({
+                "Threshold": _p.index,
+                "Train hit": _p.get("train"),
+                "Train bets": _n.get("train"),
+                "Holdout hit": _p.get("holdout"),
+                "Holdout bets": _n.get("holdout"),
+            }).reset_index(drop=True)
+            st.dataframe(_out, hide_index=True, use_container_width=True)
 
     st.markdown("**Are the cover probabilities honest?**")
     d = df.copy()
