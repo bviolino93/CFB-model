@@ -43,7 +43,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.6.1"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.6.2"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -2531,11 +2531,6 @@ def _residual_bundle_signature(train_seasons, scope):
     }
 
 
-def _residual_signature_json(train_seasons, scope):
-    return json.dumps(_residual_bundle_signature(train_seasons, scope),
-                      sort_keys=True)
-
-
 def _residual_fit_to_jsonable(fit):
     if not fit:
         return None
@@ -2578,37 +2573,71 @@ def residual_bundle_to_json(models, train_seasons, scope="Major FBS"):
     )
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _load_frozen_residual_models(signature_json):
-    """Read residual_models.json. Returns None if absent, unreadable or stale."""
+def _read_frozen_residual_file():
+    """Return (parsed_json, error_text). Never raises."""
     try:
-        raw = json.loads(RESIDUAL_COEF_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        text = RESIDUAL_COEF_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, "was not found"
+    except Exception as exc:
+        return None, f"could not be read ({exc})"
     try:
-        if raw.get("signature") != json.loads(signature_json):
-            return None
+        return json.loads(text), None
+    except Exception as exc:
+        return None, f"is not valid JSON ({exc})"
+
+
+def load_frozen_residual_models(train_seasons, scope="Major FBS", explain=False):
+    """
+    Load committed residual coefficients.
+
+    Deliberately not cached. The file is a couple of kilobytes, so reading it
+    costs nothing — and caching it once burned us by memoizing a "not found"
+    answer from before the file was committed, which then outlived the file's
+    arrival. With explain=True this returns (models, reason) so the UI can say
+    exactly why a file was rejected instead of guessing.
+    """
+    def _out(models, reason):
+        return (models, reason) if explain else models
+
+    raw, err = _read_frozen_residual_file()
+    if raw is None:
+        return _out(None, err)
+
+    want = _residual_bundle_signature(train_seasons, scope)
+    got = raw.get("signature")
+    if got != want:
+        if isinstance(got, dict):
+            changed = [k for k in want if got.get(k) != want[k]]
+            reason = ("was built with different settings: "
+                      + ", ".join(changed)) if changed else \
+                     "has an unexpected signature block"
+        else:
+            reason = "has no signature block"
+        return _out(None, reason)
+
+    try:
         spread = _residual_fit_from_jsonable(raw.get("spread"))
         total = _residual_fit_from_jsonable(raw.get("total"))
-    except Exception:
-        return None
+    except Exception as exc:
+        return _out(None, f"has unreadable coefficients ({exc})")
+
     if spread is None and total is None:
-        return None
-    return {
+        return _out(None, "contains no fitted models")
+
+    return _out({
         "spread": spread,
         "total": total,
-        "train_seasons": list((raw.get("signature") or {}).get("train_seasons") or []),
+        "train_seasons": list((got or {}).get("train_seasons") or []),
         "source": "frozen",
         "fit_utc": raw.get("fit_utc"),
-    }
+    }, None)
 
 
 def fit_residual_models_before_season(test_season, scope="Major FBS"):
     test_season = int(test_season)
     train_seasons = tuple(range(RESIDUAL_TRAIN_START, test_season))
-    frozen = _load_frozen_residual_models(
-        _residual_signature_json(train_seasons, scope)
-    )
+    frozen = load_frozen_residual_models(train_seasons, scope)
     if frozen is not None:
         return frozen
     return _fit_residual_models_cached(train_seasons, scope)
@@ -18708,8 +18737,8 @@ def _render_more_page():
         )
 
         _res_seasons = tuple(range(RESIDUAL_TRAIN_START, int(year)))
-        _res_frozen = _load_frozen_residual_models(
-            _residual_signature_json(_res_seasons, "Major FBS")
+        _res_frozen, _res_why = load_frozen_residual_models(
+            _res_seasons, "Major FBS", explain=True
         )
 
         if _res_frozen:
@@ -18717,16 +18746,15 @@ def _render_more_page():
             st.success(f"Frozen coefficients in use \u2014 trained on {_rs}.")
             if _res_frozen.get("fit_utc"):
                 st.caption(f"Fitted {_res_frozen['fit_utc']}.")
-        elif RESIDUAL_COEF_PATH.exists():
-            st.warning(
-                "residual_models.json is present but no longer matches the "
-                "current training window or feature list, so it is being "
-                "ignored and the model refits live. Export again to refresh it."
-            )
-        else:
+        elif _res_why == "was not found":
             st.info(
                 "No residual_models.json found, so every build after a restart "
                 "refits from scratch."
+            )
+        else:
+            st.warning(
+                f"residual_models.json {_res_why}, so it is being ignored and "
+                "the model refits live."
             )
 
         if st.button("Fit and export coefficients", use_container_width=True,
