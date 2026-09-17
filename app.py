@@ -2467,7 +2467,7 @@ def _residual_training_rows_for_season(season, scope="Major FBS"):
     return rows
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, persist="disk")
 def _fit_residual_models_cached(train_seasons_tuple, scope="Major FBS"):
     all_rows = []
     for season in train_seasons_tuple:
@@ -2498,9 +2498,119 @@ def _fit_residual_models_cached(train_seasons_tuple, scope="Major FBS"):
     return out
 
 
+# ===== frozen residual coefficients =====
+# The residual models train only on seasons that are already finished, so once
+# those seasons are final the fitted coefficients never change again. Refitting
+# them costs roughly seventy season-sized CFBD requests plus several thousand
+# historical game projections — and that bill was being paid on every cold
+# start, because Streamlit's cache lives in memory and any code push restarts
+# the app.
+#
+# If residual_models.json sits next to app.py, the coefficients are read from
+# it instantly and none of that work happens. The file is produced by the
+# export button on the More tab. The signature below records exactly what the
+# fit was trained on, so a file that no longer matches the current settings is
+# ignored and refit rather than silently used.
+
+try:
+    RESIDUAL_COEF_PATH = Path(__file__).resolve().parent / "residual_models.json"
+except Exception:
+    RESIDUAL_COEF_PATH = Path("residual_models.json")
+RESIDUAL_COEF_FORMAT = 1
+
+
+def _residual_bundle_signature(train_seasons, scope):
+    return {
+        "format": RESIDUAL_COEF_FORMAT,
+        "train_seasons": [int(s) for s in train_seasons],
+        "scope": str(scope),
+        "alpha": float(RESIDUAL_RIDGE_ALPHA),
+        "min_rows": int(RESIDUAL_MIN_ROWS),
+        "spread_features": list(RESIDUAL_SPREAD_FEATURES),
+        "total_features": list(RESIDUAL_TOTAL_FEATURES),
+    }
+
+
+def _residual_signature_json(train_seasons, scope):
+    return json.dumps(_residual_bundle_signature(train_seasons, scope),
+                      sort_keys=True)
+
+
+def _residual_fit_to_jsonable(fit):
+    if not fit:
+        return None
+    return {
+        "mu": [float(x) for x in np.asarray(fit["mu"], dtype=float).ravel()],
+        "sd": [float(x) for x in np.asarray(fit["sd"], dtype=float).ravel()],
+        "beta": [float(x) for x in np.asarray(fit["beta"], dtype=float).ravel()],
+        "intercept": float(fit["intercept"]),
+        "sigma": float(fit["sigma"]),
+        "n": int(fit["n"]),
+        "alpha": float(fit["alpha"]),
+    }
+
+
+def _residual_fit_from_jsonable(d):
+    if not d:
+        return None
+    return {
+        "mu": np.asarray(d["mu"], dtype=float),
+        "sd": np.asarray(d["sd"], dtype=float),
+        "beta": np.asarray(d["beta"], dtype=float),
+        "intercept": float(d["intercept"]),
+        "sigma": float(d["sigma"]),
+        "n": int(d["n"]),
+        "alpha": float(d["alpha"]),
+    }
+
+
+def residual_bundle_to_json(models, train_seasons, scope="Major FBS"):
+    """Serialize a fitted residual bundle so it can be committed to the repo."""
+    return json.dumps(
+        {
+            "signature": _residual_bundle_signature(train_seasons, scope),
+            "fit_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "spread": _residual_fit_to_jsonable((models or {}).get("spread")),
+            "total": _residual_fit_to_jsonable((models or {}).get("total")),
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_frozen_residual_models(signature_json):
+    """Read residual_models.json. Returns None if absent, unreadable or stale."""
+    try:
+        raw = json.loads(RESIDUAL_COEF_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    try:
+        if raw.get("signature") != json.loads(signature_json):
+            return None
+        spread = _residual_fit_from_jsonable(raw.get("spread"))
+        total = _residual_fit_from_jsonable(raw.get("total"))
+    except Exception:
+        return None
+    if spread is None and total is None:
+        return None
+    return {
+        "spread": spread,
+        "total": total,
+        "train_seasons": list((raw.get("signature") or {}).get("train_seasons") or []),
+        "source": "frozen",
+        "fit_utc": raw.get("fit_utc"),
+    }
+
+
 def fit_residual_models_before_season(test_season, scope="Major FBS"):
     test_season = int(test_season)
     train_seasons = tuple(range(RESIDUAL_TRAIN_START, test_season))
+    frozen = _load_frozen_residual_models(
+        _residual_signature_json(train_seasons, scope)
+    )
+    if frozen is not None:
+        return frozen
     return _fit_residual_models_cached(train_seasons, scope)
 
 
@@ -18587,6 +18697,63 @@ def _render_more_page():
                                "Rebuild the slate to refreeze on current logic.")
             except Exception as _e:
                 st.error(f"Could not clear: {_e}")
+
+    with st.expander("Residual coefficients \u2014 build speed", expanded=False):
+        st.caption(
+            "The residual models train only on finished seasons, so their "
+            "coefficients never change once those seasons are final. Refitting "
+            "them from raw CFBD data is what makes the first build after a "
+            "restart slow. Export them once, commit the file to the repo, and "
+            "every build afterwards loads them instantly."
+        )
+
+        _res_seasons = tuple(range(RESIDUAL_TRAIN_START, int(year)))
+        _res_frozen = _load_frozen_residual_models(
+            _residual_signature_json(_res_seasons, "Major FBS")
+        )
+
+        if _res_frozen:
+            _rs = ", ".join(str(s) for s in _res_frozen.get("train_seasons") or [])
+            st.success(f"Frozen coefficients in use \u2014 trained on {_rs}.")
+            if _res_frozen.get("fit_utc"):
+                st.caption(f"Fitted {_res_frozen['fit_utc']}.")
+        elif RESIDUAL_COEF_PATH.exists():
+            st.warning(
+                "residual_models.json is present but no longer matches the "
+                "current training window or feature list, so it is being "
+                "ignored and the model refits live. Export again to refresh it."
+            )
+        else:
+            st.info(
+                "No residual_models.json found, so every build after a restart "
+                "refits from scratch."
+            )
+
+        if st.button("Fit and export coefficients", use_container_width=True,
+                     key="se_residual_export"):
+            with st.spinner("Fitting on completed seasons \u2014 this is the "
+                            "slow part, and it only has to happen once\u2026"):
+                try:
+                    _res_models = _fit_residual_models_cached(
+                        _res_seasons, "Major FBS"
+                    )
+                    st.session_state["se_residual_json"] = residual_bundle_to_json(
+                        _res_models, _res_seasons, "Major FBS"
+                    )
+                except Exception as _res_err:
+                    st.error(f"Fit failed: {_res_err}")
+
+        if st.session_state.get("se_residual_json"):
+            ios_save_button(
+                "Save residual_models.json",
+                st.session_state["se_residual_json"],
+                "residual_models.json",
+            )
+            st.caption(
+                "Upload this to the top level of your GitHub repo, in the same "
+                "folder as app.py, keeping the name exactly "
+                "residual_models.json."
+            )
 
     with st.expander("Model details & limitations", expanded=False):
         st.write(
