@@ -16560,6 +16560,144 @@ def _v401_capture_closing_lines(df):
     return n, df
 
 
+def _se_equity_svg(units, w=320, h=96):
+    """Cumulative units over graded bets. Shows the path, not just the endpoint."""
+    pts = [float(v) for v in units if v is not None and math.isfinite(float(v))]
+    if len(pts) < 2:
+        return ""
+    cum, run = [], 0.0
+    for v in pts:
+        run += v
+        cum.append(run)
+    lo, hi = min(min(cum), 0.0), max(max(cum), 0.0)
+    if hi - lo < 1e-9:
+        hi, lo = hi + 1, lo - 1
+    pad = (hi - lo) * 0.14
+    lo, hi = lo - pad, hi + pad
+    ml, mr, mt, mb = 6, 6, 8, 8
+
+    def X(i):
+        return ml + (w - ml - mr) * (i / max(len(cum) - 1, 1))
+
+    def Y(v):
+        return mt + (h - mt - mb) * (1 - (v - lo) / (hi - lo))
+
+    zero = Y(0.0)
+    line = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(cum))
+    area = f"{X(0):.1f},{zero:.1f} " + line + f" {X(len(cum)-1):.1f},{zero:.1f}"
+    end = cum[-1]
+    col = "#4ae0aa" if end >= 0 else "#f2748a"
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Cumulative units over {len(cum)} graded bets">'
+        f'<defs><linearGradient id="seEq" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{col}" stop-opacity=".30"/>'
+        f'<stop offset="100%" stop-color="{col}" stop-opacity="0"/>'
+        f'</linearGradient></defs>'
+        f'<polygon points="{area}" fill="url(#seEq)"/>'
+        f'<line x1="{ml}" y1="{zero:.1f}" x2="{w-mr}" y2="{zero:.1f}" '
+        f'stroke="#7f97ae" stroke-opacity=".45" stroke-width="1" stroke-dasharray="3 3"/>'
+        f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="2" '
+        f'stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{X(len(cum)-1):.1f}" cy="{Y(end):.1f}" r="3.2" fill="{col}"/>'
+        f'</svg>'
+    )
+
+
+def _se_winrate_ci_svg(wins, losses, w=320, h=74, breakeven=0.5238):
+    """
+    Observed win rate with its 95% interval, against the -110 breakeven.
+    The width of the band is the honest headline on a small sample.
+    """
+    n = int(wins) + int(losses)
+    if n < 5:
+        return ""
+    p = wins / n
+    se = math.sqrt(breakeven * (1 - breakeven) / n)
+    lo_ci, hi_ci = max(p - 1.96 * se, 0.0), min(p + 1.96 * se, 1.0)
+    lo, hi = min(lo_ci, breakeven) - 0.05, max(hi_ci, breakeven) + 0.05
+    ml, mr, bar_y, bar_h = 8, 8, 30, 13
+
+    def X(v):
+        return ml + (w - ml - mr) * ((v - lo) / (hi - lo))
+
+    inside = lo_ci <= breakeven <= hi_ci
+    col = "#7fb4ff" if inside else ("#4ae0aa" if p > breakeven else "#f2748a")
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img" '
+        f'aria-label="Win rate {p:.1%} with 95% interval {lo_ci:.1%} to {hi_ci:.1%}">'
+        f'<rect x="{ml}" y="{bar_y}" width="{w-ml-mr}" height="{bar_h}" rx="6" '
+        f'fill="#7f97ae" fill-opacity=".10"/>'
+        f'<rect x="{X(lo_ci):.1f}" y="{bar_y}" width="{max(X(hi_ci)-X(lo_ci),2):.1f}" '
+        f'height="{bar_h}" rx="6" fill="{col}" fill-opacity=".30"/>'
+        f'<line x1="{X(breakeven):.1f}" y1="{bar_y-7}" x2="{X(breakeven):.1f}" '
+        f'y2="{bar_y+bar_h+7}" stroke="#f2c14e" stroke-width="1.6"/>'
+        f'<text x="{X(breakeven):.1f}" y="{bar_y-11}" fill="#f2c14e" font-size="8.5" '
+        f'font-weight="800" text-anchor="middle">BREAK EVEN {breakeven*100:.1f}%</text>'
+        f'<circle cx="{X(p):.1f}" cy="{bar_y+bar_h/2:.1f}" r="4.2" fill="{col}"/>'
+        f'<text x="{X(lo_ci):.1f}" y="{bar_y+bar_h+16}" fill="#7f97ae" font-size="8" '
+        f'font-weight="700" text-anchor="start">{lo_ci*100:.0f}%</text>'
+        f'<text x="{X(hi_ci):.1f}" y="{bar_y+bar_h+16}" fill="#7f97ae" font-size="8" '
+        f'font-weight="700" text-anchor="end">{hi_ci*100:.0f}%</text>'
+        f'<text x="{X(p):.1f}" y="{bar_y+bar_h+16}" fill="#dbe7f5" font-size="8.5" '
+        f'font-weight="800" text-anchor="middle">{p*100:.1f}%</text>'
+        f'</svg>'
+    )
+
+
+def _v401_bet_margin(bet_line, market_type, pick_side, home_score, away_score):
+    """
+    Points the bet won (+) or lost (-) against the number we froze.
+
+    Far more informative than W/L: it is a continuous outcome, so it carries
+    several times the statistical power of a binary win rate on the same
+    number of bets. A bet lost by half a point and one lost by thirty are
+    the same 'L' and very different evidence.
+    """
+    try:
+        hs, aws, bl = float(home_score), float(away_score), float(bet_line)
+    except Exception:
+        return None
+    if not all(math.isfinite(v) for v in (hs, aws, bl)):
+        return None
+    mt = str(market_type or "").upper()
+    sd = str(pick_side or "").upper()
+    if mt == "TOTAL":
+        m = (hs + aws) - bl if sd == "OVER" else bl - (hs + aws)
+    elif sd == "HOME":
+        m = (hs - aws) + bl
+    else:
+        m = (aws - hs) + bl
+    return round(float(m), 2)
+
+
+def _v401_backfill_result_margin(df):
+    """
+    result_margin is computed at grading, but rows graded before that code
+    existed never got one — on a 67-bet ledger every row was blank. Everything
+    needed is already stored, so recompute locally. No API call, no rewriting
+    of any graded result.
+    """
+    if df is None or df.empty or "result_margin" not in df.columns:
+        return 0, df
+    _rm = pd.to_numeric(df.get("result_margin"), errors="coerce")
+    _graded = df["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])
+    todo = _graded & _rm.isna()
+    if not todo.any():
+        return 0, df
+    n = 0
+    for idx, r in df.loc[todo].iterrows():
+        m = _v401_bet_margin(r.get("bet_line"), r.get("market_type"),
+                             r.get("pick_side"), r.get("final_home_score"),
+                             r.get("final_away_score"))
+        if m is not None:
+            df.loc[idx, "result_margin"] = m
+            n += 1
+    return n, df
+
+
 def _v401_grade_tracker():
     df = _v401_prep_for_grading(_v401_load_tracker())
     if df.empty:
@@ -16572,6 +16710,12 @@ def _v401_grade_tracker():
         captured, df = _v401_capture_closing_lines(df)
     except Exception:
         captured = 0
+
+    try:
+        _filled, df = _v401_backfill_result_margin(df)
+        captured += _filled
+    except Exception:
+        pass
 
     pending = ~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])
     if not pending.any():
@@ -16844,10 +16988,29 @@ def _v401_render_official_tracker():
         c3.metric("Beat / no move", f"{beat:.0%} / {zero:.0%}")
         c4.metric("Bets measured", f"{len(_clv):,}")
 
-        if len(_clv) < 100:
+        _n_clean = 0
+        try:
+            _c0 = df_official.get("closing_captured_at")
+            _c0 = _c0.fillna("").astype(str).str.strip() if _c0 is not None else pd.Series(dtype=str)
+            _k0 = pd.to_datetime(
+                df_official["game_date"].astype(str).str[:10] + " " +
+                df_official["kickoff_et"].astype(str).str.extract(
+                    r"(\d{1,2}:\d{2}\s*[APMapm]{2})", expand=False
+                ).fillna(""), errors="coerce")
+            _t0 = pd.to_datetime(_c0.str.replace(r"\s*\(.*\)$", "", regex=True),
+                                 errors="coerce", utc=True
+                                 ).dt.tz_convert("America/New_York").dt.tz_localize(None)
+            _lag0 = (_t0 - _k0).dt.total_seconds() / 3600.0
+            _n_clean = int((_lag0.notna() & (_lag0 <= 3.0) &
+                            pd.to_numeric(df_official.get("clv_points"), errors="coerce").notna()).sum())
+        except Exception:
+            _n_clean = 0
+
+        if _n_clean < 100:
             st.info(
-                f"{len(_clv)} bets is too few to read. Nothing here counts as evidence "
-                "until roughly 100–150 kickoff-captured bets are in, whatever the sign."
+                f"{_n_clean} of {len(_clv)} graded bets have a close captured within 3 hours "
+                "of kickoff. Nothing here counts as evidence until roughly 100–150 of those "
+                "are in, whatever the sign."
             )
         elif math.isfinite(_t) and _t >= 2.0 and _clv.mean() > 0:
             st.success(
@@ -16868,10 +17031,36 @@ def _v401_render_official_tracker():
         try:
             _capd = df_official.get("closing_captured_at")
             _capd = _capd.fillna("").astype(str).str.strip() if _capd is not None else pd.Series(dtype=str)
-            _is_kick = (~_capd.isin(["", "None", "nan", "NaT"])) & (~_capd.str.contains("at grading", na=False))
+            _stamped = (~_capd.isin(["", "None", "nan", "NaT"]))
+
+            # A timestamp alone does not make a close a close. This app only
+            # runs when it is open — Streamlit Cloud has no scheduler — so a
+            # noon kickoff first seen at 6pm gets captured six hours stale.
+            # Measure the lag against kickoff and bucket on THAT, so a late
+            # pull can never be counted as a clean closing-line reading.
+            _kt = pd.to_datetime(
+                df_official["game_date"].astype(str).str[:10] + " " +
+                df_official["kickoff_et"].astype(str).str.extract(
+                    r"(\d{1,2}:\d{2}\s*[APMapm]{2})", expand=False
+                ).fillna(""),
+                errors="coerce",
+            )
+            # kickoff_et is naive Eastern, so the capture stamp must be
+            # converted to Eastern before differencing — parsing to UTC and
+            # dropping the zone shifted every lag by four hours.
+            _ct = pd.to_datetime(
+                _capd.str.replace(r"\s*\(.*\)$", "", regex=True), errors="coerce", utc=True
+            ).dt.tz_convert("America/New_York").dt.tz_localize(None)
+            _lag_h = (_ct - _kt).dt.total_seconds() / 3600.0
+
+            _near = _stamped & _lag_h.notna() & (_lag_h <= 3.0)
+            _late = _stamped & ~_near
+            _legacy = ~_stamped
             _clv_all = pd.to_numeric(df_official.get("clv_points"), errors="coerce")
             _rows = []
-            for _lab, _m in (("Captured at kickoff", _is_kick), ("Captured at grading (legacy)", ~_is_kick)):
+            for _lab, _m in (("Near kickoff (≤3h)", _near),
+                             ("Late capture (>3h)", _late),
+                             ("Legacy (no timestamp)", _legacy)):
                 _c = _clv_all[_m].dropna()
                 if len(_c) == 0:
                     continue
@@ -16888,10 +17077,11 @@ def _v401_render_official_tracker():
                 })
             if _rows:
                 st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
-                if not _is_kick.any():
+                if not _near.any():
                     st.caption(
-                        "All closes so far were pulled at grading time, not at kickoff. "
-                        "Treat the CLV above as provisional until kickoff-captured bets accumulate."
+                        "No close yet captured within 3 hours of kickoff. This app only "
+                        "polls while it is open, so opening it around kickoff is what "
+                        "produces a usable CLV reading. Treat the figures above as provisional."
                     )
         except Exception:
             pass
@@ -20485,6 +20675,107 @@ def _render_home_page():
         st.caption(f"Closing line value {_clv.mean():+.2f} pts across {len(_clv)} graded bets.")
     else:
         st.caption(f"{_s['graded']} of {_s['bets']} bets graded so far.")
+
+    # --- what the record can and cannot tell you --------------------------
+    try:
+        _render_record_analysis(_t, _s, _clv)
+    except Exception:
+        pass
+
+
+def _render_record_analysis(_t, _s, _clv):
+    """
+    The season strip says what happened. This says how much of it is signal.
+    Everything here is computed from the ledger — no claim that the record
+    does not support.
+    """
+    _g = _t[_t["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])].copy()
+    if len(_g) < 5:
+        return
+    _sort = ["game_date"] + (["kickoff_et"] if "kickoff_et" in _g.columns else [])
+    _g = _g.sort_values(_sort)
+    _u = pd.to_numeric(_g.get("units_result"), errors="coerce").fillna(0.0)
+
+    st.markdown('<div class="se-sec">WHAT THE RECORD ACTUALLY SAYS</div>',
+                unsafe_allow_html=True)
+
+    _eq = _se_equity_svg(_u.tolist())
+    if _eq:
+        _run, _peak, _trough = 0.0, 0.0, 0.0
+        for v in _u:
+            _run += float(v)
+            _peak, _trough = max(_peak, _run), min(_trough, _run)
+        st.markdown(f'<div class="se-curve">{_eq}</div>', unsafe_allow_html=True)
+        st.caption(
+            f"Every graded bet in order, 1u flat. High-water {_peak:+.2f}u, "
+            f"low-water {_trough:+.2f}u. A flat-ish line after {len(_u)} bets is "
+            f"what no edge and no disaster looks like."
+        )
+
+    _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
+    if _ci:
+        st.markdown(f'<div class="se-curve">{_ci}</div>', unsafe_allow_html=True)
+        _n = _s["wins"] + _s["losses"]
+        _need = int(round(7.84 * 0.5238 * 0.4762 / (0.03 ** 2)))
+        _se_ = math.sqrt(0.5238 * 0.4762 / _n)
+        _p = _s["wins"] / _n
+        if _p - 1.96 * _se_ <= 0.5238 <= _p + 1.96 * _se_:
+            _verdict = (
+                f"The interval straddles breakeven, so this record is consistent "
+                f"with a strong model and with a worthless one alike."
+            )
+        elif _p > 0.5238:
+            _verdict = "The whole interval clears breakeven — rare this early, and worth trusting."
+        else:
+            _verdict = "The whole interval sits below breakeven, which is a genuine warning."
+        st.caption(
+            f"True win rate, 95% confidence, from {_n} decisions. {_verdict} "
+            f"Separating a 3-point edge from a coin flip needs roughly "
+            f"{_need:,} bets — several seasons at this volume. Closing line "
+            f"value gets there far sooner, which is why it leads the Tracker."
+        )
+
+    # Margin of victory: a continuous outcome, so it reads the same sample
+    # with several times the power of the binary win rate above.
+    _m = pd.to_numeric(_g.get("result_margin"), errors="coerce").dropna()
+    if len(_m) >= 10:
+        _sd = float(_m.std(ddof=1))
+        _tm = float(_m.mean()) / (_sd / math.sqrt(len(_m))) if _sd > 0 else float("nan")
+        _close_l = int(((_m < 0) & (_m >= -3)).sum())
+        _close_w = int(((_m > 0) & (_m <= 3)).sum())
+        _cls = "pos" if _m.mean() >= 0 else "neg"
+        st.markdown(
+            f'<div class="se-stat-strip">'
+            f'<div><b class="{_cls}">{_m.mean():+.1f}</b><span>Avg margin</span></div>'
+            f'<div><b>{_tm:+.2f}</b><span>t-stat</span></div>'
+            f'<div><b>{_close_w}</b><span>Won by ≤3</span></div>'
+            f'<div><b>{_close_l}</b><span>Lost by ≤3</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"How many points each bet won or lost against the frozen number, "
+            f"not just whether it landed. Being continuous, it reads the same "
+            f"{len(_m)} bets with several times the power of the win rate above: "
+            f"a t of {_tm:+.2f} against zero is the sharpest read this ledger "
+            f"currently supports. {_close_w + _close_l} of them turned on 3 points or fewer."
+        )
+
+    # Does the selector earn its keep? Official vs the watch list it rejects.
+    try:
+        _all = _v401_load_tracker()
+        _w = _all[_all["bet_tier"].astype(str).str.upper() == "WATCH"]
+        _wc = pd.to_numeric(_w.get("clv_points"), errors="coerce").dropna()
+        if len(_wc) >= 10 and len(_clv) >= 10:
+            st.markdown(
+                f"**Selector check.** Official bets: {_clv.mean():+.2f} pts of closing "
+                f"line value across {len(_clv)}. The watch-list plays the filter "
+                f"rejected: {_wc.mean():+.2f} across {len(_wc)}. A gap here is the "
+                f"selection rules earning their keep; no gap means they are decoration.",
+                unsafe_allow_html=False,
+            )
+    except Exception:
+        pass
 
 
 if main_view == "Home":
