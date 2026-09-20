@@ -6973,7 +6973,56 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-extra{display:flex;align-items:center;gap:10px;padding:9px 4px;
   border-bottom:1px solid rgba(120,154,188,.08)}
 .se-extra:last-child{border-bottom:none}
-.se-extra-rank{width:20px;font-size:.62rem;color:#7f97ae;font-weight:800;text-align:center}
+.se-extra-rank{width:20px;flex:0 0 20px;font-size:.62rem;color:#7f97ae;font-weight:800;text-align:center}
+/* One crest or a totals pair must occupy the same slot, or the pick text
+   starts at a different x on every other row. */
+.se-extra > .logo-pair,
+.se-extra > img,
+.se-extra > span:has(img){flex:0 0 52px;width:52px;display:flex;
+  align-items:center;justify-content:flex-start}
+.se-extra .logo-pair{gap:2px}
+/* Recap detail: one scannable line per pick, grouped by outcome. */
+.se-recap-head{
+  display:flex;align-items:center;gap:7px;margin:12px 0 5px;
+  font-size:.56rem;letter-spacing:.14em;font-weight:900;color:#7f97ae;
+}
+.se-recap-head span{
+  font-size:.56rem;font-weight:900;padding:1px 6px;border-radius:6px;
+  background:rgba(120,154,188,.12);color:#9db4cb;letter-spacing:0;
+}
+.se-recap-head.good{color:#4ae0aa}
+.se-recap-head.good span{background:rgba(74,224,170,.13);color:#4ae0aa}
+.se-recap-head.risk{color:#f2748a}
+.se-recap-head.risk span{background:rgba(242,116,138,.13);color:#f2748a}
+.se-recap-list{
+  border-radius:12px;overflow:hidden;
+  background:rgba(12,26,44,.45);border:1px solid rgba(120,154,188,.10);
+}
+.se-recap-row{
+  display:flex;align-items:center;gap:9px;padding:7px 11px;
+  border-bottom:1px solid rgba(120,154,188,.07);
+}
+.se-recap-row:last-child{border-bottom:none}
+.se-recap-row .logo-pair{gap:2px}
+.se-recap-row > .logo-pair,
+.se-recap-row > img,
+.se-recap-row > span:has(img){flex:0 0 42px;width:42px;display:flex;
+  align-items:center;justify-content:flex-start}
+.se-recap-row b{
+  flex:1;min-width:0;font-size:.74rem;font-weight:700;color:#dbe7f5;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.se-recap-row > span:not(:has(img)){
+  font-size:.64rem;font-weight:700;color:#7f97ae;white-space:nowrap;
+}
+.se-shopline{display:block;font-size:.6rem;color:#7fb4ff;font-weight:700;margin-top:2px}
+.se-why{padding:9px 11px;border-radius:11px;margin-bottom:6px;
+  background:rgba(12,26,44,.5);border:1px solid rgba(120,154,188,.11)}
+.se-why b{display:block;font-size:.76rem;color:#eef4fb;font-weight:800}
+.se-why small{display:block;font-size:.65rem;color:#8fa6bd;margin-top:3px;line-height:1.35}
+.se-why-rel{margin-left:7px;font-size:.52rem;font-weight:800;letter-spacing:.06em;
+  padding:1px 6px;border-radius:5px;background:rgba(47,107,255,.14);color:#7fb4ff}
+.se-why-rel.thin{background:rgba(242,193,78,.14);color:#f2c14e}
 .se-extra-main{flex:1;min-width:0}
 .se-extra-main b{display:block;font-size:.82rem;color:#eef4fb;font-weight:800}
 .se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
@@ -19886,6 +19935,21 @@ def _render_visitor_card(selected_date):
     )
 
     for _n, (_, r) in enumerate(_f.iterrows(), start=1):
+        # Best number across books, captured at freeze. Half a point is worth
+        # more than most model refinements, so it belongs on the card.
+        _shop = ""
+        try:
+            _bl = float(r.get("best_line"))
+            _bk = str(r.get("best_book") or "").strip()
+            _nb = float(r.get("n_books") or 0)
+            if math.isfinite(_bl) and _bk and _nb > 1:
+                # A total is 54.5, not +54.5. Only spreads carry a sign.
+                _num = (f"{_bl:g}" if str(r.get("market_type") or "").upper() == "TOTAL"
+                        else f"{_bl:+g}")
+                _shop = (f'<small class="se-shopline">Best number {_num}'
+                         f' at {html.escape(_bk)}</small>')
+        except Exception:
+            _shop = ""
         st.markdown(
             f'<div class="se-extra">'
             f'<span class="se-extra-rank">{_n}</span>'
@@ -19895,12 +19959,15 @@ def _render_visitor_card(selected_date):
             f'<small>{html.escape(str(r.get("away_team","")))} @ '
             f'{html.escape(str(r.get("home_team","")))} \u00b7 '
             f'{html.escape(_se_kick_label(r, str(selected_date)))}</small>'
+            f'{_shop}'
             f'</div>'
             f'{_se_frozen_status(r, _now, str(selected_date))}'
             f'</div>',
             unsafe_allow_html=True,
         )
 
+    _render_why_picks(_f)
+    _render_share_card(_f, selected_date)
     st.caption("Every pick here is 1 unit flat. The full record is on the Tracker tab.")
 
 
@@ -19971,25 +20038,39 @@ def _render_recap(before_date=None):
     )
 
     with st.expander(f"How each pick finished \u00b7 {_label}", expanded=False):
+        # One line per pick, grouped by outcome. The full-detail version ran
+        # two lines plus a score for all 28, which was several screens of
+        # scrolling to answer a question you should be able to scan.
         _g["_o"] = pd.to_numeric(_g.get("units_result"), errors="coerce").fillna(0.0)
-        for _, r in _g.sort_values("_o", ascending=False).iterrows():
-            _rr = str(r.get("result") or "").upper()
-            _cls = {"WIN": "good", "LOSS": "risk"}.get(_rr, "neutral")
-            try:
-                _sc = (f'{int(float(r.get("final_away_score")))}'
-                       f'\u2013{int(float(r.get("final_home_score")))}')
-            except Exception:
-                _sc = ""
+        _groups = [
+            ("WON", "good", _g[_g["result"].astype(str).str.upper() == "WIN"]),
+            ("LOST", "risk", _g[_g["result"].astype(str).str.upper() == "LOSS"]),
+            ("PUSHED", "neutral", _g[_g["result"].astype(str).str.upper() == "PUSH"]),
+        ]
+        for _gname, _cls, _gdf in _groups:
+            if _gdf.empty:
+                continue
             st.markdown(
-                f'<div class="se-extra">'
-                f'{_pick_logo_html(r, 22)}'
-                f'<div class="se-extra-main">'
-                f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                f'{html.escape(str(r.get("home_team","")))}'
-                f'{f" \u00b7 {_sc}" if _sc else ""}</small></div>'
-                f'<span class="cfb-track-status {_cls}">{_rr}</span>'
-                f'</div>',
+                f'<div class="se-recap-head {_cls}">{_gname} '
+                f'<span>{len(_gdf)}</span></div>',
+                unsafe_allow_html=True,
+            )
+            _rows = []
+            for _, r in _gdf.iterrows():
+                try:
+                    _sc = (f'{int(float(r.get("final_away_score")))}'
+                           f'\u2013{int(float(r.get("final_home_score")))}')
+                except Exception:
+                    _sc = ""
+                _rows.append(
+                    f'<div class="se-recap-row">'
+                    f'{_pick_logo_html(r, 18)}'
+                    f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                    f'<span>{html.escape(_sc)}</span>'
+                    f'</div>'
+                )
+            st.markdown(
+                f'<div class="se-recap-list">{"".join(_rows)}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -20091,6 +20172,143 @@ def _render_power_rankings(year, week):
         "production. They are what the model believes before any sportsbook "
         "line is looked at."
     )
+
+
+def _render_why_picks(df):
+    """
+    Why each pick exists, from what is already on the row.
+
+    The reasoning lived two tabs away in Games, and a friend reading
+    "Nebraska -27" had no path to it. Everything here comes from the frozen
+    record, so it is what the model actually thought at the time rather than
+    a fresh calculation that may no longer agree.
+    """
+    if df is None or df.empty:
+        return
+    rows = []
+    for _, r in df.iterrows():
+        _mt = str(r.get("market_type") or "").upper()
+        _side = str(r.get("pick_side") or "").upper()
+        try:
+            if _mt == "TOTAL":
+                _fair, _mkt = float(r.get("fair_total")), float(r.get("market_total"))
+            else:
+                _fair = float(r.get("fair_home_spread"))
+                _mkt = float(r.get("market_home_spread"))
+            if not (math.isfinite(_fair) and math.isfinite(_mkt)):
+                continue
+        except Exception:
+            continue
+        _gap = abs(_fair - _mkt)
+        if _gap < 0.05:
+            continue
+
+        # A disagreement this large is not an edge, it is a team the ratings
+        # do not cover — almost always an FCS opponent. Saying "18-point
+        # disagreement" would present the model's blind spot as its strongest
+        # argument, so these get an honest label instead of a number.
+        _thin = _gap > 10.0
+
+        if _mt == "TOTAL":
+            _dir = "more" if _fair > _mkt else "fewer"
+            _why = (f"Model projects {_fair:.1f} points, "
+                    f"{_gap:.1f} {_dir} than the market's {_mkt:g}.")
+        else:
+            # fair_home_spread is from the HOME side. A pick on the away team
+            # read as backwards when shown that way, so flip to the side
+            # actually being backed.
+            _f_pick = _fair if _side == "HOME" else -_fair
+            _m_pick = _mkt if _side == "HOME" else -_mkt
+            _why = (f"Model makes this side {_f_pick:+.1f} where the market "
+                    f"has {_m_pick:+g} \u2014 {_gap:.1f} points of value.")
+        if _thin:
+            _why = (
+                "Thin data on one of these teams, usually a non-FBS opponent. "
+                "The model's number here is far less reliable than usual."
+            )
+        rows.append((str(r.get("selection") or ""), _why,
+                     "" if _thin else str(r.get("reliability") or "").strip(),
+                     _thin))
+    if not rows:
+        return
+
+    with st.expander("Why these picks", expanded=False):
+        st.caption(
+            "The model builds its own number for every game before looking at "
+            "a sportsbook line. A pick happens when the two disagree enough."
+        )
+        for _sel, _why, _rel, _thin in rows:
+            _tag = ('<span class="se-why-rel thin">Low confidence</span>' if _thin
+                    else (f'<span class="se-why-rel">{html.escape(_rel.title())}</span>'
+                          if _rel and _rel.upper() != "NAN" else ""))
+            st.markdown(
+                f'<div class="se-why">'
+                f'<b>{html.escape(_sel)}{_tag}</b>'
+                f'<small>{html.escape(_why)}</small>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def _se_card_text(df, day):
+    """
+    The card as plain text, for a group chat.
+
+    The app cannot push notifications, so the card only reaches anyone if it
+    is easy to paste somewhere people already are. A PDF is not that.
+    """
+    try:
+        _label = pd.to_datetime(str(day)[:10]).strftime("%a %b %-d")
+    except Exception:
+        _label = str(day)[:10]
+
+    x = df.copy()
+    if "bet_tier" in x.columns:
+        x = x[x["bet_tier"].astype(str).str.upper() != "WATCH"]
+    if x.empty:
+        return f"SATURDAY EDGE \u2014 {_label}\nNo qualifying bets today."
+
+    try:
+        x["_k"] = [_se_kick_dt(r, str(day)) for _, r in x.iterrows()]
+        x = x.sort_values("_k", na_position="last")
+    except Exception:
+        pass
+
+    lines = [f"SATURDAY EDGE \u2014 {_label}", ""]
+    for r in x.to_dict("records"):
+        _t = _se_kick_label(r, str(day))
+        _sel = str(r.get("selection") or "")
+        _away, _home = str(r.get("away_team") or ""), str(r.get("home_team") or "")
+        _line = f"{_sel}"
+        if _away and _home:
+            _line += f"  ({_away} @ {_home})"
+        if _t:
+            _line += f"  {_t}"
+        lines.append(_line)
+
+        _res = str(r.get("result") or "").upper()
+        if _res in ("WIN", "LOSS", "PUSH"):
+            lines[-1] += f"  \u2014 {_res}"
+
+    _res_all = x["result"].astype(str).str.upper()
+    _done = int(_res_all.isin(["WIN", "LOSS", "PUSH"]).sum())
+    lines.append("")
+    if _done:
+        _w, _l = int((_res_all == "WIN").sum()), int((_res_all == "LOSS").sum())
+        _u = pd.to_numeric(x.get("units_result"), errors="coerce").fillna(0.0).sum()
+        lines.append(f"{_w}-{_l} on the day, {_u:+.2f}u")
+    else:
+        lines.append(f"{len(x)} plays, 1 unit each")
+    lines.append("Model picks, tracked in full. Not advice. 21+.")
+    return "\n".join(lines)
+
+
+def _render_share_card(df, day):
+    """A copyable text block. st.code gives a one-tap copy button for free."""
+    _txt = _se_card_text(df, day)
+    with st.expander("Share this card", expanded=False):
+        st.caption("Tap the copy icon, then paste into your group chat.")
+        st.code(_txt, language=None)
 
 
 def _se_window_banner(name, n_off, n_watch):
@@ -21083,11 +21301,36 @@ def _render_home_page():
     _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
         if "clv_points" in _t.columns else pd.Series(dtype=float)
     if len(_clv):
-        st.caption(
-            f"Picks beat the closing line by {_clv.mean():+.2f} points on average "
-            f"across {len(_clv)} graded bets — the earliest sign a model is finding "
-            f"real prices."
-        )
+        # Only closes captured near kickoff are a real measurement; the rest
+        # were pulled whenever the app next happened to run.
+        _clean = 0
+        try:
+            _cc = _t.get("closing_captured_at")
+            _cc = _cc.fillna("").astype(str).str.strip() if _cc is not None else pd.Series(dtype=str)
+            _kk = pd.to_datetime(
+                _t["game_date"].astype(str).str[:10] + " " +
+                _t["kickoff_et"].astype(str).str.extract(
+                    r"(\d{1,2}:\d{2}\s*[APMapm]{2})", expand=False).fillna(""),
+                errors="coerce")
+            _tt = pd.to_datetime(_cc.str.replace(r"\s*\(.*\)$", "", regex=True),
+                                 errors="coerce", utc=True
+                                 ).dt.tz_convert("America/New_York").dt.tz_localize(None)
+            _lag = (_tt - _kk).dt.total_seconds() / 3600.0
+            _clean = int((_lag.notna() & (_lag <= 3.0)).sum())
+        except Exception:
+            _clean = 0
+        if _clean >= 30:
+            st.caption(
+                f"Picks beat the closing line by {_clv.mean():+.2f} points on average "
+                f"across {_clean} bets measured at kickoff — the earliest sign a model "
+                f"is finding real prices."
+            )
+        else:
+            st.caption(
+                f"Picks sit {_clv.mean():+.2f} points against the closing line across "
+                f"{len(_clv)} graded bets. Closing prices are still being collected, "
+                f"so treat this as provisional."
+            )
     else:
         st.caption(f"{_s['graded']} of {_s['bets']} bets graded so far.")
 
@@ -21115,6 +21358,7 @@ def _render_record_analysis(_t, _s, _clv):
     _eq = _se_equity_svg(_u.tolist())
     if _eq:
         st.markdown(f'<div class="se-curve">{_eq}</div>', unsafe_allow_html=True)
+        st.caption("Every graded bet in order, 1 unit flat. Nothing reset, nothing hidden.")
 
     # A status chip, not a paragraph. The caveat was previously the largest
     # text on the page, which made the app look like it was apologising.
@@ -21133,7 +21377,6 @@ def _render_record_analysis(_t, _s, _clv):
             f'<b>{_label}</b><em>{_sub}</em></div>',
             unsafe_allow_html=True,
         )
-    st.caption("Every graded bet in order, 1 unit flat. Nothing reset, nothing hidden.")
 
     with st.expander("What this record tells us", expanded=False):
         _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
@@ -21339,8 +21582,9 @@ if run_mode == "Full Slate":
                     use_container_width=True,
                     key=f"se_pdf_{selected_date}",
                 )
-            except Exception as _pe:
-                st.caption(f"PDF export unavailable: {_pe}")
+            except Exception:
+                st.caption("PDF export is unavailable right now.")
+            _render_share_card(_froz, selected_date)
 
             for _wname in ("Early", "Midday", "Night", "Unscheduled"):
                 _wdf = _froz[_froz["_win"] == _wname]

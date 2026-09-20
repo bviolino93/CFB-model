@@ -1,0 +1,75 @@
+name: Keep Saturday Edge awake
+
+# Why this exists
+# ---------------
+# Closing lines are only captured while the app is running. Streamlit
+# Community Cloud has no scheduler and puts an app to sleep after ~12 hours
+# of inactivity, so unless somebody opens the page near kickoff the "closing"
+# line is whatever the market happened to show hours later. That is the
+# difference between CLV being a measurement and CLV being noise.
+#
+# This pings the app on the hour through the college football day, which is
+# enough to wake it, run the capture pass, and let it go back to sleep.
+#
+# Setup
+# -----
+# 1. In your repo: Settings -> Secrets and variables -> Actions -> New
+#    repository secret. Name it APP_URL, value is your full Streamlit URL
+#    (e.g. https://saturday-edge.streamlit.app).
+# 2. Save this file as .github/workflows/saturday-edge-ping.yml
+# 3. Actions tab -> "Keep Saturday Edge awake" -> Run workflow, to confirm
+#    it works before relying on it.
+#
+# Times are UTC. Eastern is UTC-4 during the season (EDT).
+
+on:
+  schedule:
+    # Saturday 11:00 -> 23:00 ET  == Sat 15:00 UTC -> Sun 03:00 UTC.
+    # Covers from before the noon kickoffs to after the late West Coast games.
+    - cron: '0 15-23 * * 6'
+    - cron: '0 0-3 * * 0'
+    # Thursday and Friday night games.
+    - cron: '0 22-23 * * 4,5'
+    - cron: '0 0-3 * * 5,6'
+  workflow_dispatch:
+
+# Never run two pings at once.
+concurrency:
+  group: saturday-edge-ping
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the URL secret is set
+        run: |
+          if [ -z "${{ secrets.APP_URL }}" ]; then
+            echo "APP_URL secret is not set. Add it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Wake the app and capture closing lines
+        run: |
+          URL="${{ secrets.APP_URL }}"
+          echo "Pinging $URL"
+          # A sleeping Streamlit app returns quickly but needs a moment to
+          # actually boot, so ping, wait, then ping again and check the
+          # second response. Retries cover a cold start taking longer.
+          for attempt in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+                        --max-time 60 -L "$URL" || echo "000")
+            echo "attempt $attempt -> HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              # Give the script a moment to run its capture pass, then hold
+              # the app awake briefly so the pass completes.
+              sleep 45
+              curl -s -o /dev/null --max-time 60 -L "$URL" || true
+              echo "App is awake."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Could not reach the app after 5 attempts."
+          exit 1
