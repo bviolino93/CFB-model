@@ -1060,24 +1060,45 @@ def _blend(cur, prev, current_weight):
         return cur
     return current_weight * cur + (1.0 - current_weight) * prev
 
+# How much of the CURRENT season to believe, by week.
+#
+# The old ladder topped out at 0.90 and never reached 1.0, so a prior-season
+# tail was still in the ratings in December. That is hard to justify once a
+# team has ten games on the board: SP+ (the anchor) is already current-season
+# only, and by then this season IS the evidence.
+#
+# The early weeks still blend, and deliberately. One game against an FCS
+# opponent gives a team a meaningless SRS, so weeks 1-3 lean on last year to
+# avoid treating noise as signal. The ladder now reaches 1.0 at week 6 and
+# stays there.
+SEASON_WEIGHT_LADDER = {1: 0.30, 2: 0.55, 3: 0.75, 4: 0.90, 5: 0.97}
+
+
 def _current_weight_for_week(week):
     try:
         w = int(week)
     except Exception:
         w = 1
+    if w < 1:
+        w = 1
+    return SEASON_WEIGHT_LADDER.get(w, 1.0)
+
+
+def _preseason_weight_for_week(week):
+    """
+    How much to still believe the preseason-only inputs (recruiting talent,
+    returning production). Full in week 1, linearly to zero by week 8, on the
+    view that ten games of actual football outrank a recruiting ranking.
+    """
+    try:
+        w = int(week)
+    except Exception:
+        w = 1
     if w <= 1:
-        return 0.15
-    if w == 2:
-        return 0.35
-    if w == 3:
-        return 0.50
-    if w == 4:
-        return 0.65
-    if w == 5:
-        return 0.75
-    if w == 6:
-        return 0.85
-    return 0.90
+        return 1.0
+    if w >= 8:
+        return 0.0
+    return round(1.0 - (w - 1) / 7.0, 4)
 
 def _sp_fields(row):
     if not row:
@@ -1308,6 +1329,7 @@ def _team_snapshot(team, data, week):
         "returning_usage": returning_usage,
         "returning_z": returning_z,
         "current_data_weight": cw,
+        "week": week,
         "completeness": completeness,
         "is_fbs": is_fbs,
         "fcs_fallback": fcs_fallback,
@@ -1320,8 +1342,14 @@ def _team_base_power(team, data, week):
     srs_z = _z(t["srs"], data["stats"]["srs_mu"], data["stats"]["srs_sd"])
     # Convert standardized secondary ratings into modest point adjustments.
     srs_adj = 1.50 * srs_z
-    talent_adj = 0.65 * t["talent_z"]
-    return_adj = 0.65 * t["returning_z"]
+    # Talent and returning production are PRESEASON figures — recruiting
+    # rankings and last year's usage. They never update, so at full weight
+    # they were as loud in December as in August, still arguing about a roster
+    # that has since played ten games. Fade them out as real evidence
+    # accumulates: full weight in week 1, gone by week 8.
+    _prior_w = _preseason_weight_for_week(t.get("week", 1))
+    talent_adj = 0.65 * t["talent_z"] * _prior_w
+    return_adj = 0.65 * t["returning_z"] * _prior_w
 
     # SP+ remains the anchor. Secondary metrics can move a team only a few points.
     power = sp_rating + srs_adj + talent_adj + return_adj
@@ -17487,7 +17515,10 @@ V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 # The threshold is part of the version, as in Sunday Edge: change the bar and
 # the record it produces is no longer comparable with what came before. The
 # gate is now the gap, so the gap belongs in the string.
-MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}"
+# Bumped: the season-weight ladder now reaches 1.0 and the preseason-only
+# inputs decay to zero by week 8. Those change the model's number, so bets
+# frozen before and after are not the same experiment and must not be pooled.
+MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}-cur1.0"
 
 
 V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
@@ -20077,6 +20108,9 @@ def _render_recap(before_date=None):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _se_power_table(year, week):
+    """Returns (table, fetched_at). The timestamp is the point of the tuple:
+    without it there is no way to tell a rating that predates yesterday's
+    games from a fresh one."""
     """
     Every FBS team's composite power rating — the same number the picks are
     built from, which is the point: it lets anyone see what the model
@@ -20100,11 +20134,22 @@ def _se_power_table(year, week):
             "_conf": (data.get("teams") or {}).get(t, {}).get("conference")
             if isinstance((data.get("teams") or {}).get(t), dict) else None,
         })
+    _at = pd.Timestamp.now(tz="America/New_York")
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), _at
     out = pd.DataFrame(rows).sort_values("_power", ascending=False).reset_index(drop=True)
     out.insert(0, "Rank", range(1, len(out) + 1))
-    return out
+    # Does CFBD have a current-season SP+ for most teams yet? Early in the
+    # year it does not, and the ratings are mostly last season wearing a
+    # this-season label.
+    _has_cur = 0
+    try:
+        _cur = (get_model_data(int(year)) or {}).get("sp_current") or {}
+        _has_cur = sum(1 for t in out["Team"] if t in _cur)
+    except Exception:
+        _has_cur = 0
+    out.attrs["current_sp_teams"] = _has_cur
+    return out, _at
 
 
 def _render_power_rankings(year, week):
@@ -20117,12 +20162,30 @@ def _render_power_rankings(year, week):
         unsafe_allow_html=True,
     )
     try:
-        tbl = _se_power_table(int(year), int(week))
+        tbl, _fetched = _se_power_table(int(year), int(week))
     except Exception:
-        tbl = pd.DataFrame()
+        tbl, _fetched = pd.DataFrame(), None
     if tbl.empty:
         st.info("Ratings are unavailable right now. Please try again shortly.")
         return
+    # SP+, the anchor and much the largest term, uses this season's number as
+    # soon as the provider has one — prior season is only a fallback. The
+    # week blend applies to the strength-of-schedule adjustment, and talent
+    # and returning production are preseason figures that never update.
+    _cw = _current_weight_for_week(int(week))
+    if _fetched is not None:
+        st.caption(f"Pulled {_fetched:%a %-I:%M %p ET} · week {int(week)}")
+    st.caption(
+        "SP+ does the heavy lifting here and switches to this season's number "
+        "as soon as there is one. The strength-of-schedule piece still carries "
+        f"{(1-_cw)*100:.0f}% of last season at week {int(week)}, and the talent "
+        "and returning-production pieces are preseason figures that do not move "
+        "during the year."
+    )
+    st.caption(
+        "SP+ is recalculated weekly, usually Sunday or Monday, so games from "
+        "the last day or two are typically not in these numbers yet."
+    )
 
     _q = st.text_input("Search a team", key="se_rank_q", placeholder="Any FBS team")
     view = tbl
@@ -20172,6 +20235,11 @@ def _render_power_rankings(year, week):
         "production. They are what the model believes before any sportsbook "
         "line is looked at."
     )
+    if _se_is_owner() and st.button("Force refresh ratings", use_container_width=True,
+                                    key="se_rank_refresh"):
+        _se_power_table.clear()
+        get_model_data.clear()
+        st.rerun()
 
 
 def _render_why_picks(df):
