@@ -7331,6 +7331,184 @@ def get_model_data(year):
     return load_model_data(API_KEY, year)
 
 
+# --- moved up: the Games tab must be able to show rankings even on a date
+# with no scheduled games, and that check runs long before these were
+# previously defined. Ratings do not depend on today's schedule.
+
+def _se_is_owner():
+    """
+    Only the owner writes to the tracker. Without this, anyone opening the
+    shared link and building a slate would add bets to the owner's record,
+    destroying the measurement it exists for.
+
+    Set owner_code in Streamlit Secrets to enable. If unset, the app behaves
+    as before (single-user).
+    """
+    try:
+        code = st.secrets.get("owner_code")
+    except Exception:
+        code = None
+    if not code:
+        return True                       # not configured: single-user mode
+    return st.session_state.get("se_owner_ok") is True
+
+
+def _se_week_guess(games):
+    """
+    Current CFB week, taken from the games on screen. Ratings blend current
+    and prior season by week, so this has to be roughly right; it falls back
+    to a date-based estimate when no game carries a week number.
+    """
+    try:
+        wks = [int(g.get("week")) for g in (games or []) if g.get("week") is not None]
+        if wks:
+            return max(1, min(int(round(sum(wks) / len(wks))), 20))
+    except Exception:
+        pass
+    try:
+        _n = pd.Timestamp.now(tz="America/New_York")
+        _start = pd.Timestamp(year=_n.year, month=8, day=25, tz="America/New_York")
+        return max(1, min(int((_n - _start).days // 7) + 1, 20))
+    except Exception:
+        return 1
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _se_power_table(year, week):
+    """Returns (table, fetched_at). The timestamp is the point of the tuple:
+    without it there is no way to tell a rating that predates yesterday's
+    games from a fresh one."""
+    """
+    Every FBS team's composite power rating — the same number the picks are
+    built from, which is the point: it lets anyone see what the model
+    actually thinks before a line is involved.
+    """
+    data = get_model_data(int(year))
+    teams = sorted((data.get("teams") or {}).keys())
+    rows = []
+    for t in teams:
+        try:
+            power, snap = _team_base_power(t, data, int(week))
+        except Exception:
+            continue
+        if not math.isfinite(float(power or 0)):
+            continue
+        rows.append({
+            "Team": t,
+            "_power": float(power),
+            "Offense": snap.get("offense"),
+            "Defense": snap.get("defense"),
+            "_conf": (data.get("teams") or {}).get(t, {}).get("conference")
+            if isinstance((data.get("teams") or {}).get(t), dict) else None,
+        })
+    _at = pd.Timestamp.now(tz="America/New_York")
+    if not rows:
+        return pd.DataFrame(), _at
+    out = pd.DataFrame(rows).sort_values("_power", ascending=False).reset_index(drop=True)
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    # Does CFBD have a current-season SP+ for most teams yet? Early in the
+    # year it does not, and the ratings are mostly last season wearing a
+    # this-season label.
+    _has_cur = 0
+    try:
+        _cur = (get_model_data(int(year)) or {}).get("sp_current") or {}
+        _has_cur = sum(1 for t in out["Team"] if t in _cur)
+    except Exception:
+        _has_cur = 0
+    out.attrs["current_sp_teams"] = _has_cur
+    return out, _at
+
+
+def _render_power_rankings(year, week):
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL RATINGS</div>'
+        '<div class="mobile-page-title">Rankings</div>'
+        '<div class="mobile-page-sub">Every FBS team on one scale, built from the same '
+        'ratings behind the picks. A gap of one point is one point of spread on a '
+        'neutral field.</div></div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        tbl, _fetched = _se_power_table(int(year), int(week))
+    except Exception:
+        tbl, _fetched = pd.DataFrame(), None
+    if tbl.empty:
+        st.info("Ratings are unavailable right now. Please try again shortly.")
+        return
+    # SP+, the anchor and much the largest term, uses this season's number as
+    # soon as the provider has one — prior season is only a fallback. The
+    # week blend applies to the strength-of-schedule adjustment, and talent
+    # and returning production are preseason figures that never update.
+    _cw = _current_weight_for_week(int(week))
+    if _fetched is not None:
+        st.caption(f"Pulled {_fetched:%a %-I:%M %p ET} · week {int(week)}")
+    st.caption(
+        "SP+ does the heavy lifting here and switches to this season's number "
+        "as soon as there is one. The strength-of-schedule piece still carries "
+        f"{(1-_cw)*100:.0f}% of last season at week {int(week)}, and the talent "
+        "and returning-production pieces are preseason figures that do not move "
+        "during the year."
+    )
+    st.caption(
+        "SP+ is recalculated weekly, usually Sunday or Monday, so games from "
+        "the last day or two are typically not in these numbers yet."
+    )
+
+    _q = st.text_input("Search a team", key="se_rank_q", placeholder="Any FBS team")
+    view = tbl
+    if _q and _q.strip():
+        view = tbl[tbl["Team"].str.contains(_q.strip(), case=False, na=False)]
+        if view.empty:
+            st.caption(f"No team matches “{_q.strip()}”.")
+            return
+    else:
+        view = tbl.head(25)
+
+    _top = float(tbl["_power"].max())
+    for _, r in view.iterrows():
+        _cls = "pos" if float(r["_power"]) >= 0 else "neg"
+        # Three distinct facts per row, not the same number twice: the
+        # rating, the split behind it, and the gap to the best team.
+        _od = []
+        for _lab, _k in (("Off", "Offense"), ("Def", "Defense")):
+            try:
+                _v = float(r.get(_k))
+                if math.isfinite(_v):
+                    _od.append(f"{_lab} {_v:.1f}")
+            except Exception:
+                pass
+        _behind = float(r["_power"]) - _top
+        _sub = " \u00b7 ".join(_od) if _od else ""
+        _sub = (f"{_sub} \u00b7 " if _sub else "") + (
+            "best in the country" if _behind >= -0.05 else f"{_behind:.1f} off the top"
+        )
+        st.markdown(
+            f'<div class="se-extra">'
+            f'<span class="se-extra-rank">{int(r["Rank"])}</span>'
+            f'<div class="se-extra-main">'
+            f'<b>{html.escape(str(r["Team"]))}</b>'
+            f'<small>{html.escape(_sub)}</small></div>'
+            f'<span class="se-extra-ev {_cls}">{float(r["_power"]):+.1f}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    if not (_q and _q.strip()):
+        st.caption(
+            f"Top 25 of {len(tbl)} FBS teams. Search above for any other team."
+        )
+    st.caption(
+        "Ratings blend SP+ with strength of schedule, talent and returning "
+        "production. They are what the model believes before any sportsbook "
+        "line is looked at."
+    )
+    if _se_is_owner() and st.button("Force refresh ratings", use_container_width=True,
+                                    key="se_rank_refresh"):
+        _se_power_table.clear()
+        get_model_data.clear()
+        st.rerun()
+
+
 @st.cache_data(ttl=300)
 def get_market_lines(game_id, year):
     return fetch_lines(API_KEY, year=year, game_id=game_id)
@@ -15365,7 +15543,19 @@ else:
     daily = daily_all
 
 if not daily and _v38_main_view in ("Slate", "Game"):
+    # Rankings do not depend on today's schedule, so a date with no games
+    # must not hide them. This early stop was swallowing the whole Games tab,
+    # toggle included.
+    if _v38_main_view == "Game" and st.session_state.get("se_games_view") == "Rankings":
+        _render_power_rankings(year, _se_week_guess(daily_all))
+        st.stop()
     st.warning("No games found for that date with the selected game-level filter.")
+    if _v38_main_view == "Game":
+        st.caption("Team ratings do not depend on the schedule \u2014 open them below.")
+        if st.button("View team rankings", use_container_width=True,
+                     key="se_rank_from_empty"):
+            st.session_state["se_games_view"] = "Rankings"
+            st.rerun()
     st.stop()
 
 
@@ -16268,16 +16458,42 @@ def _v401_save_tracker(df):
     if ws is not None:
         try:
             body = [list(x.columns)] + x.astype(object).where(pd.notna(x), "").values.tolist()
-            ws.clear()
+            # DO NOT clear() then update(). If clear succeeded and update then
+            # failed — a rate limit, a network blip, an oversized payload —
+            # the exception was swallowed below and the entire season's ledger
+            # was left an empty sheet, silently, with the local CSV fallback
+            # returning True as though the save had worked.
+            #
+            # Overwrite in place instead, then trim any surplus rows. There is
+            # no moment at which the sheet is empty.
+            try:
+                _old_rows = len(ws.get_all_values())
+            except Exception:
+                _old_rows = 0
             ws.update(body, value_input_option="RAW")
+            _new_rows = len(body)
+            if _old_rows > _new_rows:
+                try:
+                    ws.delete_rows(_new_rows + 1, _old_rows)
+                except Exception:
+                    # Trailing stale rows are recoverable and visible; an
+                    # empty sheet is not. Leave them rather than risk more.
+                    pass
             # Bump the revision so the next read misses the cache. Without
             # this a freeze would not appear for up to 90 seconds.
             st.session_state["se_tracker_rev"] = (
                 st.session_state.get("se_tracker_rev", 0) + 1
             )
             return True
-        except Exception:
-            pass
+        except Exception as _save_err:
+            # A failed Sheets write used to fall through to the local CSV and
+            # report success. On Streamlit Cloud that file is wiped on every
+            # restart, so the user was told their bets were saved when they
+            # were about to be lost. Surface it instead.
+            try:
+                st.session_state["se_last_save_error"] = str(_save_err)[:300]
+            except Exception:
+                pass
     try:
         V36_TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = V36_TRACKER_PATH.with_suffix(".tmp")
@@ -16328,22 +16544,6 @@ def _v401_kickoff_has_started(kickoff_et, selected_date=None):
     except Exception:
         return False
 
-def _se_is_owner():
-    """
-    Only the owner writes to the tracker. Without this, anyone opening the
-    shared link and building a slate would add bets to the owner's record,
-    destroying the measurement it exists for.
-
-    Set owner_code in Streamlit Secrets to enable. If unset, the app behaves
-    as before (single-user).
-    """
-    try:
-        code = st.secrets.get("owner_code")
-    except Exception:
-        code = None
-    if not code:
-        return True                       # not configured: single-user mode
-    return st.session_state.get("se_owner_ok") is True
 
 
 def _v401_track_both(official_card, watch_card, selected_date):
@@ -17034,6 +17234,13 @@ def _v401_render_official_tracker():
 
     if graded_now:
         st.success(f"Auto-graded {graded_now} completed official bet(s).")
+
+    if _se_is_owner() and st.session_state.get("se_last_save_error"):
+        st.error(
+            "The last write to Google Sheets failed, so recent changes may only "
+            "exist in temporary storage and will be lost on restart. "
+            f"Details: {st.session_state['se_last_save_error']}"
+        )
 
     _ws, _ws_err = _v401_sheet(return_error=True)
     if _ws is None:
@@ -20002,24 +20209,6 @@ def _render_visitor_card(selected_date):
     st.caption("Every pick here is 1 unit flat. The full record is on the Tracker tab.")
 
 
-def _se_week_guess(games):
-    """
-    Current CFB week, taken from the games on screen. Ratings blend current
-    and prior season by week, so this has to be roughly right; it falls back
-    to a date-based estimate when no game carries a week number.
-    """
-    try:
-        wks = [int(g.get("week")) for g in (games or []) if g.get("week") is not None]
-        if wks:
-            return max(1, min(int(round(sum(wks) / len(wks))), 20))
-    except Exception:
-        pass
-    try:
-        _n = pd.Timestamp.now(tz="America/New_York")
-        _start = pd.Timestamp(year=_n.year, month=8, day=25, tz="America/New_York")
-        return max(1, min(int((_n - _start).days // 7) + 1, 20))
-    except Exception:
-        return 1
 
 
 def _render_recap(before_date=None):
@@ -20106,140 +20295,8 @@ def _render_recap(before_date=None):
             )
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _se_power_table(year, week):
-    """Returns (table, fetched_at). The timestamp is the point of the tuple:
-    without it there is no way to tell a rating that predates yesterday's
-    games from a fresh one."""
-    """
-    Every FBS team's composite power rating — the same number the picks are
-    built from, which is the point: it lets anyone see what the model
-    actually thinks before a line is involved.
-    """
-    data = get_model_data(int(year))
-    teams = sorted((data.get("teams") or {}).keys())
-    rows = []
-    for t in teams:
-        try:
-            power, snap = _team_base_power(t, data, int(week))
-        except Exception:
-            continue
-        if not math.isfinite(float(power or 0)):
-            continue
-        rows.append({
-            "Team": t,
-            "_power": float(power),
-            "Offense": snap.get("offense"),
-            "Defense": snap.get("defense"),
-            "_conf": (data.get("teams") or {}).get(t, {}).get("conference")
-            if isinstance((data.get("teams") or {}).get(t), dict) else None,
-        })
-    _at = pd.Timestamp.now(tz="America/New_York")
-    if not rows:
-        return pd.DataFrame(), _at
-    out = pd.DataFrame(rows).sort_values("_power", ascending=False).reset_index(drop=True)
-    out.insert(0, "Rank", range(1, len(out) + 1))
-    # Does CFBD have a current-season SP+ for most teams yet? Early in the
-    # year it does not, and the ratings are mostly last season wearing a
-    # this-season label.
-    _has_cur = 0
-    try:
-        _cur = (get_model_data(int(year)) or {}).get("sp_current") or {}
-        _has_cur = sum(1 for t in out["Team"] if t in _cur)
-    except Exception:
-        _has_cur = 0
-    out.attrs["current_sp_teams"] = _has_cur
-    return out, _at
 
 
-def _render_power_rankings(year, week):
-    st.markdown(
-        '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL RATINGS</div>'
-        '<div class="mobile-page-title">Rankings</div>'
-        '<div class="mobile-page-sub">Every FBS team on one scale, built from the same '
-        'ratings behind the picks. A gap of one point is one point of spread on a '
-        'neutral field.</div></div>',
-        unsafe_allow_html=True,
-    )
-    try:
-        tbl, _fetched = _se_power_table(int(year), int(week))
-    except Exception:
-        tbl, _fetched = pd.DataFrame(), None
-    if tbl.empty:
-        st.info("Ratings are unavailable right now. Please try again shortly.")
-        return
-    # SP+, the anchor and much the largest term, uses this season's number as
-    # soon as the provider has one — prior season is only a fallback. The
-    # week blend applies to the strength-of-schedule adjustment, and talent
-    # and returning production are preseason figures that never update.
-    _cw = _current_weight_for_week(int(week))
-    if _fetched is not None:
-        st.caption(f"Pulled {_fetched:%a %-I:%M %p ET} · week {int(week)}")
-    st.caption(
-        "SP+ does the heavy lifting here and switches to this season's number "
-        "as soon as there is one. The strength-of-schedule piece still carries "
-        f"{(1-_cw)*100:.0f}% of last season at week {int(week)}, and the talent "
-        "and returning-production pieces are preseason figures that do not move "
-        "during the year."
-    )
-    st.caption(
-        "SP+ is recalculated weekly, usually Sunday or Monday, so games from "
-        "the last day or two are typically not in these numbers yet."
-    )
-
-    _q = st.text_input("Search a team", key="se_rank_q", placeholder="Any FBS team")
-    view = tbl
-    if _q and _q.strip():
-        view = tbl[tbl["Team"].str.contains(_q.strip(), case=False, na=False)]
-        if view.empty:
-            st.caption(f"No team matches “{_q.strip()}”.")
-            return
-    else:
-        view = tbl.head(25)
-
-    _top = float(tbl["_power"].max())
-    for _, r in view.iterrows():
-        _cls = "pos" if float(r["_power"]) >= 0 else "neg"
-        # Three distinct facts per row, not the same number twice: the
-        # rating, the split behind it, and the gap to the best team.
-        _od = []
-        for _lab, _k in (("Off", "Offense"), ("Def", "Defense")):
-            try:
-                _v = float(r.get(_k))
-                if math.isfinite(_v):
-                    _od.append(f"{_lab} {_v:.1f}")
-            except Exception:
-                pass
-        _behind = float(r["_power"]) - _top
-        _sub = " \u00b7 ".join(_od) if _od else ""
-        _sub = (f"{_sub} \u00b7 " if _sub else "") + (
-            "best in the country" if _behind >= -0.05 else f"{_behind:.1f} off the top"
-        )
-        st.markdown(
-            f'<div class="se-extra">'
-            f'<span class="se-extra-rank">{int(r["Rank"])}</span>'
-            f'<div class="se-extra-main">'
-            f'<b>{html.escape(str(r["Team"]))}</b>'
-            f'<small>{html.escape(_sub)}</small></div>'
-            f'<span class="se-extra-ev {_cls}">{float(r["_power"]):+.1f}</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    if not (_q and _q.strip()):
-        st.caption(
-            f"Top 25 of {len(tbl)} FBS teams. Search above for any other team."
-        )
-    st.caption(
-        "Ratings blend SP+ with strength of schedule, talent and returning "
-        "production. They are what the model believes before any sportsbook "
-        "line is looked at."
-    )
-    if _se_is_owner() and st.button("Force refresh ratings", use_container_width=True,
-                                    key="se_rank_refresh"):
-        _se_power_table.clear()
-        get_model_data.clear()
-        st.rerun()
 
 
 def _render_why_picks(df):
