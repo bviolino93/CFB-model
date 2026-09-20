@@ -15993,7 +15993,7 @@ def _v401_prep_for_grading(df):
               "bet_line", "expected_value", "cover_probability"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ("result", "status", "graded_at"):
+    for c in ("result", "status", "graded_at", "closing_captured_at"):
         if c in df.columns:
             df[c] = df[c].astype(object)
     return df
@@ -16174,11 +16174,19 @@ def _v401_kickoff_has_started(kickoff_et, selected_date=None):
     if kickoff_et is None or str(kickoff_et).strip() == "":
         return False
     try:
-        k = pd.to_datetime(kickoff_et, errors="coerce")
+        _ks = str(kickoff_et).strip()
+        # A time-only string ("12:00 PM") parses to TODAY at that time, which
+        # silently ignored the game's actual date: last Saturday's noon game
+        # read as "not started" on Sunday morning. When the string carries no
+        # date, anchor it to selected_date first.
+        _has_date = bool(re.search(r"\d{4}-\d{2}-\d{2}", _ks))
+        k = pd.NaT
+        if not _has_date and selected_date is not None and str(selected_date).strip():
+            k = pd.to_datetime(f"{str(selected_date)[:10]} {_ks}", errors="coerce")
         if pd.isna(k):
-            # Time-only string fallback.
-            if selected_date is not None:
-                k = pd.to_datetime(f"{selected_date} {kickoff_et}", errors="coerce")
+            k = pd.to_datetime(_ks, errors="coerce")
+        if pd.isna(k) and selected_date is not None:
+            k = pd.to_datetime(f"{selected_date} {_ks}", errors="coerce")
         if pd.isna(k):
             return False
         if getattr(k, "tzinfo", None) is None:
@@ -16272,6 +16280,28 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             except Exception:
                 return None
 
+        # Line shopping at freeze. The card carries every provider's number
+        # in provider_rows_json but the freeze path never read it, so
+        # n_books / best_line / worst_line were blank on every row. Without
+        # them a CLV of 0.00 cannot be told apart from "one stale book".
+        _shop_n, _shop_best, _shop_book, _shop_worst = None, None, None, None
+        try:
+            _prov_rows = json.loads(r.get("provider_rows_json") or "[]")
+            _b, _k, _n, _w = best_available_line(
+                _prov_rows, market_type, r.get("pick_side")
+            )
+            if _b is not None:
+                _shop_best, _shop_book, _shop_n, _shop_worst = float(_b), _k, int(_n), (
+                    float(_w) if _w is not None else None
+                )
+        except Exception:
+            pass
+        if _shop_n is None:
+            _shop_n = fnum("n_books")
+            _shop_best = fnum("best_line")
+            _shop_book = r.get("best_book")
+            _shop_worst = fnum("worst_line")
+
         if market_type == "TOTAL":
             bet_line = fnum("bet_line")
         else:
@@ -16327,13 +16357,13 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "shrink_param": V50_SHRINK,
             "min_ev_param": V50_MIN_EV,
             "result_margin": None,
-            "n_books": fnum("n_books"),
-            "best_line": fnum("best_line"),
-            "best_book": r.get("best_book"),
-            "worst_line": fnum("worst_line"),
+            "n_books": _shop_n,
+            "best_line": _shop_best,
+            "best_book": _shop_book,
+            "worst_line": _shop_worst,
             "line_spread_books": (
-                (fnum("best_line") - fnum("worst_line"))
-                if fnum("best_line") is not None and fnum("worst_line") is not None
+                round(abs(_shop_best - _shop_worst), 2)
+                if _shop_best is not None and _shop_worst is not None
                 else None
             ),
             "week": r.get("week"),
@@ -16476,17 +16506,83 @@ def _v401_closing_line_for(row):
     return float(np.median(vals))
 
 
+def _v401_capture_closing_lines(df):
+    """
+    Snapshot the closing line at kickoff, separately from grading.
+
+    Grading used to fetch the "closing" line whenever the app next happened
+    to run after the final — sometimes hours later, sometimes the next
+    morning — and never recorded when. That left the CLV column with no way
+    to tell a real close from a stale pull, and in week 1 more than half of
+    all bets showed exactly zero movement.
+
+    This pass runs on every tracker load. For any frozen bet whose kickoff
+    has passed and which has no closing_captured_at yet, it fetches the
+    consensus line ONCE and stamps the capture time. Rows are never
+    re-captured, so the first app load after kickoff is what gets recorded.
+    Rows graded under the old path keep their closing_line but their
+    closing_captured_at stays blank, which is how the Tracker tells the two
+    populations apart.
+
+    Returns (rows_captured, df).
+    """
+    if df is None or df.empty:
+        return 0, df
+    if "closing_captured_at" not in df.columns:
+        df["closing_captured_at"] = None
+
+    _cap = df["closing_captured_at"].fillna("").astype(str).str.strip()
+    _uncaptured = _cap.isin(["", "None", "nan", "NaT"])
+    _cl = pd.to_numeric(df.get("closing_line"), errors="coerce")
+    # Only rows with no closing line at all. Legacy rows already carry a
+    # grading-time close; overwriting it would rewrite history.
+    todo = _uncaptured & _cl.isna()
+    if not todo.any():
+        return 0, df
+
+    n = 0
+    now = pd.Timestamp.now(tz="America/New_York").isoformat()
+    for idx, r in df.loc[todo].iterrows():
+        if not _v401_kickoff_has_started(r.get("kickoff_et"), r.get("game_date")):
+            continue
+        try:
+            _close = _v401_closing_line_for(r)
+        except Exception:
+            _close = None
+        if _close is None:
+            continue
+        df.loc[idx, "closing_line"] = _close
+        df.loc[idx, "clv_points"] = _clv_points(
+            r.get("bet_line"), _close, r.get("market_type"), r.get("pick_side"),
+        )
+        df.loc[idx, "closing_captured_at"] = now
+        n += 1
+    return n, df
+
+
 def _v401_grade_tracker():
     df = _v401_prep_for_grading(_v401_load_tracker())
     if df.empty:
         return 0, df
 
+    # Closing lines are captured at kickoff, before and independently of
+    # grading. Do this first so a bet whose final arrives on the same load
+    # still gets its close stamped with the capture time.
+    try:
+        captured, df = _v401_capture_closing_lines(df)
+    except Exception:
+        captured = 0
+
     pending = ~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])
     if not pending.any():
+        if captured:
+            _v401_save_tracker(df)
         return 0, df
 
     finals = _v401_fetch_finals(df.loc[pending, "game_date"].tolist())
     if not finals:
+        if captured:
+            _v401_save_tracker(df)
         return 0, df
 
     n = 0
@@ -16542,20 +16638,32 @@ def _v401_grade_tracker():
         except Exception:
             pass
 
-        # Closing line value: how the number moved after we froze it.
+        # Closing line value. Normally already captured at kickoff by
+        # _v401_capture_closing_lines. Fall back to a grading-time pull only
+        # when that never happened (unknown kickoff, app not opened), and
+        # stamp the time so the late capture is visible in the data rather
+        # than indistinguishable from a real close.
         try:
-            _cl = _v401_closing_line_for(r)
-            if _cl is not None:
-                df.loc[idx, "closing_line"] = _cl
-                df.loc[idx, "clv_points"] = _clv_points(
-                    r.get("bet_line"), _cl,
-                    r.get("market_type"), r.get("pick_side"),
-                )
+            _have_close = pd.notna(pd.to_numeric(
+                pd.Series([df.loc[idx, "closing_line"]]), errors="coerce"
+            ).iloc[0])
         except Exception:
-            pass
+            _have_close = False
+        if not _have_close:
+            try:
+                _cl = _v401_closing_line_for(r)
+                if _cl is not None:
+                    df.loc[idx, "closing_line"] = _cl
+                    df.loc[idx, "clv_points"] = _clv_points(
+                        r.get("bet_line"), _cl,
+                        r.get("market_type"), r.get("pick_side"),
+                    )
+                    df.loc[idx, "closing_captured_at"] = f"{now} (at grading)"
+            except Exception:
+                pass
         n += 1
 
-    if n:
+    if n or captured:
         _v401_save_tracker(df)
     return n, df
 
@@ -16721,20 +16829,93 @@ def _v401_render_official_tracker():
     if len(_clv) == 0:
         st.info("No graded bets yet. CLV appears once games finish.")
     else:
+        # A mean on its own says nothing. Report the dispersion and a
+        # one-sample t-stat, the share of bets that showed NO movement
+        # (which can mean a stale pull as easily as a quiet market), and
+        # split by how the close was captured.
         beat = float((_clv > 0).mean())
-        c1, c2, c3 = st.columns(3)
+        zero = float((_clv == 0).mean())
+        _sd = float(_clv.std(ddof=1)) if len(_clv) > 1 else float("nan")
+        _t = (float(_clv.mean()) / (_sd / math.sqrt(len(_clv)))
+              if len(_clv) > 1 and _sd > 0 else float("nan"))
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Average CLV", f"{_clv.mean():+.2f} pts")
-        c2.metric("Beat the close", f"{beat:.0%}")
-        c3.metric("Bets measured", f"{len(_clv):,}")
-        if _clv.mean() > 0.25 and beat > 0.55:
-            st.success("Consistently beating the close. That is real evidence of edge.")
+        c2.metric("t-stat", f"{_t:.2f}" if math.isfinite(_t) else "—")
+        c3.metric("Beat / no move", f"{beat:.0%} / {zero:.0%}")
+        c4.metric("Bets measured", f"{len(_clv):,}")
+
+        if len(_clv) < 100:
+            st.info(
+                f"{len(_clv)} bets is too few to read. Nothing here counts as evidence "
+                "until roughly 100–150 kickoff-captured bets are in, whatever the sign."
+            )
+        elif math.isfinite(_t) and _t >= 2.0 and _clv.mean() > 0:
+            st.success(
+                "Beating the close by a statistically meaningful margin. That is the "
+                "earliest real evidence of edge — keep the selection rules exactly as they are."
+            )
         elif _clv.mean() > 0:
-            st.info("Slightly positive. Promising but not yet meaningful — keep collecting.")
+            st.info("Positive but within noise. Keep collecting; do not retune on this.")
         else:
             st.warning(
                 "You are getting worse numbers than the close. Over time that alone "
                 "will make the bets unprofitable, regardless of the model."
             )
+
+        # Capture-method split. Rows without closing_captured_at were closed
+        # at grading time under the old code; rows with it were captured at
+        # kickoff. Only the second group is a true closing-line measurement.
+        try:
+            _capd = df_official.get("closing_captured_at")
+            _capd = _capd.fillna("").astype(str).str.strip() if _capd is not None else pd.Series(dtype=str)
+            _is_kick = (~_capd.isin(["", "None", "nan", "NaT"])) & (~_capd.str.contains("at grading", na=False))
+            _clv_all = pd.to_numeric(df_official.get("clv_points"), errors="coerce")
+            _rows = []
+            for _lab, _m in (("Captured at kickoff", _is_kick), ("Captured at grading (legacy)", ~_is_kick)):
+                _c = _clv_all[_m].dropna()
+                if len(_c) == 0:
+                    continue
+                _s = float(_c.std(ddof=1)) if len(_c) > 1 else float("nan")
+                _tt = (float(_c.mean()) / (_s / math.sqrt(len(_c)))
+                       if len(_c) > 1 and _s > 0 else float("nan"))
+                _rows.append({
+                    "Capture": _lab, "Bets": int(len(_c)),
+                    "Avg CLV": f"{_c.mean():+.2f}",
+                    "SD": f"{_s:.2f}" if math.isfinite(_s) else "—",
+                    "t": f"{_tt:.2f}" if math.isfinite(_tt) else "—",
+                    "Beat": f"{float((_c > 0).mean()):.0%}",
+                    "No move": f"{float((_c == 0).mean()):.0%}",
+                })
+            if _rows:
+                st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                if not _is_kick.any():
+                    st.caption(
+                        "All closes so far were pulled at grading time, not at kickoff. "
+                        "Treat the CLV above as provisional until kickoff-captured bets accumulate."
+                    )
+        except Exception:
+            pass
+
+        # By week, so a single strong weekend cannot carry the season number.
+        try:
+            _wk = df_official.copy()
+            _wk["clv_points"] = pd.to_numeric(_wk.get("clv_points"), errors="coerce")
+            _wk = _wk.dropna(subset=["clv_points"])
+            _wk["Saturday"] = (
+                pd.to_datetime(_wk["game_date"], errors="coerce").dt.to_period("W-SUN")
+                .apply(lambda p: (p.end_time - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+            )
+            _g = _wk.groupby("Saturday")["clv_points"]
+            _wt = pd.DataFrame({
+                "Bets": _g.size(),
+                "Avg CLV": _g.mean().map(lambda v: f"{v:+.2f}"),
+                "No move": _g.apply(lambda s: f"{float((s == 0).mean()):.0%}"),
+            }).reset_index()
+            if len(_wt) > 1:
+                with st.expander("CLV by week"):
+                    st.dataframe(_wt, use_container_width=True, hide_index=True)
+        except Exception:
+            pass
 
     st.markdown("### How the model is doing")
     if s["graded"] == 0:
