@@ -6395,7 +6395,7 @@ div[class*="st-key-ge432_topnav"]{
   margin:2px 0 8px!important;
 }
 div[class*="st-key-ge432_topnav"] [role="radiogroup"]{
-  display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
   gap:3px!important;padding:3px!important;border-radius:13px!important;
   background:#0b1d30!important;border:1px solid rgba(104,148,187,.11)!important;
 }
@@ -6458,7 +6458,7 @@ div[class*="st-key-v420_slate_segment"]{
   margin-top:4px!important;
 }
 div[class*="st-key-v420_slate_segment"] [role="radiogroup"]{
-  display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
   gap:3px!important;padding:3px!important;border-radius:13px!important;
   background:#0c2035!important;border:1px solid rgba(104,148,187,.13)!important;
 }
@@ -6507,7 +6507,7 @@ div[class*="st-key-ge432_topnav"]{
 }
 div[class*="st-key-ge432_topnav"] [role="radiogroup"]{
   display:grid!important;
-  grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  grid-template-columns:repeat(5,minmax(0,1fr))!important;
   width:100%!important;
   gap:4px!important;
   padding:4px!important;
@@ -6559,7 +6559,7 @@ div[class*="st-key-ge432_topnav"] svg{
 }
 @media(max-width:520px){
   div[class*="st-key-ge432_topnav"] [role="radiogroup"]{
-    grid-template-columns:repeat(4,minmax(0,1fr))!important;
+    grid-template-columns:repeat(5,minmax(0,1fr))!important;
   }
   div[class*="st-key-ge432_topnav"] label{
     min-height:37px!important;
@@ -6778,17 +6778,19 @@ div[class*="st-key-v420_slate_segment"] label > div:first-child{
   display:none!important;
 }
 div[class*="st-key-ge432_topnav"] [data-testid="stRadio"] > div{
-  display:flex!important;flex-wrap:nowrap!important;
-  justify-content:space-between!important;gap:2px!important;width:100%!important;
+  display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
+  gap:2px!important;width:100%!important;
 }
 div[class*="st-key-ge432_topnav"] label{
-  padding:8px 4px!important;flex:1 1 0!important;min-width:0!important;
+  padding:9px 2px!important;min-width:0!important;border-radius:11px!important;
+  margin:0!important;transition:background .15s ease,color .15s ease;
   justify-content:center!important;text-align:center!important;
 }
 div[class*="st-key-ge432_topnav"] label p{
-  font-size:.68rem!important;letter-spacing:-.01em!important;
+  /* Five tabs, not four. Sized so "Tracker" — the longest label — still fits
+     on a 360px screen without the last pill sliding under the edge. */
+  font-size:.62rem!important;letter-spacing:-.01em!important;
 }
-div[class*="st-key-ge432_topnav"] label,
 div[class*="st-key-v420_slate_segment"] label{
   padding:9px 13px!important;border-radius:11px!important;
   margin:0!important;white-space:nowrap!important;
@@ -6901,6 +6903,28 @@ div[class*="st-key-v420_run_slate"] button{
   background:rgba(12,26,44,.5);border:1px solid rgba(120,154,188,.12);
 }
 .se-curve svg{display:block;width:100%;height:auto}
+.se-verdict{
+  display:flex;align-items:baseline;gap:8px;margin:2px 0 10px;
+  padding:10px 13px;border-radius:12px;
+  background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13);
+}
+.se-verdict b{font-size:.80rem;font-weight:800;color:#dbe7f5;letter-spacing:-.01em}
+.se-verdict em{font-style:normal;font-size:.62rem;font-weight:700;color:#7f97ae;margin-left:auto}
+.se-verdict-dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px;align-self:center}
+.se-verdict.pos .se-verdict-dot{background:#4ae0aa;box-shadow:0 0 8px rgba(74,224,170,.55)}
+.se-verdict.neg .se-verdict-dot{background:#f2748a;box-shadow:0 0 8px rgba(242,116,138,.45)}
+.se-verdict.wait .se-verdict-dot{background:#f2c14e;box-shadow:0 0 8px rgba(242,193,78,.45)}
+/* Streamlit's own alert styling gets flattened by the dark theme, so the
+   owner warning read like a tooltip. Give it real amber weight. */
+div[data-testid="stAlertContainer"]{
+  background:rgba(242,193,78,.09)!important;
+  border:1px solid rgba(242,193,78,.34)!important;
+  border-radius:13px!important;
+}
+div[data-testid="stAlertContainer"] p{color:#f6dfa4!important;font-size:.72rem!important}
+div[data-testid="stAlertContainer"] code{
+  background:rgba(242,193,78,.16)!important;color:#f8e9bf!important;
+}
 .se-hero-bet{
   border-radius:17px;padding:15px 15px 8px;margin-bottom:4px;
   background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
@@ -16091,16 +16115,33 @@ def _v401_sheet(return_error=False, tab="tracker"):
         err = f"Unexpected error connecting to Sheets: {e}"
         return (None, err) if return_error else None
 
-def _v401_load_tracker():
+@st.cache_data(ttl=90, show_spinner=False)
+def _v401_tracker_rows(_bust=0):
+    """
+    The Sheets round trip on its own, cached.
+
+    Home called _v401_load_tracker five times per render — the slate
+    reminder, twice in the page body, once inside the record analysis and
+    once inside grading — and every one was a separate get_all_records()
+    over the network. That was seconds of latency on every single tap, all
+    of it fetching the same rows. Cached for 90 seconds and cleared on
+    write, so a render costs one request at most.
+    """
     ws = _v401_sheet()
-    if ws is not None:
-        try:
-            rows = ws.get_all_records()
-            if rows:
-                return _v401_clean_tracker(pd.DataFrame(rows))
-            return _v401_empty_tracker()
-        except Exception:
-            pass
+    if ws is None:
+        return None
+    try:
+        return ws.get_all_records()
+    except Exception:
+        return None
+
+
+def _v401_load_tracker():
+    rows = _v401_tracker_rows(st.session_state.get("se_tracker_rev", 0))
+    if rows is not None:
+        if rows:
+            return _v401_clean_tracker(pd.DataFrame(rows))
+        return _v401_empty_tracker()
     # Fallback: local file (ephemeral on Streamlit Cloud).
     try:
         if V36_TRACKER_PATH.exists():
@@ -16152,6 +16193,11 @@ def _v401_save_tracker(df):
             body = [list(x.columns)] + x.astype(object).where(pd.notna(x), "").values.tolist()
             ws.clear()
             ws.update(body, value_input_option="RAW")
+            # Bump the revision so the next read misses the cache. Without
+            # this a freeze would not appear for up to 90 seconds.
+            st.session_state["se_tracker_rev"] = (
+                st.session_state.get("se_tracker_rev", 0) + 1
+            )
             return True
         except Exception:
             pass
@@ -16494,9 +16540,15 @@ def _v401_closing_line_for(row):
     except Exception:
         return None
     try:
-        raw = fetch_lines(API_KEY, game_id=gid)
+        # get_market_lines is cached (ttl 300). Calling fetch_lines directly
+        # meant one uncached request per row, in a loop — on a Saturday
+        # night that was 20-30 sequential round trips on a page load.
+        raw = get_market_lines(gid, int(str(row.get("game_date") or "")[:4] or 0) or None)
     except Exception:
-        return None
+        try:
+            raw = fetch_lines(API_KEY, game_id=gid)
+        except Exception:
+            return None
     prov = normalize_game_lines(raw, game_id=gid)
     if not prov:
         return None
@@ -16567,8 +16619,14 @@ def _v401_capture_closing_lines(df):
     return n, df
 
 
-def _se_equity_svg(units, w=320, h=96):
-    """Cumulative units over graded bets. Shows the path, not just the endpoint."""
+def _se_equity_svg(units, w=320, h=104):
+    """
+    Cumulative units over graded bets.
+
+    Carries its own scale. Without a labelled high and low, a reader cannot
+    tell a one-unit wobble from a fifty-unit collapse, and a big coloured
+    mass reads as alarming whatever the numbers are.
+    """
     pts = [float(v) for v in units if v is not None and math.isfinite(float(v))]
     if len(pts) < 2:
         return ""
@@ -16576,12 +16634,13 @@ def _se_equity_svg(units, w=320, h=96):
     for v in pts:
         run += v
         cum.append(run)
-    lo, hi = min(min(cum), 0.0), max(max(cum), 0.0)
+    peak, trough = max(max(cum), 0.0), min(min(cum), 0.0)
+    lo, hi = trough, peak
     if hi - lo < 1e-9:
         hi, lo = hi + 1, lo - 1
-    pad = (hi - lo) * 0.14
+    pad = (hi - lo) * 0.18
     lo, hi = lo - pad, hi + pad
-    ml, mr, mt, mb = 6, 6, 8, 8
+    ml, mr, mt, mb = 34, 10, 12, 14
 
     def X(i):
         return ml + (w - ml - mr) * (i / max(len(cum) - 1, 1))
@@ -16597,18 +16656,29 @@ def _se_equity_svg(units, w=320, h=96):
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
         f'preserveAspectRatio="xMidYMid meet" style="display:block" '
-        f'xmlns="http://www.w3.org/2000/svg" '
-        f'role="img" aria-label="Cumulative units over {len(cum)} graded bets">'
+        f'xmlns="http://www.w3.org/2000/svg" role="img" '
+        f'aria-label="Cumulative units over {len(cum)} bets, peak {peak:+.1f}, '
+        f'low {trough:+.1f}, now {end:+.1f}">'
         f'<defs><linearGradient id="seEq" x1="0" y1="0" x2="0" y2="1">'
-        f'<stop offset="0%" stop-color="{col}" stop-opacity=".30"/>'
+        f'<stop offset="0%" stop-color="{col}" stop-opacity=".18"/>'
         f'<stop offset="100%" stop-color="{col}" stop-opacity="0"/>'
         f'</linearGradient></defs>'
         f'<polygon points="{area}" fill="url(#seEq)"/>'
         f'<line x1="{ml}" y1="{zero:.1f}" x2="{w-mr}" y2="{zero:.1f}" '
-        f'stroke="#7f97ae" stroke-opacity=".45" stroke-width="1" stroke-dasharray="3 3"/>'
-        f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="2" '
+        f'stroke="#7f97ae" stroke-opacity=".40" stroke-width="1" stroke-dasharray="3 3"/>'
+        f'<text x="{ml-5}" y="{Y(peak)+3:.1f}" fill="#7f97ae" font-size="8" '
+        f'font-weight="700" text-anchor="end">{peak:+.1f}u</text>'
+        f'<text x="{ml-5}" y="{zero+3:.1f}" fill="#8fa6bd" font-size="8" '
+        f'font-weight="800" text-anchor="end">0</text>'
+        f'<text x="{ml-5}" y="{Y(trough)+3:.1f}" fill="#7f97ae" font-size="8" '
+        f'font-weight="700" text-anchor="end">{trough:+.1f}u</text>'
+        f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.8" '
         f'stroke-linejoin="round" stroke-linecap="round"/>'
         f'<circle cx="{X(len(cum)-1):.1f}" cy="{Y(end):.1f}" r="3.2" fill="{col}"/>'
+        f'<text x="{ml}" y="{h-3}" fill="#64798f" font-size="7.5" '
+        f'font-weight="700" text-anchor="start">BET 1</text>'
+        f'<text x="{w-mr}" y="{h-3}" fill="#64798f" font-size="7.5" '
+        f'font-weight="700" text-anchor="end">BET {len(cum)}</text>'
         f'</svg>'
     )
 
@@ -16868,13 +16938,20 @@ def _v401_split_table(df, field, label):
     return pd.DataFrame(rows)
 
 def _v401_render_official_tracker():
-    graded_now, df = _v401_grade_tracker()
+    graded_now, _all = _v401_grade_tracker()
+    # The page is titled OFFICIAL BET LEDGER and Home reports the official
+    # tier only. Summarising every row here meant the two tabs showed
+    # different season records for the same app — 47-45-1 against 35-32-0.
+    if not _all.empty and "bet_tier" in _all.columns:
+        df = _all[_all["bet_tier"].astype(str).str.upper() != "WATCH"].copy()
+    else:
+        df = _all.copy()
     s = _v401_summary(df)
 
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">OFFICIAL BET LEDGER</div>'
         '<div class="mobile-page-title">Tracker</div>'
-        '<div class="mobile-page-sub">Official BET / BEST BET recommendations are frozen before kickoff and automatically graded after the final score.</div></div>',
+        '<div class="mobile-page-sub">Every pick is locked in before kickoff and graded automatically when the game ends. The line taken is never rewritten.</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -16895,15 +16972,22 @@ def _v401_render_official_tracker():
             st.caption("The record is temporarily unavailable. Try again shortly.")
 
     if df is None or df.empty:
-        st.info("No official bets have been frozen yet. Run a slate; BET / BEST BET recommendations will be added automatically.")
+        if _se_is_owner():
+            st.info("No bets frozen yet. Build a slate and qualifying picks are added here automatically.")
+        else:
+            st.info("No bets have been recorded yet. Check back once the season is under way.")
         return
 
     # All-time headline.
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Record", f'{s["wins"]}-{s["losses"]}-{s["pushes"]}')
-    c2.metric("Win Rate", f'{s["win_rate"]:.1%}')
-    c3.metric("Units", f'{s["units"]:+.2f}u')
-    c4.metric("ROI", f'{s["roi"]:+.1%}')
+    st.markdown(
+        f'<div class="se-stat-strip">'
+        f'<div><b>{s["wins"]}-{s["losses"]}-{s["pushes"]}</b><span>W \u00b7 L \u00b7 P</span></div>'
+        f'<div><b>{s["win_rate"]:.1%}</b><span>Win rate</span></div>'
+        f'<div><b class="{"pos" if s["units"]>=0 else "neg"}">{s["units"]:+.2f}u</b><span>Units</span></div>'
+        f'<div><b class="{"pos" if s["roi"]>=0 else "neg"}">{s["roi"]:+.1%}</b><span>ROI</span></div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     st.caption(
         f'{s["bets"]} frozen official bets • {s["graded"]} graded • {s["pending"]} pending • '
@@ -16912,14 +16996,19 @@ def _v401_render_official_tracker():
 
     # Current v4.0.1+ architecture performance separated from migrated legacy history.
     current = df[df["model_version"].astype(str).str.startswith("4.")].copy()
-    if not current.empty:
+    if not current.empty and len(current) < len(df):
         cs = _v401_summary(current)
-        st.markdown('<div class="section-kicker">V4 FUNDAMENTAL ENGINE</div>', unsafe_allow_html=True)
-        d1,d2,d3,d4 = st.columns(4)
-        d1.metric("Record", f'{cs["wins"]}-{cs["losses"]}-{cs["pushes"]}')
-        d2.metric("Bets", cs["bets"])
-        d3.metric("Units", f'{cs["units"]:+.2f}u')
-        d4.metric("ROI", f'{cs["roi"]:+.1%}')
+        st.markdown('<div class="section-kicker">CURRENT MODEL ONLY</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="se-stat-strip">'
+            f'<div><b>{cs["wins"]}-{cs["losses"]}-{cs["pushes"]}</b><span>W \u00b7 L \u00b7 P</span></div>'
+            f'<div><b>{cs["bets"]}</b><span>Bets</span></div>'
+            f'<div><b class="{"pos" if cs["units"]>=0 else "neg"}">{cs["units"]:+.2f}u</b><span>Units</span></div>'
+            f'<div><b class="{"pos" if cs["roi"]>=0 else "neg"}">{cs["roi"]:+.1%}</b><span>ROI</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Excludes bets frozen under older versions of the model.")
 
     # Cumulative performance.
     graded = df[df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
@@ -16928,10 +17017,10 @@ def _v401_render_official_tracker():
         graded["_graded"] = pd.to_datetime(graded["graded_at"], errors="coerce")
         graded = graded.sort_values(["_date","_graded"], na_position="last")
         graded["_units"] = pd.to_numeric(graded["units_result"], errors="coerce").fillna(0)
-        graded["Cumulative Units"] = graded["_units"].cumsum()
-        chart = graded[["_date","Cumulative Units"]].dropna()
-        if not chart.empty:
-            st.line_chart(chart.set_index("_date"), use_container_width=True)
+        _eq = _se_equity_svg(graded["_units"].tolist())
+        if _eq:
+            st.markdown(f'<div class="se-curve">{_eq}</div>', unsafe_allow_html=True)
+            st.caption("Running total, 1 unit per bet, in the order they settled.")
 
     # Pending.
     pending = df[~df["result"].astype(str).str.upper().isin(["WIN","LOSS","PUSH"])].copy()
@@ -16949,19 +17038,14 @@ def _v401_render_official_tracker():
                     """,
                     unsafe_allow_html=True,
                 )
-            show = pending[[c for c in [
-                "game_date","kickoff_et","market_type","selection","verdict","point_edge",
-                "cover_probability","expected_value","reliability","model_version"
-            ] if c in pending.columns]].copy()
-
     # How the model is performing, once bets start grading.
     # Split the two tiers so the official record stays a clean measurement.
-    if "bet_tier" in df.columns:
-        _tier = df["bet_tier"].astype(str).str.upper()
-        df_official = df[_tier != "WATCH"].copy()
-        df_watch = df[_tier == "WATCH"].copy()
+    if "bet_tier" in _all.columns:
+        _tier = _all["bet_tier"].astype(str).str.upper()
+        df_official = _all[_tier != "WATCH"].copy()
+        df_watch = _all[_tier == "WATCH"].copy()
     else:
-        df_official, df_watch = df.copy(), pd.DataFrame(columns=df.columns)
+        df_official, df_watch = _all.copy(), pd.DataFrame(columns=_all.columns)
 
     if not df_watch.empty:
         so, sw = _v401_summary(df_official), _v401_summary(df_watch)
@@ -16985,8 +17069,8 @@ def _v401_render_official_tracker():
     _clv = pd.to_numeric(df_official.get("clv_points"), errors="coerce").dropna() if "clv_points" in df_official.columns else pd.Series(dtype=float)
     st.markdown("### Closing line value")
     st.caption(
-        "Did you get a better number than the market closed at? This shows edge "
-        "far sooner than win/loss does — a few dozen bets instead of hundreds."
+        "Whether each pick got a better number than the market closed at. This "
+        "shows edge far sooner than wins and losses do."
     )
     if len(_clv) == 0:
         st.info("No graded bets yet. CLV appears once games finish.")
@@ -17000,11 +17084,18 @@ def _v401_render_official_tracker():
         _sd = float(_clv.std(ddof=1)) if len(_clv) > 1 else float("nan")
         _t = (float(_clv.mean()) / (_sd / math.sqrt(len(_clv)))
               if len(_clv) > 1 and _sd > 0 else float("nan"))
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Average CLV", f"{_clv.mean():+.2f} pts")
-        c2.metric("t-stat", f"{_t:.2f}" if math.isfinite(_t) else "—")
-        c3.metric("Beat / no move", f"{beat:.0%} / {zero:.0%}")
-        c4.metric("Bets measured", f"{len(_clv):,}")
+        st.markdown(
+            f'<div class="se-stat-strip">'
+            f'<div><b class="{"pos" if _clv.mean()>=0 else "neg"}">{_clv.mean():+.2f}</b>'
+            f'<span>Avg pts vs close</span></div>'
+            f'<div><b>{beat:.0%}</b><span>Beat the close</span></div>'
+            f'<div><b>{zero:.0%}</b><span>No movement</span></div>'
+            f'<div><b>{len(_clv):,}</b><span>Bets measured</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if math.isfinite(_t):
+            st.caption(f"Signal strength {_t:+.2f} — above +2.00 would be meaningful.")
 
         _n_clean = 0
         try:
@@ -17163,6 +17254,32 @@ def _v401_render_official_tracker():
     _an = df[[c for c in _cols if c in df.columns]].copy()
     if "game_date" in _an.columns:
         _an = _an.sort_values("game_date")
+    if _se_is_owner():
+        _render_tracker_exports(df, _an)
+
+    with st.expander("Full bet history", expanded=False):
+        st.caption("Every frozen bet, newest first.")
+        _hist_cols = ["game_date", "matchup", "market_type", "selection", "verdict",
+                      "result", "units_result", "clv_points"]
+        _hist = df[[c for c in _hist_cols if c in df.columns]].copy()
+        _hist = _hist.sort_values("game_date", ascending=False)
+        _hist = _hist.rename(columns={
+            "game_date": "Date", "matchup": "Game", "market_type": "Market",
+            "selection": "Pick", "verdict": "Call", "result": "Result",
+            "units_result": "Units", "clv_points": "vs close",
+        })
+        if "Units" in _hist.columns:
+            _hist["Units"] = pd.to_numeric(_hist["Units"], errors="coerce").map(
+                lambda v: "" if pd.isna(v) else f"{v:+.2f}")
+        if "vs close" in _hist.columns:
+            _hist["vs close"] = pd.to_numeric(_hist["vs close"], errors="coerce").map(
+                lambda v: "" if pd.isna(v) else f"{v:+.1f}")
+        st.dataframe(_hist, use_container_width=True, hide_index=True)
+
+
+def _render_tracker_exports(df, _an):
+    """Raw exports are owner tooling — shrink params and model versions are
+    not something to hand a friend as a primary button."""
     st.download_button(
         f"Download analysis file \u2014 {len(_an)} bets",
         data=_an.to_csv(index=False).encode("utf-8"),
@@ -17177,22 +17294,14 @@ def _v401_render_official_tracker():
         "and the result. This is the file to hand over for analysis."
     )
 
-    with st.expander("Full bet history", expanded=False):
-        st.caption("Every frozen bet, newest first. Also saved in your Google Sheet.")
-        show = df[[c for c in [
-            "game_date","market_type","selection","odds","verdict",
-            "point_edge","cover_probability","expected_value","reliability",
-            "result","units_result","final_away_score","final_home_score"
-        ] if c in df.columns]].copy()
-        st.dataframe(show.sort_values("game_date", ascending=False), use_container_width=True, hide_index=True)
-        st.download_button(
-            "Download as CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="saturday_edge_bet_tracker.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key="download_v401_official_tracker",
-        )
+    st.download_button(
+        "Download raw tracker CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="saturday_edge_bet_tracker.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="download_v401_official_tracker",
+    )
 
 
 def _v410_total_card(slate_df):
@@ -19722,6 +19831,268 @@ def _se_tock_takeover(df_today, day):
     st.stop()
 
 
+def _render_visitor_card(selected_date):
+    """
+    Slate, as a friend sees it: the picks that were locked in for this date,
+    in kickoff order, with live status. No controls, no build, no watch-list
+    clutter — watch plays are not part of the record and only raise the
+    question of why they are shown at all.
+    """
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">THE CARD</div>'
+        '<div class="mobile-page-title">Picks</div>'
+        '<div class="mobile-page-sub">Locked in before kickoff at the number shown. '
+        'Nothing is added or changed after a game starts.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        _f = _v401_load_tracker()
+        if not _f.empty:
+            # Sheets returns "2026-09-19"; a parsed frame returns
+            # "2026-09-19 00:00:00". Compare on the date part either way.
+            _f = _f[_f["game_date"].astype(str).str[:10] == str(selected_date)[:10]].copy()
+    except Exception:
+        _f = pd.DataFrame()
+
+    if _f.empty:
+        st.info(
+            f"No picks posted for {selected_date:%A, %b %-d} yet. "
+            "The card usually goes up a few hours before the first kickoff."
+        )
+        return
+
+    if "bet_tier" in _f.columns:
+        _f = _f[_f["bet_tier"].astype(str).str.upper() != "WATCH"].copy()
+    if _f.empty:
+        st.info(
+            f"The model found nothing worth betting on {selected_date:%A, %b %-d}. "
+            "That happens, and passing is the point of having a threshold."
+        )
+        return
+
+    _now = pd.Timestamp.now(tz="America/New_York")
+    _f["_k"] = [_se_kick_dt(r, str(selected_date)) for _, r in _f.iterrows()]
+    _f = _f.sort_values("_k", na_position="last")
+
+    _res = _f["result"].astype(str).str.upper()
+    _done = int(_res.isin(["WIN", "LOSS", "PUSH"]).sum())
+    _w, _l = int((_res == "WIN").sum()), int((_res == "LOSS").sum())
+    st.markdown(
+        f'<div class="ge433-slate-meta"><span><b>{len(_f)}</b> '
+        f'{"pick" if len(_f)==1 else "picks"}</span>'
+        f'<span>{f"{_w}-{_l} so far" if _done else "None settled yet"}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    for _n, (_, r) in enumerate(_f.iterrows(), start=1):
+        st.markdown(
+            f'<div class="se-extra">'
+            f'<span class="se-extra-rank">{_n}</span>'
+            f'{_pick_logo_html(r, 22)}'
+            f'<div class="se-extra-main">'
+            f'<b>{html.escape(str(r.get("selection","")))}</b>'
+            f'<small>{html.escape(str(r.get("away_team","")))} @ '
+            f'{html.escape(str(r.get("home_team","")))} \u00b7 '
+            f'{html.escape(_se_kick_label(r, str(selected_date)))}</small>'
+            f'</div>'
+            f'{_se_frozen_status(r, _now, str(selected_date))}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.caption("Every pick here is 1 unit flat. The full record is on the Tracker tab.")
+
+
+def _se_week_guess(games):
+    """
+    Current CFB week, taken from the games on screen. Ratings blend current
+    and prior season by week, so this has to be roughly right; it falls back
+    to a date-based estimate when no game carries a week number.
+    """
+    try:
+        wks = [int(g.get("week")) for g in (games or []) if g.get("week") is not None]
+        if wks:
+            return max(1, min(int(round(sum(wks) / len(wks))), 20))
+    except Exception:
+        pass
+    try:
+        _n = pd.Timestamp.now(tz="America/New_York")
+        _start = pd.Timestamp(year=_n.year, month=8, day=25, tz="America/New_York")
+        return max(1, min(int((_n - _start).days // 7) + 1, 20))
+    except Exception:
+        return 1
+
+
+def _render_recap(before_date=None):
+    """
+    "How did we do?" — the first thing anyone asks the morning after. The
+    record strip answers it for the season; nothing answered it for the day
+    just played.
+    """
+    try:
+        _t = _v401_load_tracker()
+    except Exception:
+        return
+    if _t is None or _t.empty:
+        return
+    if "bet_tier" in _t.columns:
+        _t = _t[_t["bet_tier"].astype(str).str.upper() != "WATCH"]
+    _t = _t[_t["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])].copy()
+    if _t.empty:
+        return
+
+    _t["_d"] = _t["game_date"].astype(str).str[:10]
+    _days = sorted(_t["_d"].unique())
+    if before_date is not None:
+        _cut = str(before_date)[:10]
+        _days = [d for d in _days if d < _cut] or _days
+    _day = _days[-1]
+    _g = _t[_t["_d"] == _day].copy()
+    if _g.empty:
+        return
+
+    _res = _g["result"].astype(str).str.upper()
+    _w, _l, _p = int((_res == "WIN").sum()), int((_res == "LOSS").sum()), int((_res == "PUSH").sum())
+    _u = pd.to_numeric(_g.get("units_result"), errors="coerce").fillna(0.0).sum()
+    try:
+        _label = pd.to_datetime(_day).strftime("%A, %b %-d")
+    except Exception:
+        _label = _day
+
+    st.markdown('<div class="se-sec">LAST TIME OUT</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="se-stat-strip">'
+        f'<div><b>{_w}-{_l}{f"-{_p}" if _p else ""}</b><span>{html.escape(_label)}</span></div>'
+        f'<div><b class="{"pos" if _u>=0 else "neg"}">{_u:+.2f}u</b><span>Units</span></div>'
+        f'<div><b>{len(_g)}</b><span>Picks</span></div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.expander(f"How each pick finished \u00b7 {_label}", expanded=False):
+        _g["_o"] = pd.to_numeric(_g.get("units_result"), errors="coerce").fillna(0.0)
+        for _, r in _g.sort_values("_o", ascending=False).iterrows():
+            _rr = str(r.get("result") or "").upper()
+            _cls = {"WIN": "good", "LOSS": "risk"}.get(_rr, "neutral")
+            try:
+                _sc = (f'{int(float(r.get("final_away_score")))}'
+                       f'\u2013{int(float(r.get("final_home_score")))}')
+            except Exception:
+                _sc = ""
+            st.markdown(
+                f'<div class="se-extra">'
+                f'{_pick_logo_html(r, 22)}'
+                f'<div class="se-extra-main">'
+                f'<b>{html.escape(str(r.get("selection","")))}</b>'
+                f'<small>{html.escape(str(r.get("away_team","")))} @ '
+                f'{html.escape(str(r.get("home_team","")))}'
+                f'{f" \u00b7 {_sc}" if _sc else ""}</small></div>'
+                f'<span class="cfb-track-status {_cls}">{_rr}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _se_power_table(year, week):
+    """
+    Every FBS team's composite power rating — the same number the picks are
+    built from, which is the point: it lets anyone see what the model
+    actually thinks before a line is involved.
+    """
+    data = get_model_data(int(year))
+    teams = sorted((data.get("teams") or {}).keys())
+    rows = []
+    for t in teams:
+        try:
+            power, snap = _team_base_power(t, data, int(week))
+        except Exception:
+            continue
+        if not math.isfinite(float(power or 0)):
+            continue
+        rows.append({
+            "Team": t,
+            "_power": float(power),
+            "Offense": snap.get("offense"),
+            "Defense": snap.get("defense"),
+            "_conf": (data.get("teams") or {}).get(t, {}).get("conference")
+            if isinstance((data.get("teams") or {}).get(t), dict) else None,
+        })
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows).sort_values("_power", ascending=False).reset_index(drop=True)
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    return out
+
+
+def _render_power_rankings(year, week):
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">MODEL RATINGS</div>'
+        '<div class="mobile-page-title">Rankings</div>'
+        '<div class="mobile-page-sub">Every FBS team on one scale, built from the same '
+        'ratings behind the picks. A gap of one point is one point of spread on a '
+        'neutral field.</div></div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        tbl = _se_power_table(int(year), int(week))
+    except Exception:
+        tbl = pd.DataFrame()
+    if tbl.empty:
+        st.info("Ratings are unavailable right now. Please try again shortly.")
+        return
+
+    _q = st.text_input("Search a team", key="se_rank_q", placeholder="Any FBS team")
+    view = tbl
+    if _q and _q.strip():
+        view = tbl[tbl["Team"].str.contains(_q.strip(), case=False, na=False)]
+        if view.empty:
+            st.caption(f"No team matches “{_q.strip()}”.")
+            return
+    else:
+        view = tbl.head(25)
+
+    _top = float(tbl["_power"].max())
+    for _, r in view.iterrows():
+        _cls = "pos" if float(r["_power"]) >= 0 else "neg"
+        # Three distinct facts per row, not the same number twice: the
+        # rating, the split behind it, and the gap to the best team.
+        _od = []
+        for _lab, _k in (("Off", "Offense"), ("Def", "Defense")):
+            try:
+                _v = float(r.get(_k))
+                if math.isfinite(_v):
+                    _od.append(f"{_lab} {_v:.1f}")
+            except Exception:
+                pass
+        _behind = float(r["_power"]) - _top
+        _sub = " \u00b7 ".join(_od) if _od else ""
+        _sub = (f"{_sub} \u00b7 " if _sub else "") + (
+            "best in the country" if _behind >= -0.05 else f"{_behind:.1f} off the top"
+        )
+        st.markdown(
+            f'<div class="se-extra">'
+            f'<span class="se-extra-rank">{int(r["Rank"])}</span>'
+            f'<div class="se-extra-main">'
+            f'<b>{html.escape(str(r["Team"]))}</b>'
+            f'<small>{html.escape(_sub)}</small></div>'
+            f'<span class="se-extra-ev {_cls}">{float(r["_power"]):+.1f}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    if not (_q and _q.strip()):
+        st.caption(
+            f"Top 25 of {len(tbl)} FBS teams. Search above for any other team."
+        )
+    st.caption(
+        "Ratings blend SP+ with strength of schedule, talent and returning "
+        "production. They are what the model believes before any sportsbook "
+        "line is looked at."
+    )
+
+
 def _se_window_banner(name, n_off, n_watch):
     """
     A small scene per kickoff window: sunrise for Early, high sun for Midday,
@@ -20687,6 +21058,13 @@ def _render_home_page():
 
     _render_ml_flags(_view_date)
 
+    # The day just played, before the season aggregate. "How did we do?" is
+    # the first question the morning after, and nothing answered it.
+    try:
+        _render_recap(_view_date)
+    except Exception:
+        pass
+
     st.markdown('<div class="se-sec">SEASON RECORD</div>', unsafe_allow_html=True)
     if _t is None or _t.empty:
         st.caption(_se_quip(SE_EMPTY_RECORD))
@@ -20737,33 +21115,33 @@ def _render_record_analysis(_t, _s, _clv):
     _eq = _se_equity_svg(_u.tolist())
     if _eq:
         st.markdown(f'<div class="se-curve">{_eq}</div>', unsafe_allow_html=True)
-        st.caption(
-            f"Every graded bet in order, 1 unit flat. Nothing reset, nothing hidden."
-        )
 
-    # One line, in plain English, that does not apologise for the truth.
+    # A status chip, not a paragraph. The caveat was previously the largest
+    # text on the page, which made the app look like it was apologising.
     if _n >= 5:
         _p = _s["wins"] / _n
         _se_ = math.sqrt(0.5238 * 0.4762 / _n)
         if _p - 1.96 * _se_ > 0.5238:
-            _head = f"**Ahead of the break-even line** after {_n} bets, with the margin to prove it."
+            _tone, _label, _sub = "pos", "Beating the number", f"{_n} bets"
         elif _p + 1.96 * _se_ < 0.5238:
-            _head = f"**Behind the break-even line** after {_n} bets by more than luck explains."
+            _tone, _label, _sub = "neg", "Below break-even", f"{_n} bets"
         else:
-            _head = (
-                f"**Too early to call.** {_n} bets is a small sample — a real edge takes "
-                f"several hundred to show up. Closing line value is the faster signal."
-            )
-        st.markdown(_head)
+            _tone, _label, _sub = "wait", "Too early to call", f"{_n} of ~300 bets"
+        st.markdown(
+            f'<div class="se-verdict {_tone}">'
+            f'<span class="se-verdict-dot"></span>'
+            f'<b>{_label}</b><em>{_sub}</em></div>',
+            unsafe_allow_html=True,
+        )
+    st.caption("Every graded bet in order, 1 unit flat. Nothing reset, nothing hidden.")
 
     with st.expander("What this record tells us", expanded=False):
         _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
         if _ci:
             st.markdown(f'<div class="se-curve">{_ci}</div>', unsafe_allow_html=True)
             st.caption(
-                "The true win rate sits somewhere in the shaded band. It has to clear "
-                "the yellow line to make money at -110. The band is wide because "
-                f"{_n} bets is not many — that is sample size, not the model."
+                f"The real win rate sits somewhere in the band, and has to clear the "
+                f"yellow line to make money. It is this wide because {_n} bets is not many."
             )
 
         # Margin of victory: continuous, so it reads the same bets with far
@@ -20796,9 +21174,8 @@ def _render_record_analysis(_t, _s, _clv):
                 unsafe_allow_html=True,
             )
             st.caption(
-                f"Points won or lost against each frozen number, not just whether it "
-                f"landed. More sensitive than win-loss: {_close} of {len(_m)} bets turned "
-                f"on three points or fewer."
+                f"Points won or lost against each number, not just whether it landed. "
+                f"{_close} of {len(_m)} bets came down to three points or fewer."
             )
 
         try:
@@ -20807,9 +21184,9 @@ def _render_record_analysis(_t, _s, _clv):
             _wc = pd.to_numeric(_w.get("clv_points"), errors="coerce").dropna()
             if len(_wc) >= 10 and len(_clv) >= 10:
                 st.caption(
-                    f"**Is the filter working?** Official picks beat the closing line by "
-                    f"{_clv.mean():+.2f} points. The plays it rejected: {_wc.mean():+.2f}. "
-                    f"That gap is the selection rules doing their job."
+                    f"**Is the filter working?** The plays it rejected beat the close by "
+                    f"just {_wc.mean():+.2f} points, against {_clv.mean():+.2f} for the "
+                    f"picks it kept. That gap is the selection rules doing their job."
                 )
         except Exception:
             pass
@@ -20827,6 +21204,14 @@ if main_view == "More":
     st.stop()
 
 run_mode = "Full Slate" if main_view == "Slate" else "Single Game"
+
+if run_mode == "Full Slate" and not _se_is_owner():
+    # A visitor does not operate the model. Kickoff windows, line settings,
+    # a filter gate and a build button are all owner controls, and a slate
+    # they build is not the record anyone is following. Show them the card
+    # that was actually locked in for this date, and nothing else.
+    _render_visitor_card(selected_date)
+    st.stop()
 
 if run_mode == "Full Slate":
     slate_choice = st.radio(
@@ -21665,22 +22050,37 @@ if _q:
 else:
     _filtered = _all_labels
 
+_games_view = st.radio(
+    "View",
+    ["Matchup", "Rankings"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="se_games_view",
+)
+if _games_view == "Rankings":
+    _render_power_rankings(year, _se_week_guess(daily))
+    st.stop()
+
 game = labels[st.selectbox("Matchup", _filtered, key="game_pick")]
 
 try:
     model_data = get_model_data(year)
-except Exception as e:
-    st.error(f"CFBD model-data request failed: {e}")
+except Exception as _md_e:
+    if _se_is_owner():
+        st.error(f"CFBD model-data request failed: {_md_e}")
+    else:
+        st.error("Ratings data is unavailable right now. Please try again shortly.")
     st.stop()
 
 hfa = 2.5
-with st.expander("Advanced model settings", expanded=False):
-    hfa=st.number_input(
-        "Home-field advantage",
-        min_value=0.0, max_value=6.0, value=2.5, step=.25,
-        disabled=bool(game.get("neutralSite")),
-        help="Leave this at the default unless you have a specific reason to override it."
-    )
+if _se_is_owner():
+    with st.expander("Advanced model settings", expanded=False):
+        hfa=st.number_input(
+            "Home-field advantage",
+            min_value=0.0, max_value=6.0, value=2.5, step=.25,
+            disabled=bool(game.get("neutralSite")),
+            help="Leave this at the default unless you have a specific reason to override it."
+        )
 p=project_game(game,model_data,hfa=hfa)
 
 st.markdown('<div class="se-sec">Projection</div>', unsafe_allow_html=True)
@@ -21718,7 +22118,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.caption(f"Rating sources • {p['away']}: {p['away_rating']['source']} • {p['home']}: {p['home_rating']['source']}")
+if _se_is_owner():
+    st.caption(f"Rating sources • {p['away']}: {p['away_rating']['source']} • {p['home']}: {p['home_rating']['source']}")
 
 # ---- What actually matters, ranked -----------------------------------------
 _c = p["components"]
@@ -21955,21 +22356,33 @@ st.divider()
 # left on screen. Collapsing this section needs the widgets moved into a
 # function first.
 st.markdown('<div class="se-sec">Lines</div>', unsafe_allow_html=True)
-st.caption("Pulled automatically. Edit any value to match your sportsbook.")
 
 line_rows = []
 providers = []
 game_id = game.get("id")
 
-if st.button("Load Market Odds", use_container_width=True):
+# Fetch once per matchup, on open. Cached by game id so switching back to a
+# game already viewed costs nothing, and so a shared link does not re-hit
+# CFBD for every visitor on every rerun.
+_ln_key = f"cfb_line_rows_{game_id}"
+_ln_err = f"cfb_line_err_{game_id}"
+if _ln_key not in st.session_state:
     try:
-        raw_lines = get_market_lines(game_id, year)
-        line_rows = normalize_game_lines(raw_lines, game_id=game_id)
-        st.session_state["cfb_line_rows"] = line_rows
-    except Exception as e:
-        st.error(f"Line pull failed: {e}")
+        st.session_state[_ln_key] = normalize_game_lines(
+            get_market_lines(game_id, year), game_id=game_id
+        )
+        st.session_state[_ln_err] = None
+    except Exception:
+        st.session_state[_ln_key] = []
+        st.session_state[_ln_err] = True
 
-line_rows = st.session_state.get("cfb_line_rows", [])
+line_rows = st.session_state.get(_ln_key, [])
+if st.session_state.get(_ln_err):
+    st.caption("Live odds are unavailable right now. The inputs below can be set by hand.")
+if st.button("Refresh odds", use_container_width=True):
+    st.session_state.pop(_ln_key, None)
+    st.session_state.pop(_ln_err, None)
+    st.rerun()
 
 selected_line = {}
 if line_rows:
@@ -21994,12 +22407,13 @@ if line_rows:
     else:
         st.warning("A line source was returned, but the main values were blank.")
 
-    with st.expander("Available providers"):
-        st.dataframe(pd.DataFrame(line_rows), use_container_width=True, hide_index=True)
+    if _se_is_owner():
+        with st.expander("Available providers"):
+            st.dataframe(pd.DataFrame(line_rows), use_container_width=True, hide_index=True)
 else:
-    st.info("Load market odds to prefill the betting inputs, or enter your book manually.")
+    st.info("No market line is posted for this game yet.")
 
-st.caption("All pulled values remain editable. Spread/total prices default to -110 because CFBD's generic line feed may not include side-specific juice.")
+st.caption("Every number below can be edited to match your own book. Prices default to -110.")
 
 default_home_spread = float(
     selected_line.get("home_spread")
