@@ -6897,9 +6897,10 @@ div[class*="st-key-v420_run_slate"] button{
   color:#7fb4ff;font-size:.72rem;font-weight:800;
 }
 .se-curve{
-  padding:10px 8px 4px;border-radius:14px;margin-bottom:2px;
+  padding:10px 8px 10px;border-radius:14px;margin-bottom:10px;
   background:rgba(12,26,44,.5);border:1px solid rgba(120,154,188,.12);
 }
+.se-curve svg{display:block;width:100%;height:auto}
 .se-hero-bet{
   border-radius:17px;padding:15px 15px 8px;margin-bottom:4px;
   background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
@@ -16114,6 +16115,12 @@ def _v401_load_tracker():
     return _v401_empty_tracker()
 
 def _v401_save_tracker(df):
+    # One choke point for every write. Per-call-site checks get forgotten —
+    # the "clear a date" tool had none, which meant anyone with the link could
+    # erase the season. Saving also does clear() then update(), so two people
+    # writing at once can destroy the sheet. Owner-only writes fix both.
+    if not _se_is_owner():
+        return False
     x = _v401_clean_tracker(df)
     # Dedup on the FULL key, which includes tier. Official and watch ledgers
     # are kept separately on purpose.
@@ -16589,7 +16596,8 @@ def _se_equity_svg(units, w=320, h=96):
     col = "#4ae0aa" if end >= 0 else "#f2748a"
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
-        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" '
+        f'preserveAspectRatio="xMidYMid meet" style="display:block" '
+        f'xmlns="http://www.w3.org/2000/svg" '
         f'role="img" aria-label="Cumulative units over {len(cum)} graded bets">'
         f'<defs><linearGradient id="seEq" x1="0" y1="0" x2="0" y2="1">'
         f'<stop offset="0%" stop-color="{col}" stop-opacity=".30"/>'
@@ -16626,6 +16634,7 @@ def _se_winrate_ci_svg(wins, losses, w=320, h=74, breakeven=0.5238):
     col = "#7fb4ff" if inside else ("#4ae0aa" if p > breakeven else "#f2748a")
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" '
+        f'preserveAspectRatio="xMidYMid meet" style="display:block" '
         f'xmlns="http://www.w3.org/2000/svg" role="img" '
         f'aria-label="Win rate {p:.1%} with 95% interval {lo_ci:.1%} to {hi_ci:.1%}">'
         f'<rect x="{ml}" y="{bar_y}" width="{w-ml-mr}" height="{bar_h}" rx="6" '
@@ -16699,6 +16708,11 @@ def _v401_backfill_result_margin(df):
 
 
 def _v401_grade_tracker():
+    # Grading writes to the shared ledger, so only the owner runs it. For
+    # everyone else this is a no-op that skips the CFBD round trips too,
+    # which makes the app noticeably faster for a visitor.
+    if not _se_is_owner():
+        return 0, _v401_prep_for_grading(_v401_load_tracker())
     df = _v401_prep_for_grading(_v401_load_tracker())
     if df.empty:
         return 0, df
@@ -16868,13 +16882,17 @@ def _v401_render_official_tracker():
         st.success(f"Auto-graded {graded_now} completed official bet(s).")
 
     _ws, _ws_err = _v401_sheet(return_error=True)
-    if _ws is not None:
-        st.caption("Storage: Google Sheets — history is saved permanently.")
-    else:
-        st.warning(
-            "Storage: temporary. Bet history will be erased when the app restarts."
-        )
-        st.error(f"Sheets connection problem: {_ws_err}")
+    if _ws is None:
+        # Storage plumbing is the owner's problem, not a visitor's. Showing a
+        # raw connection error to a friend reads as a broken app and can echo
+        # back service-account detail.
+        if _se_is_owner():
+            st.warning(
+                "Storage: temporary. Bet history will be erased when the app restarts."
+            )
+            st.caption(f"Sheets connection problem: {_ws_err}")
+        else:
+            st.caption("The record is temporarily unavailable. Try again shortly.")
 
     if df is None or df.empty:
         st.info("No official bets have been frozen yet. Run a slate; BET / BEST BET recommendations will be added automatically.")
@@ -19000,6 +19018,25 @@ def _render_more_page():
         unsafe_allow_html=True,
     )
 
+    st.markdown(
+        """
+        <div class="edge-method">
+          <div class="edge-method-title">v4.0 production stack</div>
+          <div class="edge-method-row"><b>1</b><span>Projection</span><em>SP+/SRS + talent + returning production + matchup + HFA build an independent fair line.</em></div>
+          <div class="edge-method-row"><b>2</b><span>Edge</span><em>Sportsbook spread is compared with fair only after projection.</em></div>
+          <div class="edge-method-row"><b>3</b><span>Decision</span><em>Cover probability + price EV grade the bet; ensemble agreement is reliability context.</em></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not _se_is_owner():
+        st.caption(
+            "You are viewing a shared record. Picks, grading and the ledger are "
+            "managed by the owner \u2014 nothing here can change them."
+        )
+        return
+
     with st.expander("Calibration", expanded=False):
         _render_calibration()
 
@@ -19030,18 +19067,6 @@ def _render_more_page():
             f"Threshold is {V50_MIN_EV*100:.1f}% EV. "
             f"(Raw model output before calibration: {edge*100:+.1f}% edge, {ev*100:+.1f}% EV.)"
         )
-
-    st.markdown(
-        """
-        <div class="edge-method">
-          <div class="edge-method-title">v4.0 production stack</div>
-          <div class="edge-method-row"><b>1</b><span>Projection</span><em>SP+/SRS + talent + returning production + matchup + HFA build an independent fair line.</em></div>
-          <div class="edge-method-row"><b>2</b><span>Edge</span><em>Sportsbook spread is compared with fair only after projection.</em></div>
-          <div class="edge-method-row"><b>3</b><span>Decision</span><em>Cover probability + price EV grade the bet; ensemble agreement is reliability context.</em></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     if st.button("Open Slate Threshold Audit", type="primary", use_container_width=True, key="cfb_open_threshold_audit"):
         st.session_state["cfb_threshold_audit_mode"] = True
@@ -19178,10 +19203,18 @@ try:
 except Exception:
     _owner_code = None
 
-if _owner_code and not _se_is_owner():
+if not _owner_code:
+    # Unset means every visitor is treated as owner, which is fine alone and
+    # dangerous the moment the URL is shared. Say so where it cannot be missed.
+    st.warning(
+        "**No owner code set.** Anyone with this link can freeze bets and clear "
+        "dates from the shared record. Add an `owner_code` to Streamlit Secrets "
+        "before sharing the URL."
+    )
+elif not _se_is_owner():
     st.caption(
-        "View-only mode \u2014 explore freely; picks are not saved to the "
-        "shared record."
+        "Viewing the shared record \u2014 explore freely. Picks and grading are "
+        "managed by the owner."
     )
     with st.expander("Owner sign-in", expanded=False):
         _try = st.text_input("Owner code", type="password", key="se_owner_try")
@@ -20672,7 +20705,11 @@ def _render_home_page():
     _clv = pd.to_numeric(_t.get("clv_points"), errors="coerce").dropna() \
         if "clv_points" in _t.columns else pd.Series(dtype=float)
     if len(_clv):
-        st.caption(f"Closing line value {_clv.mean():+.2f} pts across {len(_clv)} graded bets.")
+        st.caption(
+            f"Picks beat the closing line by {_clv.mean():+.2f} points on average "
+            f"across {len(_clv)} graded bets — the earliest sign a model is finding "
+            f"real prices."
+        )
     else:
         st.caption(f"{_s['graded']} of {_s['bets']} bets graded so far.")
 
@@ -20685,9 +20722,9 @@ def _render_home_page():
 
 def _render_record_analysis(_t, _s, _clv):
     """
-    The season strip says what happened. This says how much of it is signal.
-    Everything here is computed from the ledger — no claim that the record
-    does not support.
+    Home stays calm: the curve and one plain sentence. Everything a numbers
+    person would want sits one tap down, in its own expander. Same rigor,
+    less of it shouting at someone who just opened the app.
     """
     _g = _t[_t["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])].copy()
     if len(_g) < 5:
@@ -20695,87 +20732,87 @@ def _render_record_analysis(_t, _s, _clv):
     _sort = ["game_date"] + (["kickoff_et"] if "kickoff_et" in _g.columns else [])
     _g = _g.sort_values(_sort)
     _u = pd.to_numeric(_g.get("units_result"), errors="coerce").fillna(0.0)
-
-    st.markdown('<div class="se-sec">WHAT THE RECORD ACTUALLY SAYS</div>',
-                unsafe_allow_html=True)
+    _n = _s["wins"] + _s["losses"]
 
     _eq = _se_equity_svg(_u.tolist())
     if _eq:
-        _run, _peak, _trough = 0.0, 0.0, 0.0
-        for v in _u:
-            _run += float(v)
-            _peak, _trough = max(_peak, _run), min(_trough, _run)
         st.markdown(f'<div class="se-curve">{_eq}</div>', unsafe_allow_html=True)
         st.caption(
-            f"Every graded bet in order, 1u flat. High-water {_peak:+.2f}u, "
-            f"low-water {_trough:+.2f}u. A flat-ish line after {len(_u)} bets is "
-            f"what no edge and no disaster looks like."
+            f"Every graded bet in order, 1 unit flat. Nothing reset, nothing hidden."
         )
 
-    _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
-    if _ci:
-        st.markdown(f'<div class="se-curve">{_ci}</div>', unsafe_allow_html=True)
-        _n = _s["wins"] + _s["losses"]
-        _need = int(round(7.84 * 0.5238 * 0.4762 / (0.03 ** 2)))
-        _se_ = math.sqrt(0.5238 * 0.4762 / _n)
+    # One line, in plain English, that does not apologise for the truth.
+    if _n >= 5:
         _p = _s["wins"] / _n
-        if _p - 1.96 * _se_ <= 0.5238 <= _p + 1.96 * _se_:
-            _verdict = (
-                f"The interval straddles breakeven, so this record is consistent "
-                f"with a strong model and with a worthless one alike."
-            )
-        elif _p > 0.5238:
-            _verdict = "The whole interval clears breakeven — rare this early, and worth trusting."
+        _se_ = math.sqrt(0.5238 * 0.4762 / _n)
+        if _p - 1.96 * _se_ > 0.5238:
+            _head = f"**Ahead of the break-even line** after {_n} bets, with the margin to prove it."
+        elif _p + 1.96 * _se_ < 0.5238:
+            _head = f"**Behind the break-even line** after {_n} bets by more than luck explains."
         else:
-            _verdict = "The whole interval sits below breakeven, which is a genuine warning."
-        st.caption(
-            f"True win rate, 95% confidence, from {_n} decisions. {_verdict} "
-            f"Separating a 3-point edge from a coin flip needs roughly "
-            f"{_need:,} bets — several seasons at this volume. Closing line "
-            f"value gets there far sooner, which is why it leads the Tracker."
-        )
-
-    # Margin of victory: a continuous outcome, so it reads the same sample
-    # with several times the power of the binary win rate above.
-    _m = pd.to_numeric(_g.get("result_margin"), errors="coerce").dropna()
-    if len(_m) >= 10:
-        _sd = float(_m.std(ddof=1))
-        _tm = float(_m.mean()) / (_sd / math.sqrt(len(_m))) if _sd > 0 else float("nan")
-        _close_l = int(((_m < 0) & (_m >= -3)).sum())
-        _close_w = int(((_m > 0) & (_m <= 3)).sum())
-        _cls = "pos" if _m.mean() >= 0 else "neg"
-        st.markdown(
-            f'<div class="se-stat-strip">'
-            f'<div><b class="{_cls}">{_m.mean():+.1f}</b><span>Avg margin</span></div>'
-            f'<div><b>{_tm:+.2f}</b><span>t-stat</span></div>'
-            f'<div><b>{_close_w}</b><span>Won by ≤3</span></div>'
-            f'<div><b>{_close_l}</b><span>Lost by ≤3</span></div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"How many points each bet won or lost against the frozen number, "
-            f"not just whether it landed. Being continuous, it reads the same "
-            f"{len(_m)} bets with several times the power of the win rate above: "
-            f"a t of {_tm:+.2f} against zero is the sharpest read this ledger "
-            f"currently supports. {_close_w + _close_l} of them turned on 3 points or fewer."
-        )
-
-    # Does the selector earn its keep? Official vs the watch list it rejects.
-    try:
-        _all = _v401_load_tracker()
-        _w = _all[_all["bet_tier"].astype(str).str.upper() == "WATCH"]
-        _wc = pd.to_numeric(_w.get("clv_points"), errors="coerce").dropna()
-        if len(_wc) >= 10 and len(_clv) >= 10:
-            st.markdown(
-                f"**Selector check.** Official bets: {_clv.mean():+.2f} pts of closing "
-                f"line value across {len(_clv)}. The watch-list plays the filter "
-                f"rejected: {_wc.mean():+.2f} across {len(_wc)}. A gap here is the "
-                f"selection rules earning their keep; no gap means they are decoration.",
-                unsafe_allow_html=False,
+            _head = (
+                f"**Too early to call.** {_n} bets is a small sample — a real edge takes "
+                f"several hundred to show up. Closing line value is the faster signal."
             )
-    except Exception:
-        pass
+        st.markdown(_head)
+
+    with st.expander("What this record tells us", expanded=False):
+        _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
+        if _ci:
+            st.markdown(f'<div class="se-curve">{_ci}</div>', unsafe_allow_html=True)
+            st.caption(
+                "The true win rate sits somewhere in the shaded band. It has to clear "
+                "the yellow line to make money at -110. The band is wide because "
+                f"{_n} bets is not many — that is sample size, not the model."
+            )
+
+        # Margin of victory: continuous, so it reads the same bets with far
+        # more sensitivity than win-loss. Computed inline when the stored
+        # column is empty, so this never waits on a write to have landed.
+        _m = pd.to_numeric(_g.get("result_margin"), errors="coerce")
+        if _m.notna().sum() < len(_g):
+            _m = _m.copy()
+            for _i, _r in _g.iterrows():
+                if pd.isna(_m.get(_i)):
+                    _v = _v401_bet_margin(
+                        _r.get("bet_line"), _r.get("market_type"), _r.get("pick_side"),
+                        _r.get("final_home_score"), _r.get("final_away_score"),
+                    )
+                    if _v is not None:
+                        _m.at[_i] = _v
+        _m = _m.dropna()
+        if len(_m) >= 10:
+            _sd = float(_m.std(ddof=1))
+            _tm = float(_m.mean()) / (_sd / math.sqrt(len(_m))) if _sd > 0 else float("nan")
+            _close = int((_m.abs() <= 3).sum())
+            _cls = "pos" if _m.mean() >= 0 else "neg"
+            st.markdown(
+                f'<div class="se-stat-strip">'
+                f'<div><b class="{_cls}">{_m.mean():+.1f}</b><span>Avg margin</span></div>'
+                f'<div><b>{int((_m > 0).sum())}</b><span>Covered</span></div>'
+                f'<div><b>{int((_m < 0).sum())}</b><span>Missed</span></div>'
+                f'<div><b>{_close}</b><span>Within 3 pts</span></div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"Points won or lost against each frozen number, not just whether it "
+                f"landed. More sensitive than win-loss: {_close} of {len(_m)} bets turned "
+                f"on three points or fewer."
+            )
+
+        try:
+            _all = _v401_load_tracker()
+            _w = _all[_all["bet_tier"].astype(str).str.upper() == "WATCH"]
+            _wc = pd.to_numeric(_w.get("clv_points"), errors="coerce").dropna()
+            if len(_wc) >= 10 and len(_clv) >= 10:
+                st.caption(
+                    f"**Is the filter working?** Official picks beat the closing line by "
+                    f"{_clv.mean():+.2f} points. The plays it rejected: {_wc.mean():+.2f}. "
+                    f"That gap is the selection rules doing their job."
+                )
+        except Exception:
+            pass
 
 
 if main_view == "Home":
@@ -21513,8 +21550,19 @@ if run_mode == "Full Slate":
                 st.toast(
                     f"Froze {_v36_added} official and {_watch_added} watch-list bet(s)."
                 )
-        except Exception as _trk_e:
-            st.warning(f"Bets are shown above, but saving them to the tracker failed: {_trk_e}")
+            elif not _se_is_owner():
+                # A visitor just built a slate. It is real and correct; it
+                # simply is not added to the shared record. Say that plainly
+                # rather than letting the absent toast read as a failure.
+                st.info(
+                    "These are today's picks. They are not added to the shared "
+                    "record \u2014 only the owner's builds are tracked."
+                )
+        except Exception:
+            st.warning(
+                "The picks above are fine, but saving them to the tracker failed. "
+                "They can be refrozen by rebuilding the slate."
+            )
 
         try:
             _v401_graded_now, _v401_df_now = _v401_grade_tracker()
