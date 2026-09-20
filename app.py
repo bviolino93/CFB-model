@@ -7051,6 +7051,13 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-why-rel{margin-left:7px;font-size:.52rem;font-weight:800;letter-spacing:.06em;
   padding:1px 6px;border-radius:5px;background:rgba(47,107,255,.14);color:#7fb4ff}
 .se-why-rel.thin{background:rgba(242,193,78,.14);color:#f2c14e}
+.se-asof{display:flex;align-items:baseline;gap:8px;margin:2px 0 8px;
+  padding:9px 12px;border-radius:11px;
+  background:rgba(12,26,44,.55);border:1px solid rgba(120,154,188,.13)}
+.se-asof b{font-size:.78rem;font-weight:800;color:#dbe7f5}
+.se-asof span{font-size:.6rem;font-weight:700;color:#7f97ae;margin-left:auto}
+.se-asof.warn{border-color:rgba(242,193,78,.30);background:rgba(242,193,78,.07)}
+.se-asof.warn b{color:#f2c14e}
 .se-extra-main{flex:1;min-width:0}
 .se-extra-main b{display:block;font-size:.82rem;color:#eef4fb;font-weight:800}
 .se-extra-main small{display:block;font-size:.63rem;color:#7f97ae;margin-top:1px;
@@ -7402,8 +7409,27 @@ def _se_power_table(year, week):
             if isinstance((data.get("teams") or {}).get(t), dict) else None,
         })
     _at = pd.Timestamp.now(tz="America/New_York")
+
+    # "As of" that means something. The fetch time only says when we asked;
+    # what a reader wants is which games are actually behind the numbers.
+    # Derive it from the schedule: the last date with a final score.
+    _through = None
+    try:
+        _played = []
+        for g in (get_games(int(year)) or []):
+            if g.get("homePoints") is None and g.get("home_points") is None:
+                continue
+            _d = pd.to_datetime(g.get("startDate") or g.get("start_date"),
+                                utc=True, errors="coerce")
+            if pd.notna(_d):
+                _played.append(_d.tz_convert("America/New_York"))
+        if _played:
+            _through = max(_played)
+    except Exception:
+        _through = None
+
     if not rows:
-        return pd.DataFrame(), _at
+        return pd.DataFrame(), _at, _through
     out = pd.DataFrame(rows).sort_values("_power", ascending=False).reset_index(drop=True)
     out.insert(0, "Rank", range(1, len(out) + 1))
     # Does CFBD have a current-season SP+ for most teams yet? Early in the
@@ -7416,7 +7442,154 @@ def _se_power_table(year, week):
     except Exception:
         _has_cur = 0
     out.attrs["current_sp_teams"] = _has_cur
-    return out, _at
+    return out, _at, _through
+
+
+# Moved up with the ratings helpers: the Games tab can render rankings
+# before this point in the script on a date with no scheduled games.
+def _v401_sheet(return_error=False, tab="tracker"):
+    """Return a worksheet by tab name, or None if Sheets isn't configured."""
+    err = None
+    try:
+        import json as _json
+        try:
+            import gspread
+        except Exception:
+            err = ("gspread library is not installed. Upload the new "
+                   "requirements.txt to GitHub (it must include the gspread line).")
+            return (None, err) if return_error else None
+
+        creds = None
+        if "gcp_service_account_json" in st.secrets:
+            raw = st.secrets["gcp_service_account_json"]
+            try:
+                creds = _json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except Exception as e:
+                err = f"The pasted JSON could not be read ({e})."
+                return (None, err) if return_error else None
+        elif "gcp_service_account" in st.secrets:
+            creds = dict(st.secrets["gcp_service_account"])
+
+        if not creds:
+            err = ("No Google credentials found in Secrets. Add the "
+                   "gcp_service_account_json block.")
+            return (None, err) if return_error else None
+
+        sa = gspread.service_account_from_dict(creds)
+        name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
+        try:
+            book = sa.open(name)
+        except Exception as e:
+            err = (f"Could not open a spreadsheet named '{name}'. "
+                   f"Check the name matches exactly and that the sheet is shared "
+                   f"with {creds.get('client_email','the service account')} as Editor. ({e})")
+            return (None, err) if return_error else None
+
+        try:
+            ws = book.worksheet(tab)
+        except Exception:
+            ws = book.add_worksheet(title=tab, rows=4000, cols=40)
+        return (ws, None) if return_error else ws
+    except Exception as e:
+        err = f"Unexpected error connecting to Sheets: {e}"
+        return (None, err) if return_error else None
+
+
+def _sp_fingerprint(year):
+    """
+    A stable hash of the current-season SP+ ratings.
+
+    CFBD returns SP+ with no computation timestamp, so there is no field to
+    read that says when it was last recalculated. What CAN be observed is
+    when the numbers change. Hash them on every pull, record the changes, and
+    after a few weeks the cadence is a measured fact rather than an
+    assumption about someone else's publishing schedule.
+    """
+    try:
+        cur = (get_model_data(int(year)) or {}).get("sp_current") or {}
+    except Exception:
+        return None, 0
+    items = []
+    for team in sorted(cur.keys()):
+        row = cur.get(team) or {}
+        val = row.get("rating")
+        if val is None:
+            continue
+        items.append(f"{team}:{float(val):.4f}")
+    if not items:
+        return None, 0
+    import hashlib
+    return hashlib.sha1("|".join(items).encode("utf-8")).hexdigest()[:16], len(items)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _sp_history_rows(_bust=0):
+    ws = _v401_sheet(tab="sp_history")
+    if ws is None:
+        return []
+    try:
+        return ws.get_all_records()
+    except Exception:
+        return []
+
+
+def _sp_history_note(year):
+    """
+    Append a row when the SP+ numbers differ from the last recorded hash.
+
+    Owner-only, like every other write. A visitor's page load must never
+    touch the sheet, and the history is the same for everyone anyway.
+    """
+    fp, n_teams = _sp_fingerprint(year)
+    if not fp:
+        return None
+    rows = _sp_history_rows(st.session_state.get("se_sp_rev", 0))
+    last = rows[-1] if rows else None
+    if last and str(last.get("fingerprint")) == fp:
+        return last            # unchanged since last check
+    if not _se_is_owner():
+        return last            # visitors read the history, never write it
+
+    ws = _v401_sheet(tab="sp_history")
+    if ws is None:
+        return last
+    now = pd.Timestamp.now(tz="America/New_York")
+    new_row = {
+        "observed_at": now.isoformat(),
+        "year": int(year),
+        "fingerprint": fp,
+        "teams_rated": int(n_teams),
+    }
+    try:
+        if not rows:
+            ws.update([list(new_row.keys()), list(new_row.values())],
+                      value_input_option="RAW")
+        else:
+            ws.append_row(list(new_row.values()), value_input_option="RAW")
+        st.session_state["se_sp_rev"] = st.session_state.get("se_sp_rev", 0) + 1
+    except Exception:
+        return last
+    return new_row
+
+
+def _sp_last_change(year):
+    """(timestamp_of_last_observed_change, n_changes_recorded) or (None, 0)."""
+    try:
+        rows = _sp_history_rows(st.session_state.get("se_sp_rev", 0))
+    except Exception:
+        return None, 0
+    rows = [r for r in rows if str(r.get("year")) == str(int(year))]
+    if not rows:
+        return None, 0
+    try:
+        ts = pd.to_datetime(rows[-1].get("observed_at"), errors="coerce")
+        if pd.isna(ts):
+            return None, len(rows)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("America/New_York")
+        return ts.tz_convert("America/New_York"), len(rows)
+    except Exception:
+        return None, len(rows)
 
 
 def _render_power_rankings(year, week):
@@ -7429,9 +7602,9 @@ def _render_power_rankings(year, week):
         unsafe_allow_html=True,
     )
     try:
-        tbl, _fetched = _se_power_table(int(year), int(week))
+        tbl, _fetched, _through = _se_power_table(int(year), int(week))
     except Exception:
-        tbl, _fetched = pd.DataFrame(), None
+        tbl, _fetched, _through = pd.DataFrame(), None, None
     if tbl.empty:
         st.info("Ratings are unavailable right now. Please try again shortly.")
         return
@@ -7440,8 +7613,43 @@ def _render_power_rankings(year, week):
     # week blend applies to the strength-of-schedule adjustment, and talent
     # and returning production are preseason figures that never update.
     _cw = _current_weight_for_week(int(week))
+
+    # Lead with the vintage, because that is the question people actually
+    # have: does this include Saturday or not.
+    if _through is not None:
+        _lag_days = (pd.Timestamp.now(tz="America/New_York").normalize()
+                     - _through.normalize()).days
+        _stale = _lag_days <= 2
+        st.markdown(
+            f'<div class="se-asof {"warn" if _stale else ""}">'
+            f'<b>Ratings as of {_through:%a, %b %-d}</b>'
+            f'<span>last completed games in the data</span></div>',
+            unsafe_allow_html=True,
+        )
+        if _stale:
+            st.caption(
+                f"Games finished as recently as {_through:%A}. SP+ is recalculated "
+                "weekly, so those results may not be reflected yet \u2014 the "
+                "ratings below can still be a week behind the scoreboard."
+            )
+    # Observed, not assumed: when did these numbers last actually move?
+    try:
+        _sp_history_note(int(year))
+        _sp_changed, _sp_n = _sp_last_change(int(year))
+    except Exception:
+        _sp_changed, _sp_n = None, 0
+    _bits = []
+    if _sp_changed is not None:
+        _bits.append(f"SP+ last changed {_sp_changed:%a %-I:%M %p ET}")
     if _fetched is not None:
-        st.caption(f"Pulled {_fetched:%a %-I:%M %p ET} · week {int(week)}")
+        _bits.append(f"pulled {_fetched:%a %-I:%M %p ET}")
+    _bits.append(f"week {int(week)}")
+    st.caption(" \u00b7 ".join(_bits))
+    if _sp_changed is None and _sp_n == 0:
+        st.caption(
+            "Tracking when SP+ updates from this point on \u2014 after a few "
+            "weeks this will show the real cadence instead of an estimate."
+        )
     st.caption(
         "SP+ does the heavy lifting here and switches to this season's number "
         "as soon as there is one. The strength-of-schedule piece still carries "
@@ -7449,10 +7657,13 @@ def _render_power_rankings(year, week):
         "and returning-production pieces are preseason figures that do not move "
         "during the year."
     )
-    st.caption(
-        "SP+ is recalculated weekly, usually Sunday or Monday, so games from "
-        "the last day or two are typically not in these numbers yet."
-    )
+    if _through is None:
+        # Only needed when there is no vintage line; when there is, the
+        # warning above already says this and says it more precisely.
+        st.caption(
+            "SP+ is recalculated weekly, usually Sunday or Monday, so games from "
+            "the last day or two are typically not in these numbers yet."
+        )
 
     _q = st.text_input("Search a team", key="se_rank_q", placeholder="Any FBS team")
     view = tbl
@@ -16335,52 +16546,6 @@ def _v401_clean_tracker(df):
             x.at[idx, "status"] = "FROZEN"
     return x[V401_TRACKER_COLUMNS]
 
-def _v401_sheet(return_error=False, tab="tracker"):
-    """Return a worksheet by tab name, or None if Sheets isn't configured."""
-    err = None
-    try:
-        import json as _json
-        try:
-            import gspread
-        except Exception:
-            err = ("gspread library is not installed. Upload the new "
-                   "requirements.txt to GitHub (it must include the gspread line).")
-            return (None, err) if return_error else None
-
-        creds = None
-        if "gcp_service_account_json" in st.secrets:
-            raw = st.secrets["gcp_service_account_json"]
-            try:
-                creds = _json.loads(raw) if isinstance(raw, str) else dict(raw)
-            except Exception as e:
-                err = f"The pasted JSON could not be read ({e})."
-                return (None, err) if return_error else None
-        elif "gcp_service_account" in st.secrets:
-            creds = dict(st.secrets["gcp_service_account"])
-
-        if not creds:
-            err = ("No Google credentials found in Secrets. Add the "
-                   "gcp_service_account_json block.")
-            return (None, err) if return_error else None
-
-        sa = gspread.service_account_from_dict(creds)
-        name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
-        try:
-            book = sa.open(name)
-        except Exception as e:
-            err = (f"Could not open a spreadsheet named '{name}'. "
-                   f"Check the name matches exactly and that the sheet is shared "
-                   f"with {creds.get('client_email','the service account')} as Editor. ({e})")
-            return (None, err) if return_error else None
-
-        try:
-            ws = book.worksheet(tab)
-        except Exception:
-            ws = book.add_worksheet(title=tab, rows=4000, cols=40)
-        return (ws, None) if return_error else ws
-    except Exception as e:
-        err = f"Unexpected error connecting to Sheets: {e}"
-        return (None, err) if return_error else None
 
 @st.cache_data(ttl=90, show_spinner=False)
 def _v401_tracker_rows(_bust=0):
