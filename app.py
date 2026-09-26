@@ -18417,8 +18417,10 @@ def _render_v36_live_card(card, selected_date):
             _inj = ""
             try:
                 _warns = []
+                _neutral = []
 
-                # 1. Has the market moved against us since open?
+                # 1. Market movement since open. ALWAYS shown, so a blank
+                # card can never be mistaken for a broken check.
                 try:
                     _prov_mv = json.loads(r.get("provider_rows_json") or "[]")
                     _mv, _mv_open, _mv_now, _mv_n = line_move_against(
@@ -18426,15 +18428,30 @@ def _render_v36_live_card(card, selected_date):
                     )
                     _mv_gate = (LINE_MOVE_FLAG_TOTAL if market_type == "TOTAL"
                                 else LINE_MOVE_FLAG_SPREAD)
-                    if _mv is not None and _mv >= _mv_gate:
+                    if _mv is None:
+                        _neutral.append(
+                            f"Line move: no opening number reported "
+                            f"({len(_prov_mv)} books on file)"
+                        )
+                    elif _mv >= _mv_gate:
                         _warns.append(
                             f"<b>MARKET MOVED {_mv:.1f} PTS AGAINST</b> "
                             f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
                             f"{_mv_n} books) \u2014 the market may know "
                             f"something the model doesn't"
                         )
-                except Exception:
-                    pass
+                    else:
+                        _dir = "against" if _mv >= 0 else "in favour"
+                        _neutral.append(
+                            f"Line move: {abs(_mv):.1f} pts {_dir} "
+                            f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
+                            f"{_mv_n} books)"
+                        )
+                except Exception as _mv_err:
+                    _neutral.append(
+                        f"Line move: check failed "
+                        f"({html.escape(str(_mv_err)[:60])})"
+                    )
 
                 # 2. Is this game carrying more than one official play?
                 _gid_n = _game_counts.get(str(r.get("game_id")), 0)
@@ -18454,12 +18471,15 @@ def _render_v36_live_card(card, selected_date):
                             f"{html.escape(_note)}"
                         )
 
-                if _warns:
+                if _warns or _neutral:
                     _inj = "".join(
                         f'<div class="ge-inj warn">{w}</div>' for w in _warns
+                    ) + "".join(
+                        f'<div class="ge-inj">{n}</div>' for n in _neutral
                     )
-            except Exception:
-                _inj = ""
+            except Exception as _strip_err:
+                _inj = (f'<div class="ge-inj">Strip failed: '
+                        f'{html.escape(str(_strip_err)[:80])}</div>')
 
             st.markdown(
                 f"""
