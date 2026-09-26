@@ -1,70 +1,106 @@
 """
 espn_injuries.py — ESPN injury lookup for Saturday Edge
 
-Pulls injury reports from ESPN's public (undocumented) college-football
-endpoints and flags picks where a key player is out.
+v4: hard-capped. The previous version issued one HTTP request per injured
+player with no overall limit, which could add minutes to a slate build.
+This version can never cost more than TOTAL_BUDGET seconds per build,
+no matter what ESPN does.
 
-Design notes:
-  - This NEVER raises. Any failure downgrades to a status message.
-  - It ALWAYS returns at least one note, so a card can never be silent.
-    Silence was the old bug: you could not tell "no injuries" from
-    "nothing worked". Now every card says which.
-  - It only fetches teams that appear in your picks, not all 130+.
-  - Results are cached so reloading doesn't re-hit ESPN.
+Safety properties:
+  - ENABLED = False turns the whole thing off without touching app.py.
+  - Every request has a short timeout.
+  - A global time budget and request cap apply across the ENTIRE build,
+    not per team. When either runs out, remaining teams return
+    "injury check skipped" instantly.
+  - Successful lookups are cached; skipped ones are NOT, so the next
+    build retries them.
+  - This NEVER raises to the caller and ALWAYS returns a note.
 
 Status strings you may see on a card:
   "No injuries listed"        -> working; ESPN has nothing for that team
   "ESPN unreachable"          -> request failed or timed out
   "No ESPN match for 'X'"     -> name mismatch; add X to MANUAL_TEAM_MAP
-  "Injury module not loaded"  -> this file isn't being imported (see app.py)
+  "Injury check skipped"      -> hit the time/request cap this build
+  "Injury check off"          -> ENABLED is False
+  "Injury module not loaded"  -> this file isn't being imported
 """
 
 import difflib
+import time
+
 import requests
 import streamlit as st
 
 # Bumped whenever this file changes. app.py prints it on each card so you
 # can confirm which copy is actually running.
-MODULE_VERSION = "v3"
+MODULE_VERSION = "v4"
 
 # ---------------------------------------------------------------------------
-# Config
+# Config — the knobs that matter
 # ---------------------------------------------------------------------------
+
+ENABLED = True          # set False to switch the feature off entirely
+
+TIMEOUT = 2.5           # seconds per request
+TOTAL_BUDGET = 12.0     # seconds of ESPN work allowed per build, all teams
+MAX_CALLS = 60          # hard ceiling on requests per build
+MAX_REFS_PER_TEAM = 8   # only resolve this many injured players per team
+WINDOW_RESET = 45.0     # seconds of idle before the budget refills
 
 CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
 SITE = "https://site.api.espn.com/apis/site/v2/sports/football/college-football"
 
-TIMEOUT = 6  # seconds per request — fail fast rather than hang the app
-
-# Positions worth flagging prominently. QB is the one that moves a line.
 KEY_POSITIONS = {"QB"}
-
-# Statuses that mean "probably not playing"
 OUT_STATUSES = {"out", "doubtful", "suspension", "injured reserve"}
 
 # CFBD name -> ESPN name, for the handful fuzzy matching gets wrong.
-# Add entries here as you see "No ESPN match for ..." on a card.
 MANUAL_TEAM_MAP = {
     "Louisiana Monroe": "UL Monroe",
     "Massachusetts": "UMass",
     "Connecticut": "UConn",
-    "San Jose State": "San Jose State",
     "Appalachian State": "App State",
     "Southern Mississippi": "Southern Miss",
 }
 
 
+class _BudgetExhausted(Exception):
+    """Raised internally so Streamlit does not cache a skipped result."""
+
+
 # ---------------------------------------------------------------------------
-# Low-level fetch
+# Budget
 # ---------------------------------------------------------------------------
 
+_STATE = {"start": 0.0, "calls": 0}
+
+
+def _budget_available():
+    """True if there is time and request headroom left in this build."""
+    now = time.monotonic()
+    # A gap this long means a new build started; refill.
+    if now - _STATE["start"] > WINDOW_RESET:
+        _STATE["start"] = now
+        _STATE["calls"] = 0
+    if _STATE["calls"] >= MAX_CALLS:
+        return False
+    return (now - _STATE["start"]) < TOTAL_BUDGET
+
+
 def _get(url, params=None):
-    """GET a URL. Returns parsed JSON, or None if anything went wrong."""
+    """
+    GET a URL inside the budget. Returns parsed JSON, or None on failure.
+    Raises _BudgetExhausted if there's no headroom left.
+    """
+    if not _budget_available():
+        raise _BudgetExhausted()
+    _STATE["calls"] += 1
     try:
         r = requests.get(url, params=params, timeout=TIMEOUT)
         if r.status_code != 200:
             return None
         return r.json()
+    except _BudgetExhausted:
+        raise
     except Exception:
         return None
 
@@ -76,12 +112,8 @@ def _get(url, params=None):
 @st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
 def get_espn_teams():
     """
-    {espn_name: espn_team_id} for college football teams.
-    Returns None (not {}) if every fetch failed, so callers can tell
-    "no teams" from "couldn't ask".
-
-    groups=80 is FBS, 81 is FCS. Both are requested — otherwise every FCS
-    opponent (Lindenwood, Mercer, etc.) reads as a name mismatch.
+    {espn_name: espn_team_id}. None if every fetch failed.
+    groups 80 (FBS) and 81 (FCS) so FCS opponents still match.
     """
     teams = {}
     any_ok = False
@@ -118,19 +150,18 @@ def match_team(cfbd_name, espn_teams):
     if name in espn_teams:
         return espn_teams[name]
 
-    # Fuzzy fallback. Strict on purpose — a wrong match silently flags the
-    # wrong game, which is worse than no match at all.
+    # Strict on purpose — a wrong match silently flags the wrong game.
     close = difflib.get_close_matches(name, list(espn_teams.keys()), n=1, cutoff=0.85)
     return espn_teams[close[0]] if close else None
 
 
 # ---------------------------------------------------------------------------
-# Roster (used to resolve player positions)
+# Roster + injuries
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
 def get_roster(espn_team_id):
-    """{athlete_id: (name, position)} for one team. {} on failure."""
+    """{athlete_id: (name, position)}. {} on failure."""
     data = _get(f"{SITE}/teams/{espn_team_id}/roster")
     if not data:
         return {}
@@ -148,35 +179,29 @@ def get_roster(espn_team_id):
     return roster
 
 
-# ---------------------------------------------------------------------------
-# Injuries
-# ---------------------------------------------------------------------------
-
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def get_team_injuries(espn_team_id):
     """
-    List of {"player","position","status"} for one team.
-    Returns None if the request failed — distinct from [] meaning
-    "ESPN answered and listed nobody".
+    List of {"player","position","status"}, or None if the request failed.
+    At most MAX_REFS_PER_TEAM players are resolved — enough to catch a QB
+    without turning one team into thirty requests.
     """
     index = _get(f"{CORE}/teams/{espn_team_id}/injuries", params={"limit": 100})
     if index is None:
         return None
 
+    items = [i for i in index.get("items", []) if i.get("$ref")]
+    if not items:
+        return []
+
     roster = get_roster(espn_team_id)
     out = []
 
-    for item in index.get("items", []):
-        ref = item.get("$ref")
-        if not ref:
-            continue
-        record = _get(ref)
+    for item in items[:MAX_REFS_PER_TEAM]:
+        record = _get(item["$ref"])
         if not record:
             continue
 
-        # The athlete arrives as a $ref URL ending in the athlete id. Pull
-        # the id and look it up in the roster rather than making another
-        # request for every single player.
         athlete_ref = (record.get("athlete") or {}).get("$ref", "")
         athlete_id = athlete_ref.rstrip("/").split("/")[-1].split("?")[0]
         name, pos = roster.get(str(athlete_id), (None, None))
@@ -187,6 +212,13 @@ def get_team_injuries(espn_team_id):
             "status": (record.get("status") or "Unknown").strip(),
         })
 
+    if len(items) > MAX_REFS_PER_TEAM:
+        out.append({
+            "player": f"+{len(items) - MAX_REFS_PER_TEAM} not checked",
+            "position": "-",
+            "status": "unresolved",
+        })
+
     return out
 
 
@@ -195,23 +227,29 @@ def get_team_injuries(espn_team_id):
 # ---------------------------------------------------------------------------
 
 def check_team(cfbd_team_name):
-    """
-    Returns (flagged, notes) for one team.
-    notes is ALWAYS non-empty — a status line if nothing else.
-    """
+    """(flagged, notes) for one team. notes is always non-empty."""
+    if not ENABLED:
+        return False, ["Injury check off"]
+
     label = cfbd_team_name or "?"
 
-    espn_teams = get_espn_teams()
-    if espn_teams is None:
-        return False, ["ESPN unreachable"]
-    if not espn_teams:
-        return False, ["ESPN returned no teams"]
+    try:
+        espn_teams = get_espn_teams()
+        if espn_teams is None:
+            return False, ["ESPN unreachable"]
+        if not espn_teams:
+            return False, ["ESPN returned no teams"]
 
-    tid = match_team(cfbd_team_name, espn_teams)
-    if not tid:
-        return False, [f"No ESPN match for '{label}'"]
+        tid = match_team(cfbd_team_name, espn_teams)
+        if not tid:
+            return False, [f"No ESPN match for '{label}'"]
 
-    injuries = get_team_injuries(tid)
+        injuries = get_team_injuries(tid)
+    except _BudgetExhausted:
+        return False, ["Injury check skipped"]
+    except Exception:
+        return False, ["Injury check error"]
+
     if injuries is None:
         return False, ["ESPN unreachable"]
     if not injuries:
@@ -220,10 +258,13 @@ def check_team(cfbd_team_name):
     flagged = False
     key_notes = []
     other_out = 0
+    unresolved = 0
 
     for inj in injuries:
-        is_out = any(s in inj["status"].lower() for s in OUT_STATUSES)
-        if not is_out:
+        if inj["status"] == "unresolved":
+            unresolved += 1
+            continue
+        if not any(s in inj["status"].lower() for s in OUT_STATUSES):
             continue
         if inj["position"] in KEY_POSITIONS:
             flagged = True
@@ -234,17 +275,16 @@ def check_team(cfbd_team_name):
     notes = list(key_notes)
     if other_out:
         notes.append(f"{other_out} other listed out")
+    if unresolved:
+        notes.append("some not checked")
     if not notes:
-        notes.append(f"{len(injuries)} listed, none out")
+        notes.append("none listed out")
 
     return flagged, notes
 
 
 def check_matchup(home_team, away_team):
-    """
-    Returns (flagged, notes) covering both sides of one game.
-    This is what the app calls per pick card.
-    """
+    """(flagged, notes) covering both sides of one game."""
     home_flag, home_notes = check_team(home_team)
     away_flag, away_notes = check_team(away_team)
 
