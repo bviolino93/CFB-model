@@ -38,17 +38,6 @@ from pathlib import Path
 import math
 import time
 import requests
-# ESPN injury lookup. Wrapped so a missing or broken espn_injuries.py can
-# never take the whole app down on a Saturday morning — it just means no
-# injury flags appear.
-try:
-    from espn_injuries import check_matchup as _espn_check_matchup
-    from espn_injuries import MODULE_VERSION as _ESPN_INJ_VERSION
-except Exception as _espn_imp_err:
-    _ESPN_INJ_VERSION = f"NOT LOADED ({str(_espn_imp_err)[:60]})"
-
-    def _espn_check_matchup(home_team, away_team):
-        return False, ["Injury module not loaded"]
 from statistics import NormalDist, mean, pstdev
 from functools import lru_cache
 from datetime import datetime, timezone, timedelta
@@ -2321,6 +2310,12 @@ def normalize_game_lines(rows, game_id=None):
             provider = ln.get("provider") or "Unknown"
             spread = _num(ln.get("spread"))
             total = _num(ln.get("overUnder"))
+            # Opening numbers. CFBD returns these alongside the current
+            # line and they were previously dropped on the floor. The
+            # difference between open and now is the market telling you
+            # what it learned since — injuries, suspensions, weather.
+            spread_open = _num(ln.get("spreadOpen"))
+            total_open = _num(ln.get("overUnderOpen"))
             try:
                 away_ml = int(ln.get("awayMoneyline")) if ln.get("awayMoneyline") is not None else None
             except Exception:
@@ -2337,6 +2332,9 @@ def normalize_game_lines(rows, game_id=None):
                 "home_spread": spread,
                 "away_spread": -spread if spread is not None else None,
                 "total": total,
+                "home_spread_open": spread_open,
+                "away_spread_open": -spread_open if spread_open is not None else None,
+                "total_open": total_open,
                 "away_ml": away_ml,
                 "home_ml": home_ml,
             })
@@ -16481,6 +16479,62 @@ def best_available_line(provider_rows, market_type, pick_side):
     return picks[0][0], picks[0][1], len(picks), picks[-1][0]
 
 
+# How far the market must move against a pick before it gets flagged.
+# Totals swing more freely than spreads, so they carry a wider band.
+LINE_MOVE_FLAG_SPREAD = 2.0
+LINE_MOVE_FLAG_TOTAL = 3.0
+
+
+def line_move_against(provider_rows, market_type, pick_side):
+    """
+    How far the market has moved since open, in points, signed so that
+    POSITIVE means it moved AGAINST the side being bet.
+
+    This is the cheapest guard there is against betting into news the
+    model hasn't got. A ratings model prices a team at full strength;
+    when a starter is ruled out, the market drops the number and the
+    model reads the lower number as value. The drop IS the information.
+    The same logic catches suspensions, weather and coaching news
+    without needing a feed for any of them.
+
+    Returns (points_against, open_consensus, now_consensus, n_books).
+    points_against is None when no book reported an opening number.
+    """
+    mt = str(market_type or "").upper()
+    side = str(pick_side or "").upper()
+
+    pairs = []
+    for row in provider_rows or []:
+        if mt == "TOTAL":
+            now, opened = row.get("total"), row.get("total_open")
+        elif side == "HOME":
+            now, opened = row.get("home_spread"), row.get("home_spread_open")
+        else:
+            now, opened = row.get("away_spread"), row.get("away_spread_open")
+        if now is None or opened is None:
+            continue
+        try:
+            pairs.append((float(opened), float(now)))
+        except Exception:
+            continue
+
+    if not pairs:
+        return None, None, None, 0
+
+    open_avg = sum(p[0] for p in pairs) / len(pairs)
+    now_avg = sum(p[1] for p in pairs) / len(pairs)
+
+    if mt == "TOTAL":
+        # Over is hurt by the total falling; Under by it rising.
+        against = (open_avg - now_avg) if side == "OVER" else (now_avg - open_avg)
+    else:
+        # For either side, its own spread number rising means the market
+        # has downgraded that team since open.
+        against = now_avg - open_avg
+
+    return against, open_avg, now_avg, len(pairs)
+
+
 def _clv_points(bet_line, closing_line, market_type, pick_side):
     """
     Closing line value in points. Positive means you beat the close —
@@ -18259,6 +18313,44 @@ def _render_v36_live_card(card, selected_date):
     official = ranked[ranked["verdict"].isin(["BEST BET","BET"])].copy()
     leans = ranked[ranked["verdict"] == "LEAN"].copy()
 
+    # Manual injury / news flags. You type team names; any card involving
+    # one gets an amber strip. No API, no network, no build cost — it
+    # re-renders instantly as you type. Optional note after a colon.
+    #   Navy: starting QB out, Wake Forest, UCLA: RB questionable
+    _flag_raw = st.text_input(
+        "Injury / news flags",
+        key="se_manual_injury_flags",
+        placeholder="Navy: starting QB out, Wake Forest",
+        help=("Comma-separated team names. Add a note after a colon. "
+              "Cards involving these teams are flagged. This is advisory "
+              "only — it does not change the model's numbers."),
+    )
+
+    _manual_flags = {}
+    for _chunk in str(_flag_raw or "").split(","):
+        _chunk = _chunk.strip()
+        if not _chunk:
+            continue
+        if ":" in _chunk:
+            _team, _note = _chunk.split(":", 1)
+        else:
+            _team, _note = _chunk, "flagged"
+        _team = _team.strip().lower()
+        if _team:
+            _manual_flags[_team] = _note.strip() or "flagged"
+
+    # Same-game correlation. Two picks on one game are not two bets —
+    # they share a cause, so one piece of news takes out both. Count
+    # how many official plays each game carries so the cards can say so.
+    _game_counts = {}
+    try:
+        if "game_id" in official.columns:
+            for _gid in official["game_id"].dropna().tolist():
+                _key = str(_gid)
+                _game_counts[_key] = _game_counts.get(_key, 0) + 1
+    except Exception:
+        _game_counts = {}
+
     if official.empty:
         st.markdown(
             """
@@ -18319,28 +18411,55 @@ def _render_v36_live_card(card, selected_date):
             except Exception:
                 _shop = ""
 
-            # ESPN injury check. Advisory only — never removes a pick or
-            # changes the model's numbers. Always renders something, so a
-            # blank card can't be mistaken for "everyone is healthy".
+            # Warning strip: market movement against this pick, same-game
+            # correlation, and anything you flagged by hand. All advisory —
+            # none of it changes the model's numbers or the frozen card.
             _inj = ""
             try:
-                _inj_flag, _inj_notes = _espn_check_matchup(
-                    str(r.get("home_team", "") or ""),
-                    str(r.get("away_team", "") or ""),
-                )
-                if not _inj_notes:
-                    _inj_notes = ["No injury data"]
-                _inj_body = " · ".join(
-                    html.escape(str(n)) for n in _inj_notes[:6]
-                )
-                _inj_ver = html.escape(str(_ESPN_INJ_VERSION))
-                _inj_cls = "ge-inj warn" if _inj_flag else "ge-inj"
-                _inj_head = "<b>KEY PLAYER OUT</b> · " if _inj_flag else ""
-                _inj = (f'<div class="{_inj_cls}">[{_inj_ver}] '
-                        f'{_inj_head}{_inj_body}</div>')
-            except Exception as _inj_err:
-                _inj = (f'<div class="ge-inj">Injury check failed: '
-                        f'{html.escape(str(_inj_err)[:80])}</div>')
+                _warns = []
+
+                # 1. Has the market moved against us since open?
+                try:
+                    _prov_mv = json.loads(r.get("provider_rows_json") or "[]")
+                    _mv, _mv_open, _mv_now, _mv_n = line_move_against(
+                        _prov_mv, market_type, r.get("pick_side")
+                    )
+                    _mv_gate = (LINE_MOVE_FLAG_TOTAL if market_type == "TOTAL"
+                                else LINE_MOVE_FLAG_SPREAD)
+                    if _mv is not None and _mv >= _mv_gate:
+                        _warns.append(
+                            f"<b>MARKET MOVED {_mv:.1f} PTS AGAINST</b> "
+                            f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
+                            f"{_mv_n} books) \u2014 the market may know "
+                            f"something the model doesn't"
+                        )
+                except Exception:
+                    pass
+
+                # 2. Is this game carrying more than one official play?
+                _gid_n = _game_counts.get(str(r.get("game_id")), 0)
+                if _gid_n > 1:
+                    _warns.append(
+                        f"<b>{_gid_n} PLAYS ON THIS GAME</b> \u2014 correlated, "
+                        f"not independent"
+                    )
+
+                # 3. Anything you flagged by hand.
+                for _side in (str(r.get("away_team", "") or ""),
+                              str(r.get("home_team", "") or "")):
+                    _note = _manual_flags.get(_side.strip().lower())
+                    if _note:
+                        _warns.append(
+                            f"<b>FLAGGED</b> {html.escape(_side)}: "
+                            f"{html.escape(_note)}"
+                        )
+
+                if _warns:
+                    _inj = "".join(
+                        f'<div class="ge-inj warn">{w}</div>' for w in _warns
+                    )
+            except Exception:
+                _inj = ""
 
             st.markdown(
                 f"""
