@@ -23,6 +23,10 @@ import difflib
 import requests
 import streamlit as st
 
+# Bumped whenever this file changes. app.py prints it on each card so you
+# can confirm which copy is actually running.
+MODULE_VERSION = "v3"
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

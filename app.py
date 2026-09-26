@@ -43,7 +43,10 @@ import requests
 # injury flags appear.
 try:
     from espn_injuries import check_matchup as _espn_check_matchup
-except Exception:
+    from espn_injuries import MODULE_VERSION as _ESPN_INJ_VERSION
+except Exception as _espn_imp_err:
+    _ESPN_INJ_VERSION = f"NOT LOADED ({str(_espn_imp_err)[:60]})"
+
     def _espn_check_matchup(home_team, away_team):
         return False, ["Injury module not loaded"]
 from statistics import NormalDist, mean, pstdev
@@ -18330,9 +18333,11 @@ def _render_v36_live_card(card, selected_date):
                 _inj_body = " · ".join(
                     html.escape(str(n)) for n in _inj_notes[:6]
                 )
+                _inj_ver = html.escape(str(_ESPN_INJ_VERSION))
                 _inj_cls = "ge-inj warn" if _inj_flag else "ge-inj"
                 _inj_head = "<b>KEY PLAYER OUT</b> · " if _inj_flag else ""
-                _inj = f'<div class="{_inj_cls}">{_inj_head}{_inj_body}</div>'
+                _inj = (f'<div class="{_inj_cls}">[{_inj_ver}] '
+                        f'{_inj_head}{_inj_body}</div>')
             except Exception as _inj_err:
                 _inj = (f'<div class="ge-inj">Injury check failed: '
                         f'{html.escape(str(_inj_err)[:80])}</div>')
