@@ -38,6 +38,14 @@ from pathlib import Path
 import math
 import time
 import requests
+# ESPN injury lookup. Wrapped so a missing or broken espn_injuries.py can
+# never take the whole app down on a Saturday morning — it just means no
+# injury flags appear.
+try:
+    from espn_injuries import check_matchup as _espn_check_matchup
+except Exception:
+    def _espn_check_matchup(home_team, away_team):
+        return False, []
 from statistics import NormalDist, mean, pstdev
 from functools import lru_cache
 from datetime import datetime, timezone, timedelta
@@ -7190,6 +7198,10 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
 .ge-shop b{color:#7fb4ff;font-size:.60rem}
 .ge-shop span{color:#7f97ae;font-weight:700}
+/* injury strip — amber when a key position is out, neutral otherwise */
+.ge-inj{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(127,151,174,.09);border:1px solid rgba(127,151,174,.20);color:#a9bccf;font-size:.52rem;font-weight:700;line-height:1.5}
+.ge-inj.warn{background:rgba(242,193,78,.10);border-color:rgba(242,193,78,.34);color:#f2d79a}
+.ge-inj b{color:#f2c14e}
 .ge-wordmark{font-style:italic;line-height:1;white-space:nowrap}
 .ge-wordmark span{color:#f7fbff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
 .ge-wordmark strong{color:#388cff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
@@ -18304,6 +18316,27 @@ def _render_v36_live_card(card, selected_date):
             except Exception:
                 _shop = ""
 
+            # ESPN injury check. Advisory only — it never removes a pick or
+            # changes the model's numbers. On any failure it renders nothing
+            # and the card looks exactly as it did before.
+            _inj = ""
+            try:
+                _inj_flag, _inj_notes = _espn_check_matchup(
+                    str(r.get("home_team", "") or ""),
+                    str(r.get("away_team", "") or ""),
+                )
+                if _inj_notes:
+                    _inj_body = " · ".join(
+                        html.escape(str(n)) for n in _inj_notes[:4]
+                    )
+                    _inj_cls = "ge-inj warn" if _inj_flag else "ge-inj"
+                    _inj_head = (
+                        "<b>KEY PLAYER OUT</b> · " if _inj_flag else ""
+                    )
+                    _inj = f'<div class="{_inj_cls}">{_inj_head}{_inj_body}</div>'
+            except Exception:
+                _inj = ""
+
             st.markdown(
                 f"""
                 <div class="ge-official-card {cls}">
@@ -18327,6 +18360,7 @@ def _render_v36_live_card(card, selected_date):
                     <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
                   </div>
                   {_shop}
+                  {_inj}
                 </div>
                 """,
                 unsafe_allow_html=True,
