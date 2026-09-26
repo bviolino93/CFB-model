@@ -45,7 +45,7 @@ try:
     from espn_injuries import check_matchup as _espn_check_matchup
 except Exception:
     def _espn_check_matchup(home_team, away_team):
-        return False, []
+        return False, ["Injury module not loaded"]
 from statistics import NormalDist, mean, pstdev
 from functools import lru_cache
 from datetime import datetime, timezone, timedelta
@@ -18316,26 +18316,26 @@ def _render_v36_live_card(card, selected_date):
             except Exception:
                 _shop = ""
 
-            # ESPN injury check. Advisory only — it never removes a pick or
-            # changes the model's numbers. On any failure it renders nothing
-            # and the card looks exactly as it did before.
+            # ESPN injury check. Advisory only — never removes a pick or
+            # changes the model's numbers. Always renders something, so a
+            # blank card can't be mistaken for "everyone is healthy".
             _inj = ""
             try:
                 _inj_flag, _inj_notes = _espn_check_matchup(
                     str(r.get("home_team", "") or ""),
                     str(r.get("away_team", "") or ""),
                 )
-                if _inj_notes:
-                    _inj_body = " · ".join(
-                        html.escape(str(n)) for n in _inj_notes[:4]
-                    )
-                    _inj_cls = "ge-inj warn" if _inj_flag else "ge-inj"
-                    _inj_head = (
-                        "<b>KEY PLAYER OUT</b> · " if _inj_flag else ""
-                    )
-                    _inj = f'<div class="{_inj_cls}">{_inj_head}{_inj_body}</div>'
-            except Exception:
-                _inj = ""
+                if not _inj_notes:
+                    _inj_notes = ["No injury data"]
+                _inj_body = " · ".join(
+                    html.escape(str(n)) for n in _inj_notes[:6]
+                )
+                _inj_cls = "ge-inj warn" if _inj_flag else "ge-inj"
+                _inj_head = "<b>KEY PLAYER OUT</b> · " if _inj_flag else ""
+                _inj = f'<div class="{_inj_cls}">{_inj_head}{_inj_body}</div>'
+            except Exception as _inj_err:
+                _inj = (f'<div class="ge-inj">Injury check failed: '
+                        f'{html.escape(str(_inj_err)[:80])}</div>')
 
             st.markdown(
                 f"""
