@@ -16211,6 +16211,7 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
             # line shopping and open-vs-now movement. Previously dropped
             # here, which silently left both features with no data.
             "provider_rows_json": r.get("provider_rows_json", "[]"),
+            "venue_id": r.get("venue_id"),
             "season": season,
             "week": int(_v3_num(r.get("week"), 1)),
             "kickoff_et": r.get("kickoff_et", ""),
@@ -17859,6 +17860,7 @@ def _v410_total_card(slate_df):
             # Same carry-through as the spread card — needed for line
             # shopping and open-vs-now movement.
             "provider_rows_json": r.get("provider_rows_json", "[]"),
+            "venue_id": r.get("venue_id"),
             "kickoff_et": r.get("kickoff_et"),
             "home_team": r.get("home_team"),
             "away_team": r.get("away_team"),
@@ -18460,7 +18462,15 @@ def _render_v36_live_card(card, selected_date):
                         f"({html.escape(str(_mv_err)[:60])})"
                     )
 
-                # 2. Is this game carrying more than one official play?
+                # 2. Kickoff conditions, when notable.
+                _wx_note = str(r.get("weather_note") or "").strip()
+                if _wx_note:
+                    if _wx_note.startswith("OVER suppressed"):
+                        _warns.append(f"<b>{html.escape(_wx_note)}</b>")
+                    else:
+                        _neutral.append(f"Kickoff: {html.escape(_wx_note)}")
+
+                # 3. Is this game carrying more than one official play?
                 _gid_n = _game_counts.get(str(r.get("game_id")), 0)
                 if _gid_n > 1:
                     _warns.append(
@@ -18468,7 +18478,7 @@ def _render_v36_live_card(card, selected_date):
                         f"not independent"
                     )
 
-                # 3. Anything you flagged by hand.
+                # 4. Anything you flagged by hand.
                 for _side in (str(r.get("away_team", "") or ""),
                               str(r.get("home_team", "") or "")):
                     _note = _manual_flags.get(_side.strip().lower())
@@ -20066,6 +20076,171 @@ def _se_venue_coords():
     except Exception:
         pass
     return out
+
+
+# ===== Weather =====
+# The model prices every game as though conditions are neutral. They are
+# not. Wind suppresses scoring in a known direction, so a ratings model
+# will systematically produce Overs on days the ball cannot be thrown.
+# This is a FILTER, not a model input: it removes a known blind spot
+# rather than trying to estimate how many points a 30 mph wind is worth.
+# Fitting that coefficient on a dozen windy games a season would be
+# fitting noise, and a wrong coefficient is worse than none.
+
+# Sustained wind / gusts, mph, at kickoff.
+WEATHER_WIND_NOTE = 12.0
+WEATHER_GUST_NOTE = 20.0
+WEATHER_WIND_SUPPRESS = 20.0
+WEATHER_GUST_SUPPRESS = 30.0
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def _se_slate_weather(points):
+    """
+    ONE request for the whole slate. Open-Meteo accepts comma-separated
+    coordinate lists and returns a list of structures, so a 13-game card
+    costs a single HTTP call and cannot turn into an N+1 grind.
+
+    points: tuple of (game_id, lat, lon, kickoff_hour_iso) where the hour
+            is "YYYY-MM-DDTHH:00" in America/New_York.
+
+    Returns {game_id: {"wind": mph, "gust": mph, "precip": mm}}.
+    Empty dict on any failure — callers must treat that as "unknown",
+    never as "fine".
+    """
+    if not points:
+        return {}
+
+    lats = ",".join(f"{p[1]:.4f}" for p in points)
+    lons = ",".join(f"{p[2]:.4f}" for p in points)
+
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lats,
+                "longitude": lons,
+                "hourly": "wind_speed_10m,wind_gusts_10m,precipitation",
+                "wind_speed_unit": "mph",
+                "timezone": "America/New_York",
+                "forecast_days": 3,
+            },
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+    except Exception:
+        return {}
+
+    # A single coordinate returns an object; several return a list.
+    blocks = data if isinstance(data, list) else [data]
+    out = {}
+
+    for point, block in zip(points, blocks):
+        gid, _lat, _lon, hour_iso = point
+        try:
+            hourly = block.get("hourly") or {}
+            times = hourly.get("time") or []
+            idx = times.index(hour_iso) if hour_iso in times else None
+            if idx is None:
+                continue
+            out[str(gid)] = {
+                "wind": float((hourly.get("wind_speed_10m") or [])[idx]),
+                "gust": float((hourly.get("wind_gusts_10m") or [])[idx]),
+                "precip": float((hourly.get("precipitation") or [])[idx]),
+            }
+        except Exception:
+            continue
+
+    return out
+
+
+def _se_weather_points(card):
+    """Build the (game_id, lat, lon, kickoff_hour) tuple for a card."""
+    coords = _se_venue_coords()
+    if not coords:
+        return ()
+
+    seen, points = set(), []
+    for _, r in card.iterrows():
+        gid = str(r.get("game_id") or "")
+        vid = str(r.get("venue_id") or r.get("venueId") or "")
+        if not gid or gid in seen:
+            continue
+        latlon = coords.get(vid)
+        if not latlon:
+            continue
+        try:
+            k = pd.to_datetime(str(r.get("kickoff_et") or ""))
+            hour_iso = k.strftime("%Y-%m-%dT%H:00")
+        except Exception:
+            continue
+        seen.add(gid)
+        points.append((gid, latlon[0], latlon[1], hour_iso))
+
+    return tuple(points)
+
+
+def _se_apply_weather(card):
+    """
+    Attach kickoff conditions to every row and suppress Over plays in
+    conditions the model cannot see.
+
+    Returns (card, suppressed_labels, status). Unders are left alone:
+    wind biases the model's total HIGH, so it inflates Overs and does
+    not manufacture Unders.
+    """
+    if card is None or card.empty:
+        return card, [], "no card"
+
+    out = card.copy()
+    for col in ("weather_wind", "weather_gust", "weather_precip"):
+        out[col] = None
+    out["weather_note"] = ""
+
+    points = _se_weather_points(out)
+    if not points:
+        return out, [], "no venue coordinates"
+
+    wx = _se_slate_weather(points)
+    if not wx:
+        return out, [], "forecast unavailable"
+
+    suppressed = []
+
+    for idx, r in out.iterrows():
+        cond = wx.get(str(r.get("game_id") or ""))
+        if not cond:
+            continue
+
+        wind, gust = cond["wind"], cond["gust"]
+        out.at[idx, "weather_wind"] = round(wind, 1)
+        out.at[idx, "weather_gust"] = round(gust, 1)
+        out.at[idx, "weather_precip"] = round(cond["precip"], 2)
+
+        is_total = str(r.get("market_type", "")).upper() == "TOTAL"
+        is_over = str(r.get("pick_side", "")).upper() == "OVER"
+        bad = wind >= WEATHER_WIND_SUPPRESS or gust >= WEATHER_GUST_SUPPRESS
+        notable = wind >= WEATHER_WIND_NOTE or gust >= WEATHER_GUST_NOTE
+
+        if notable:
+            out.at[idx, "weather_note"] = (
+                f"wind {wind:.0f} mph, gusts {gust:.0f}"
+            )
+
+        if is_total and is_over and bad:
+            out.at[idx, "verdict"] = "PASS"
+            out.at[idx, "weather_note"] = (
+                f"OVER suppressed \u2014 wind {wind:.0f} mph, gusts {gust:.0f}"
+            )
+            suppressed.append(
+                f"{r.get('selection', '')} "
+                f"({r.get('away_team', '')} @ {r.get('home_team', '')}) "
+                f"\u2014 gusts {gust:.0f} mph"
+            )
+
+    return out, suppressed, "ok"
 
 
 def _se_slate_map_svg(points, w=680, h=380):
@@ -22424,6 +22599,8 @@ if run_mode == "Full Slate":
                 # datetime, and _se_kick_label still prints only the clock.
                 "kickoff_et": k.strftime("%Y-%m-%d %I:%M %p") if k is not None else "",
                 "game_id": g.get("id"),
+                # Needed for the kickoff weather lookup.
+                "venue_id": g.get("venueId") or g.get("venue_id"),
                 "away_team": gp["away"],
                 "home_team": gp["home"],
                 "away_logo": _team_logo_url(model_data_s, gp["away"]),
@@ -22537,6 +22714,29 @@ if run_mode == "Full Slate":
 
         # Two tiers: strict official bets, plus an always-there watch list.
         _official, _fun = _v50_apply_strict_selection(combined_card)
+
+        # Kickoff conditions. Applied HERE, before the card is stored and
+        # frozen, so the tracker grades what you were actually shown —
+        # a display-only filter would silently diverge from the record.
+        _wx_suppressed, _wx_status = [], "not run"
+        try:
+            _official, _wx_suppressed, _wx_status = _se_apply_weather(_official)
+        except Exception as _wx_err:
+            _wx_status = f"failed: {str(_wx_err)[:80]}"
+
+        if _wx_suppressed:
+            st.warning(
+                "**Weather filter suppressed "
+                f"{len(_wx_suppressed)} Over play"
+                f"{'s' if len(_wx_suppressed) != 1 else ''}** \u2014 the model "
+                "has no weather input, so it prices windy games as though "
+                "conditions are neutral.\n\n- "
+                + "\n- ".join(_wx_suppressed)
+            )
+        elif _wx_status == "ok":
+            st.caption("Weather filter: ran, nothing suppressed.")
+        else:
+            st.caption(f"Weather filter: {_wx_status} \u2014 no adjustment made.")
 
         # Store the POST-selection card so other views report the real verdict.
         _stored = combined_card.copy()
