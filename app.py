@@ -16094,6 +16094,13 @@ def _v36_live_feature_frame(games_today, slate_df):
         # pulled another game's line, logo and ratings.
         row["row_index"] = _slate_pos
         row["game_id"] = gid
+        # Carry the slate's market and venue context through the feature
+        # frame. The spread card iterates THIS frame, not slate_df, so
+        # anything not copied here is invisible downstream — which is why
+        # line shopping and line movement showed nothing on spreads.
+        row["provider_rows_json"] = sr.get("provider_rows_json", "[]")
+        row["venue_id"] = sr.get("venue_id")
+        row["kickoff_et"] = sr.get("kickoff_et", "")
         rows.append(row)
 
     return pd.DataFrame(rows)
