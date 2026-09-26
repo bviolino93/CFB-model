@@ -16207,6 +16207,10 @@ def _v36_live_daily_card(games_today, slate_df, scope="Major FBS"):
         rows.append({
             "row_index": row_index,
             "game_id": r.get("game_id"),
+            # Carried through from the slate so downstream display can do
+            # line shopping and open-vs-now movement. Previously dropped
+            # here, which silently left both features with no data.
+            "provider_rows_json": r.get("provider_rows_json", "[]"),
             "season": season,
             "week": int(_v3_num(r.get("week"), 1)),
             "kickoff_et": r.get("kickoff_et", ""),
@@ -17852,6 +17856,9 @@ def _v410_total_card(slate_df):
             "market_type": "TOTAL",
             "game_date": r.get("game_date"),
             "game_id": r.get("game_id"),
+            # Same carry-through as the spread card — needed for line
+            # shopping and open-vs-now movement.
+            "provider_rows_json": r.get("provider_rows_json", "[]"),
             "kickoff_et": r.get("kickoff_et"),
             "home_team": r.get("home_team"),
             "away_team": r.get("away_team"),
