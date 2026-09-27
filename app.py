@@ -17282,14 +17282,35 @@ def _v401_backfill_result_margin(df):
     needed is already stored, so recompute locally. No API call, no rewriting
     of any graded result.
     """
-    if df is None or df.empty or "result_margin" not in df.columns:
+    # Diagnostic, surfaced on the tracker page. This backfill has been
+    # silently returning zero — a blank margin column looks identical
+    # whether the column is missing, nothing needs filling, or every row
+    # fails. Record which, instead of guessing.
+    diag = {"column": True, "graded": 0, "already": 0, "todo": 0,
+            "filled": 0, "failed": 0, "why": ""}
+    st.session_state["_se_margin_diag"] = diag
+
+    if df is None or df.empty:
+        diag["why"] = "tracker empty"
         return 0, df
+    if "result_margin" not in df.columns:
+        diag["column"] = False
+        diag["why"] = "no result_margin column in the sheet"
+        return 0, df
+
     _rm = pd.to_numeric(df.get("result_margin"), errors="coerce")
     _graded = df["result"].astype(str).str.upper().isin(["WIN", "LOSS", "PUSH"])
+    diag["graded"] = int(_graded.sum())
+    diag["already"] = int((_graded & _rm.notna()).sum())
+
     todo = _graded & _rm.isna()
+    diag["todo"] = int(todo.sum())
     if not todo.any():
+        diag["why"] = "nothing to fill"
         return 0, df
+
     n = 0
+    miss_side = miss_score = miss_line = 0
     for idx, r in df.loc[todo].iterrows():
         m = _v401_bet_margin(r.get("bet_line"), r.get("market_type"),
                              r.get("pick_side"), r.get("final_home_score"),
@@ -17297,6 +17318,21 @@ def _v401_backfill_result_margin(df):
         if m is not None:
             df.loc[idx, "result_margin"] = m
             n += 1
+        else:
+            if not str(r.get("pick_side") or "").strip():
+                miss_side += 1
+            elif pd.isna(pd.to_numeric(pd.Series([r.get("final_home_score")]),
+                                       errors="coerce").iloc[0]):
+                miss_score += 1
+            else:
+                miss_line += 1
+
+    diag["filled"] = n
+    diag["failed"] = int(todo.sum()) - n
+    if diag["failed"]:
+        diag["why"] = (f"{miss_side} missing pick_side, "
+                       f"{miss_score} missing final score, "
+                       f"{miss_line} missing/bad bet_line")
     return n, df
 
 
@@ -18342,6 +18378,17 @@ def _render_v36_live_card(card, selected_date):
               "only — it does not change the model's numbers."),
     )
 
+    _adj_raw = st.text_input(
+        "Injury adjustments (points a team is WORSE than the model thinks)",
+        key="se_manual_adjustments",
+        placeholder="Colorado State: -7, Navy: -5",
+        help=("Format: 'Team: -N'. Applies on the next Rebuild Slate, so it "
+              "lands in the frozen card and your tracker. One-way by design: "
+              "it can kill or shrink a pick, never create or enlarge one."),
+    )
+    if _adj_raw and not st.session_state.get("_se_adj_applied_hint"):
+        st.caption("Adjustments take effect on the next **Rebuild Slate**.")
+
     _manual_flags = {}
     for _chunk in str(_flag_raw or "").split(","):
         _chunk = _chunk.strip()
@@ -18469,7 +18516,15 @@ def _render_v36_live_card(card, selected_date):
                         f"({html.escape(str(_mv_err)[:60])})"
                     )
 
-                # 2. Kickoff conditions, when notable.
+                # 2. Your own adjustment, if it touched this pick.
+                _adj_note = str(r.get("adj_note") or "").strip()
+                if _adj_note:
+                    if _adj_note.startswith("KILLED"):
+                        _warns.append(f"<b>{html.escape(_adj_note)}</b>")
+                    else:
+                        _warns.append(html.escape(_adj_note))
+
+                # 3. Kickoff conditions, when notable.
                 _wx_note = str(r.get("weather_note") or "").strip()
                 if _wx_note:
                     if _wx_note.startswith("OVER suppressed"):
@@ -18477,7 +18532,7 @@ def _render_v36_live_card(card, selected_date):
                     else:
                         _neutral.append(f"Kickoff: {html.escape(_wx_note)}")
 
-                # 3. Is this game carrying more than one official play?
+                # 4. Is this game carrying more than one official play?
                 _gid_n = _game_counts.get(str(r.get("game_id")), 0)
                 if _gid_n > 1:
                     _warns.append(
@@ -18485,7 +18540,7 @@ def _render_v36_live_card(card, selected_date):
                         f"not independent"
                     )
 
-                # 4. Anything you flagged by hand.
+                # 5. Anything you flagged by hand.
                 for _side in (str(r.get("away_team", "") or ""),
                               str(r.get("home_team", "") or "")):
                     _note = _manual_flags.get(_side.strip().lower())
@@ -20250,6 +20305,113 @@ def _se_apply_weather(card):
     return out, suppressed, "ok"
 
 
+def _se_parse_adjustments(raw):
+    """
+    Parse "Colorado State: -7, Navy: -5" into {team_lower: points}.
+
+    The number is how many points WORSE that team is than the model
+    thinks — a starting QB out, a line decimated, whatever you know that
+    the ratings don't. Only negative values mean anything; a positive
+    number is ignored, because this tool is deliberately one-way.
+    """
+    out = {}
+    for chunk in str(raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        team, val = chunk.split(":", 1)
+        team = team.strip().lower()
+        try:
+            pts = float(str(val).strip())
+        except Exception:
+            continue
+        if team and pts < 0:
+            out[team] = abs(pts)
+    return out
+
+
+def _se_apply_adjustments(card, adjustments):
+    """
+    Re-price picks against your own information, in ONE direction only:
+    an adjustment can shrink an edge and kill a bet, never create or
+    enlarge one.
+
+    That constraint is the whole design. A two-way manual input turns a
+    disciplined model into a machine for justifying bets you already
+    wanted — nudge a number, watch a play appear, call it analysis. Only
+    letting it remove picks keeps the value (not betting into news the
+    model is blind to) without that failure mode.
+
+    Returns (card, killed, softened).
+    """
+    if card is None or card.empty or not adjustments:
+        return card, [], []
+
+    out = card.copy()
+    if "adj_note" not in out.columns:
+        out["adj_note"] = ""
+
+    killed, softened = [], []
+
+    for idx, r in out.iterrows():
+        home = str(r.get("home_team", "") or "").strip().lower()
+        away = str(r.get("away_team", "") or "").strip().lower()
+        hit_home = adjustments.get(home, 0.0)
+        hit_away = adjustments.get(away, 0.0)
+        if not hit_home and not hit_away:
+            continue
+
+        try:
+            market = float(r.get("market_display"))
+            fair = float(r.get("fair_display"))
+        except Exception:
+            continue
+
+        mt = str(r.get("market_type", "")).upper()
+        side = str(r.get("pick_side", "")).upper()
+
+        if mt == "TOTAL":
+            # A weaker team scores less, so the fair total comes down by
+            # the adjustment. That hurts an Over and helps an Under.
+            new_fair = fair - (hit_home + hit_away)
+            old_edge = (fair - market) if side == "OVER" else (market - fair)
+            new_edge = (new_fair - market) if side == "OVER" else (market - new_fair)
+        else:
+            # Spread. fair_display is already signed from the pick's
+            # perspective, so a weaker PICKED team needs more points.
+            picked_hit = hit_home if side == "HOME" else hit_away
+            if not picked_hit:
+                continue  # only the opponent was downgraded; that's an upgrade
+            new_fair = fair + picked_hit
+            old_edge = market - fair
+            new_edge = market - new_fair
+
+        # One-way gate: if your information helps the pick, ignore it.
+        if new_edge >= old_edge:
+            continue
+
+        label = (f"{r.get('selection', '')} "
+                 f"({r.get('away_team', '')} @ {r.get('home_team', '')})")
+
+        if new_edge <= 0:
+            out.at[idx, "verdict"] = "PASS"
+            out.at[idx, "adj_note"] = (
+                f"KILLED by your adjustment \u2014 edge {old_edge:+.1f} "
+                f"\u2192 {new_edge:+.1f} pts"
+            )
+            killed.append(f"{label} \u2014 edge {old_edge:+.1f} \u2192 {new_edge:+.1f}")
+        else:
+            out.at[idx, "fair_display"] = new_fair
+            out.at[idx, "point_edge"] = abs(new_edge)
+            out.at[idx, "adj_note"] = (
+                f"Adjusted \u2014 edge {old_edge:+.1f} \u2192 {new_edge:+.1f} pts, "
+                f"fair {fair:+.1f} \u2192 {new_fair:+.1f}"
+            )
+            softened.append(f"{label} \u2014 edge {old_edge:+.1f} \u2192 {new_edge:+.1f}")
+
+    return out, killed, softened
+
+
 def _se_slate_map_svg(points, w=680, h=380):
     """
     Today's board, geographically. Every game is a dot; the ones that became
@@ -21976,20 +22138,59 @@ def _render_home_page():
             _clean = int((_lag.notna() & (_lag <= 3.0)).sum())
         except Exception:
             _clean = 0
+        # The MEAN is dragged around by a handful of big moves. How often
+        # you beat the close is the sturdier number, so lead with that and
+        # report the mean second.
+        _beat = int((_clv > 0).sum())
+        _lost = int((_clv < 0).sum())
+        _tied = int((_clv == 0).sum())
+        _dec = _beat + _lost
+        _rate = (100.0 * _beat / _dec) if _dec else 0.0
         if _clean >= 30:
             st.caption(
-                f"Picks beat the closing line by {_clv.mean():+.2f} points on average "
-                f"across {_clean} bets measured at kickoff — the earliest sign a model "
-                f"is finding real prices."
+                f"Beat the closing number on {_beat} of {_dec} bets where it moved "
+                f"({_rate:.0f}%), tied on {_tied}. Average {_clv.mean():+.2f} pts. "
+                f"Getting better prices than the close is the earliest sign a model "
+                f"is finding real value — and it shows up long before W/L does."
             )
         else:
             st.caption(
-                f"Picks sit {_clv.mean():+.2f} points against the closing line across "
-                f"{len(_clv)} graded bets. Closing prices are still being collected, "
-                f"so treat this as provisional."
+                f"Beat the closing number on {_beat} of {_dec} bets where it moved "
+                f"({_rate:.0f}%), tied on {_tied}. Average {_clv.mean():+.2f} pts "
+                f"across {len(_clv)} graded bets. Closing prices are still being "
+                f"collected, so treat this as provisional."
             )
     else:
         st.caption(f"{_s['graded']} of {_s['bets']} bets graded so far.")
+
+    # Result margin is the highest-value column in the ledger: a continuous
+    # outcome carries several times the statistical power of W/L on the same
+    # number of bets. It has been blank, so report its state plainly.
+    _md = st.session_state.get("_se_margin_diag")
+    if _md:
+        if not _md.get("column"):
+            st.caption(
+                "Result margin: no `result_margin` column in the tracker sheet, "
+                "so none can be stored. Add that header to the sheet."
+            )
+        elif _md.get("filled"):
+            st.caption(
+                f"Result margin: backfilled {_md['filled']} bet"
+                f"{'s' if _md['filled'] != 1 else ''} this load "
+                f"({_md['already'] + _md['filled']} of {_md['graded']} graded "
+                f"now have one)."
+            )
+        elif _md.get("failed"):
+            st.caption(
+                f"Result margin: {_md['failed']} graded bet"
+                f"{'s' if _md['failed'] != 1 else ''} could not be computed "
+                f"\u2014 {_md.get('why', '')}."
+            )
+        elif _md.get("graded"):
+            st.caption(
+                f"Result margin: {_md['already']} of {_md['graded']} graded "
+                f"bets have one."
+            )
 
     # --- what the record can and cannot tell you --------------------------
     try:
@@ -22731,8 +22932,7 @@ if run_mode == "Full Slate":
         except Exception as _wx_err:
             _wx_status = f"failed: {str(_wx_err)[:80]}"
 
-        if _wx_suppressed:
-            st.warning(
+        if _wx_suppressed:            st.warning(
                 "**Weather filter suppressed "
                 f"{len(_wx_suppressed)} Over play"
                 f"{'s' if len(_wx_suppressed) != 1 else ''}** \u2014 the model "
@@ -22744,6 +22944,35 @@ if run_mode == "Full Slate":
             st.caption("Weather filter: ran, nothing suppressed.")
         else:
             st.caption(f"Weather filter: {_wx_status} \u2014 no adjustment made.")
+
+        # Your own injury / news information, applied before the freeze.
+        # One-way by design: this can kill or shrink a pick, never add one.
+        _adj = _se_parse_adjustments(
+            st.session_state.get("se_manual_adjustments", "")
+        )
+        if _adj:
+            try:
+                _official, _adj_killed, _adj_soft = _se_apply_adjustments(
+                    _official, _adj
+                )
+                if _adj_killed:
+                    st.warning(
+                        f"**Your adjustments killed {len(_adj_killed)} play"
+                        f"{'s' if len(_adj_killed) != 1 else ''}**\n\n- "
+                        + "\n- ".join(_adj_killed)
+                    )
+                if _adj_soft:
+                    st.info(
+                        f"**Edge reduced on {len(_adj_soft)} play"
+                        f"{'s' if len(_adj_soft) != 1 else ''}** "
+                        "(still qualifying)\n\n- " + "\n- ".join(_adj_soft)
+                    )
+                if not _adj_killed and not _adj_soft:
+                    st.caption(
+                        "Adjustments applied: no qualifying pick was affected."
+                    )
+            except Exception as _adj_err:
+                st.caption(f"Adjustments failed: {str(_adj_err)[:80]}")
 
         # Store the POST-selection card so other views report the real verdict.
         _stored = combined_card.copy()
