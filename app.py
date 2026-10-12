@@ -16442,6 +16442,7 @@ V401_TRACKER_COLUMNS = [
     "closing_line","clv_points","bet_tier",
     # --- analysis columns ---
     "raw_cover_probability",   # model output BEFORE shrinkage
+    "raw_gap_points",          # model-vs-market disagreement, unshrunk
     "shrink_param",            # V50_SHRINK in force at freeze
     "min_ev_param",            # V50_MIN_EV in force at freeze
     "result_margin",           # points the bet won/lost by (continuous)
@@ -16930,6 +16931,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "final_away_score": None,
             "graded_at": None,
             "raw_cover_probability": fnum("raw_cover_probability"),
+            "raw_gap_points": r.get("raw_gap", r.get("point_edge")),
             "shrink_param": V50_SHRINK,
             "min_ev_param": V50_MIN_EV,
             "result_margin": None,
@@ -17508,14 +17510,14 @@ def _v401_render_official_tracker():
     s = _v401_summary(df)
 
     st.markdown(
-        '<div class="mobile-page-head"><div class="mobile-page-kicker">OFFICIAL BET LEDGER</div>'
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">BET LEDGER</div>'
         '<div class="mobile-page-title">Tracker</div>'
         '<div class="mobile-page-sub">Every pick is locked in before kickoff and graded automatically when the game ends. The line taken is never rewritten.</div></div>',
         unsafe_allow_html=True,
     )
 
     if graded_now:
-        st.success(f"Auto-graded {graded_now} completed official bet(s).")
+        st.success(f"Auto-graded {graded_now} completed bet(s).")
 
     if _se_is_owner() and st.session_state.get("se_last_save_error"):
         st.error(
@@ -17613,23 +17615,33 @@ def _v401_render_official_tracker():
     else:
         df_official, df_watch = _all.copy(), pd.DataFrame(columns=_all.columns)
 
-    if not df_watch.empty:
-        so, sw = _v401_summary(df_official), _v401_summary(df_watch)
-        st.markdown("### Official vs Watch List")
-        st.caption(
-            "Does the strict selection actually beat simply betting interesting "
-            "games? If not, the thresholds are not earning their keep."
-        )
-        comp = pd.DataFrame([
-            {"Tier": "Official", "Bets": so["bets"], "Graded": so["graded"],
-             "Win rate": so["win_rate"], "Units": so["units"], "ROI": so["roi"]},
-            {"Tier": "Watch List", "Bets": sw["bets"], "Graded": sw["graded"],
-             "Win rate": sw["win_rate"], "Units": sw["units"], "ROI": sw["roi"]},
-        ])
-        comp["Win rate"] = comp["Win rate"].map(lambda v: f"{v:.1%}")
-        comp["ROI"] = comp["ROI"].map(lambda v: f"{v:+.1%}")
-        comp["Units"] = comp["Units"].map(lambda v: f"{v:+.2f}")
-        st.dataframe(comp, use_container_width=True, hide_index=True)
+    # Record by confidence level, plus leans. If the stars mean anything,
+    # \u2605\u2605\u2605 should beat \u2605 over a season.
+    if not _all.empty:
+        _cf = _se_add_conf(_all)
+        _rows_cf = []
+        for _lv in (3, 2, 1, 0):
+            _sub = _cf[_cf["_conf"] == _lv]
+            if _sub.empty:
+                continue
+            _sm = _v401_summary(_sub)
+            _rows_cf.append({
+                "Level": _se_conf_label(_lv) + (" (not bets)" if _lv == 0 else ""),
+                "Bets": _sm["bets"], "Graded": _sm["graded"],
+                "Win rate": _sm["win_rate"], "Units": _sm["units"],
+                "ROI": _sm["roi"]})
+        if _rows_cf:
+            st.markdown("### By confidence")
+            st.caption(
+                "Every bet is 1 unit; stars are information until this table "
+                "shows the higher levels actually win more. Leans are logged "
+                "for comparison and never count toward your record."
+            )
+            comp = pd.DataFrame(_rows_cf)
+            comp["Win rate"] = comp["Win rate"].map(lambda v: f"{v:.1%}")
+            comp["ROI"] = comp["ROI"].map(lambda v: f"{v:+.1%}")
+            comp["Units"] = comp["Units"].map(lambda v: f"{v:+.2f}")
+            st.dataframe(comp, use_container_width=True, hide_index=True)
 
     # Closing line value — the earliest real read on whether there is edge.
     _clv = pd.to_numeric(df_official.get("clv_points"), errors="coerce").dropna() if "clv_points" in df_official.columns else pd.Series(dtype=float)
@@ -17937,7 +17949,27 @@ def _v410_total_card(slate_df):
     # with spreads below, a single overall BEST BET is chosen.
     return out
 
-V50_SHRINK = 0.25          # how much of the model's disagreement to believe
+# How much of the model's disagreement to believe. MEASURED, not chosen.
+#
+# Two independent datasets now agree, and both say zero:
+#   backtest, 1,942 games 2021-24:  spreads -0.065, totals -0.088
+#   live record, 170 graded bets:   spreads -0.086, totals -0.226
+#   pooled:                         spreads -0.066, totals -0.092
+#
+# Reconstructing the model's line from every live bet and scoring it against
+# final scores confirms it directly: model MAE 14.48 vs market 13.23 on
+# spreads, 14.03 vs 12.40 on totals. The model's line is WORSE than the
+# closing line on the games the model itself picked as its best spots.
+#
+# Held at 0.0 rather than the measured negative. The pooled values are below
+# zero but neither clears significance cleanly (t = -1.98 and -1.52), and a
+# negative shrink means systematically betting AGAINST the model — a live
+# claim that it is genuinely backwards, which the evidence does not support.
+# Zero is the honest reading: the disagreements carry no information.
+#
+# Consequence: every bet now prices at 50% / -4.55% at -110. That is the
+# point. At 0.25 the app showed +3.96% average EV against an actual -1.18%.
+V50_SHRINK = 0.0
 V50_MAX_SPREAD = 28.0      # beyond this, power ratings extrapolate badly
 
 # Totals get their own cap. Margin and total are different quantities: the
@@ -18003,6 +18035,12 @@ V50_FUN_COUNT = 5          # watch list CAP (not a quota — see V50_FUN_MIN_EV)
 # official threshold is raised.
 V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 
+# The watch list used to screen on EV. At shrink 0 every play prices
+# identically, so an EV floor admits either everything or nothing — it is no
+# longer a filter. The watch list now screens on raw disagreement, one point
+# below the official bar, so these stay genuine near-misses.
+V50_FUN_MIN_GAP_PTS = V50_MIN_GAP_PTS - 1.0
+
 # Stamp selection parameters into the version so tuning changes self-separate
 # in the tracker. Defined here because it depends on the constants above.
 # The threshold is part of the version, as in Sunday Edge: change the bar and
@@ -18012,6 +18050,64 @@ V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 # inputs decay to zero by week 8. Those change the model's number, so bets
 # frozen before and after are not the same experiment and must not be pooled.
 MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}-cur1.0"
+
+
+# CONFIDENCE STARS (v5.1), same shape as Sunday Edge: one list of bets, each
+# with stars, plus leans that are logged but never bet. Your call: in college
+# the stars need BOTH a real gap and solid inputs, because calibration found
+# bigger gaps alone did worse (6+ underperformed in every tier). Stakes stay
+# flat at 1 unit; the tracker's by-star record decides whether they mean
+# anything. Computed from fields already frozen on every row, so past bets
+# get stars too.
+#   3 High    gap 5+ and reliability PRIME/HIGH
+#   2 Medium  gap 5+ with MODERATE inputs, or gap 4-5 with PRIME/HIGH
+#   1 Low     every other bet
+#   0         a lean (the old watch list): logged, not bet
+SE_STAR_GAP = 5.0
+SE_SOLID_REL = ("PRIME", "HIGH")
+SE_CONF_NAME = {3: "High", 2: "Medium", 1: "Low", 0: "Lean"}
+
+
+def _se_row_gap(r):
+    for k in ("raw_gap", "raw_gap_points", "point_edge"):
+        try:
+            v = abs(float(r.get(k)))
+            if math.isfinite(v):
+                return v
+        except (TypeError, ValueError):
+            continue
+    return float("nan")
+
+
+def _se_conf(r):
+    """Stars for one row (frozen tracker row or live card row)."""
+    tier = str(r.get("bet_tier") or "").upper()
+    verdict = str(r.get("verdict") or "").upper()
+    if tier == "WATCH" or (not tier and verdict not in ("BET", "BEST BET",
+                                                      "STRONG BET")):
+        return 0
+    g = _se_row_gap(r)
+    rel = str(r.get("reliability") or "").upper()
+    big = math.isfinite(g) and g >= SE_STAR_GAP
+    if big and rel in SE_SOLID_REL:
+        return 3
+    if (big and rel == "MODERATE") or (not big and rel in SE_SOLID_REL):
+        return 2
+    return 1
+
+
+def _se_stars(n):
+    return "\u2605" * int(n) if n else ""
+
+
+def _se_conf_label(n):
+    return f"{_se_stars(n)} {SE_CONF_NAME[n]}" if n else "Lean"
+
+
+def _se_add_conf(df):
+    if df is None or len(df) == 0:
+        return df
+    return df.assign(_conf=[_se_conf(r) for _, r in df.iterrows()])
 
 
 V50_FUN_MAX_SPREAD = 21.0  # watch-list spread cap. Wide enough that bets which
@@ -18127,10 +18223,15 @@ def _v50_apply_strict_selection(card):
         official["verdict"] = "BET"
         official.iloc[0, official.columns.get_loc("verdict")] = "BEST BET"
 
-        # Show the honest numbers: the card must display what selection used,
-        # not the pre-shrinkage figures the model originally claimed.
-        official["fair_display"] = official["shrunk_fair"]
-        official["point_edge"] = official["shrunk_edge"]
+        # Display the model's ACTUAL line and its real disagreement, not the
+        # shrunk ones. At shrink 0 the shrunk fair IS the market line, so
+        # showing it would collapse the Model column onto the Market column
+        # and report a 0.0-point disagreement for a card that selects on
+        # disagreement. The honest display is both numbers at once: what the
+        # model really thinks, priced at what that opinion has been worth.
+        official["fair_display"] = pd.to_numeric(
+            official.get("fair_display"), errors="coerce")
+        official["point_edge"] = official["raw_gap"]
         _p = pd.to_numeric(official.get("cover_probability"), errors="coerce")
         _ps = 0.5 + V50_SHRINK * (_p - 0.5)
         official["raw_cover_probability"] = _p
@@ -18164,14 +18265,9 @@ def _v50_apply_strict_selection(card):
     # Screen on the SAME shrunk EV the card will display, before any slots are
     # handed out. Ranking first and filling to a quota is what put negative-EV
     # plays on the watch list; nothing gets a slot it did not earn.
-    _pe = 0.5 + V50_SHRINK * (_p - 0.5)
-    eligible["_fun_ev"] = [
-        _se_ev_from_prob(v, o) for v, o in
-        zip(_pe, eligible.get("odds", pd.Series(-110, index=eligible.index)))
-    ]
     eligible = eligible[
-        pd.to_numeric(eligible["_fun_ev"], errors="coerce").fillna(-99)
-        >= V50_FUN_MIN_EV
+        pd.to_numeric(eligible.get("raw_gap"), errors="coerce").fillna(-99)
+        >= V50_FUN_MIN_GAP_PTS
     ].copy()
     eligible = eligible.sort_values("lean_strength", ascending=False)
 
@@ -18201,13 +18297,10 @@ def _v50_apply_strict_selection(card):
             _se_ev_from_prob(v, o) for v, o in
             zip(_pfs, fun.get("odds", pd.Series(-110, index=fun.index)))
         ]
-        if "point_edge" in fun.columns:
-            fun["point_edge"] = pd.to_numeric(fun["point_edge"],
-                                              errors="coerce") * V50_SHRINK
-        if "fair_display" in fun.columns and "market_display" in fun.columns:
-            _fm = pd.to_numeric(fun["market_display"], errors="coerce")
-            _ff = pd.to_numeric(fun["fair_display"], errors="coerce")
-            fun["fair_display"] = _fm + V50_SHRINK * (_ff - _fm)
+        # Same as the official card: show the model's real line and real
+        # disagreement, priced honestly.
+        if "raw_gap" in fun.columns:
+            fun["point_edge"] = pd.to_numeric(fun["raw_gap"], errors="coerce")
     return official, fun
 
 
@@ -18363,6 +18456,10 @@ def _render_v36_live_card(card, selected_date):
     ).reset_index(drop=True)
 
     official = ranked[ranked["verdict"].isin(["BEST BET","BET"])].copy()
+    if not official.empty:
+        official = _se_add_conf(official)
+        official["_gp"] = [_se_row_gap(r) for _, r in official.iterrows()]
+        official = official.sort_values(["_conf", "_gp"], ascending=[False, False])
     leans = ranked[ranked["verdict"] == "LEAN"].copy()
 
     # Manual injury / news flags. You type team names; any card involving
@@ -18419,8 +18516,8 @@ def _render_v36_live_card(card, selected_date):
             """
             <div class="ge-official-head">
               <div class="ge-check muted">—</div>
-              <div><div class="ge-section-title">Official Bets</div>
-              <div class="ge-section-sub">No official plays cleared the production criteria.</div></div>
+              <div><div class="ge-section-title">Bets</div>
+              <div class="ge-section-sub">Nothing cleared the bar on this slate.</div></div>
               <div class="ge-count">0 PLAYS</div>
             </div>
             """,
@@ -18429,7 +18526,7 @@ def _render_v36_live_card(card, selected_date):
         st.markdown(
             """
             <div class="edge-empty ge-empty">
-              <div class="edge-status-pass">NO OFFICIAL BETS</div>
+              <div class="edge-status-pass">NO BETS</div>
               <div class="edge-empty-title">Pass the slate.</div>
               <div class="edge-empty-copy">The model found no spread or total strong enough to bet officially.</div>
             </div>
@@ -18441,8 +18538,8 @@ def _render_v36_live_card(card, selected_date):
             f"""
             <div class="ge-official-head">
               <div class="ge-check">✓</div>
-              <div><div class="ge-section-title">Official Bets</div>
-              <div class="ge-section-sub">Highest-conviction plays from the current slate.</div></div>
+              <div><div class="ge-section-title">Bets</div>
+              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 1 unit each.</div></div>
               <div class="ge-count">{len(official)} {'PLAY' if len(official)==1 else 'PLAYS'}</div>
             </div>
             """,
@@ -18450,9 +18547,10 @@ def _render_v36_live_card(card, selected_date):
         )
 
         for i, (_, r) in enumerate(official.iterrows(), start=1):
-            verdict = str(r.get("verdict") or "BET")
+            _cf = int(r.get("_conf") or 1)
+            verdict = _se_conf_label(_cf)
             market_type = str(r.get("market_type") or "SPREAD").upper()
-            cls = "best" if verdict == "BEST BET" else "bet"
+            cls = "best" if _cf == 3 else "bet"
 
             # Line shopping: best number available across books.
             _shop = ""
@@ -18566,7 +18664,7 @@ def _render_v36_live_card(card, selected_date):
                   <div class="ge-card-top">
                     <div class="ge-rank">{i}</div>
                     <span class="ge-market">{html.escape(market_type)}</span>
-                    <span class="ge-verdict {cls}">{'★ ' if cls == 'best' else ''}{html.escape(verdict)}</span>
+                    <span class="ge-verdict {cls}">{html.escape(verdict)}</span>
                   </div>
                   <div class="ge431-pickline">
                     {_ge440_pick_logo(r, 42)}
@@ -19264,6 +19362,10 @@ def _cal_run(years, scope="Major FBS"):
             rows.append({
                 "season": yr, "week": g.get("week"),
                 "tier": _tier, "home_conf": _hc, "away_conf": _ac,
+                # Carried so the QB lab can join personnel to each game.
+                "game_id": g.get("id"),
+                "home_team": g.get("homeTeam") or g.get("home_team"),
+                "away_team": g.get("awayTeam") or g.get("away_team"),
                 "actual_margin": hm, "actual_total": tot,
                 "mkt_margin": -float(mk["home_spread"]),
                 "mkt_total": mk.get("total"),
@@ -19281,6 +19383,20 @@ def _cal_lines_for(by_game, g):
         return by_game.get(gid) or []
 
 
+def ols_t(y, x):
+    """Univariate OLS with a t-stat. Returns (slope, t, n) or None."""
+    y = np.asarray(y, dtype=float); x = np.asarray(x, dtype=float)
+    ok = np.isfinite(y) & np.isfinite(x)
+    y, x = y[ok], x[ok]
+    if len(y) < 40 or np.std(x) == 0:
+        return None
+    X = np.column_stack([np.ones(len(x)), x])
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    r = y - X @ beta
+    se = np.sqrt(np.diag(np.linalg.inv(X.T @ X) * (r @ r / (len(y) - 2))))
+    return float(beta[1]), float(beta[1] / se[1]), int(len(y))
+
+
 def _cal_fit(y, market, model):
     ok = np.isfinite(y) & np.isfinite(market) & np.isfinite(model)
     y, market, model = y[ok], market[ok], model[ok]
@@ -19293,6 +19409,51 @@ def _cal_fit(y, market, model):
     return {"market": float(beta[1]), "model": float(beta[2]),
             "t": float(beta[2] / se[2]), "n": int(len(y)),
             "resid_sd": float(np.std(r))}
+
+
+def _cal_dispersion(df):
+    """
+    Is the model's number scaled like the market's, or squashed toward a
+    constant?
+
+    Found from the live card: of 65 total bets, every game priced above ~53
+    got an Under and every game below got an Over. On that sample the model
+    kept only 17% of the market's variation. That is the signature of a
+    prediction collapsing toward its own mean — the 'disagreement' is then
+    just distance from that constant, which is not information.
+
+    This runs the same test on every graded game rather than the handful the
+    card selected, so selection cannot flatter it.
+    """
+    out = {}
+    for lab, mcol, kcol, acol in (
+            ("Spread", "model_margin", "mkt_margin", "actual_margin"),
+            ("Total", "model_total", "mkt_total", "actual_total")):
+        d = df.dropna(subset=[mcol, kcol, acol]).copy()
+        for c in (mcol, kcol, acol):
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna(subset=[mcol, kcol, acol])
+        if len(d) < 200:
+            continue
+        # How much of the market's variation does the model keep?
+        track = ols_t(d[mcol].values, d[kcol].values)
+        # Does the disagreement grow with the market's level?
+        tilt = ols_t((d[mcol] - d[kcol]).values, d[kcol].values)
+        # Which number actually tracks outcomes?
+        am = ols_t(d[acol].values, d[kcol].values)
+        ad = ols_t(d[acol].values, d[mcol].values)
+        if not all([track, tilt, am, ad]):
+            continue
+        sd_m, sd_k = float(d[mcol].std()), float(d[kcol].std())
+        out[lab] = {
+            "n": len(d),
+            "track": track[0], "track_t": track[1],
+            "tilt": tilt[0], "tilt_t": tilt[1],
+            "sd_model": sd_m, "sd_market": sd_k, "ratio": sd_m / sd_k,
+            "act_mkt": am[0], "act_mkt_t": am[1],
+            "act_mdl": ad[0], "act_mdl_t": ad[1],
+        }
+    return out
 
 
 def _cal_segment_splits(df):
@@ -19562,10 +19723,288 @@ def _cal_threshold_sweep(df):
     return pd.DataFrame(rows), cut
 
 
+# ======================================================================
+# QB lab — does the market underprice a quarterback change, and are the
+# model's biggest disagreements just games where it cannot see the roster?
+# ======================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_qb_week(api_key, year, week):
+    """
+    Per-QB passing lines for one week. CFBD has no injury endpoint — college
+    football had no league-wide injury report for most of this sample — so
+    who actually started is inferred from who threw the passes.
+    """
+    try:
+        return cfbd_get("/passing/players/games", api_key,
+                        {"year": int(year), "week": int(week),
+                         "classification": "fbs", "seasonType": "regular"})
+    except Exception:
+        return []
+
+
+def build_qb_starters(api_key, seasons, progress=None):
+    """
+    Primary QB per team-game, with a flag for when it changed.
+
+    A 'start' requires at least 60% of the team's attempts in that game. That
+    threshold matters: without it, a starter knocked out in the first quarter
+    shows up as the backup 'starting', which is an in-game event nobody could
+    have bet. It does not remove that contamination entirely — see the caveat
+    rendered with the results.
+    """
+    rows = []
+    total = max(len(seasons) * 16, 1)
+    done = 0
+    for yr in seasons:
+        for wk in range(1, 17):
+            done += 1
+            if progress:
+                progress(done / total, f"QB data {yr} week {wk}\u2026")
+            for r in fetch_qb_week(api_key, yr, wk) or []:
+                att = pd.to_numeric(r.get("attempts"), errors="coerce")
+                if not att or att <= 0:
+                    continue
+                rows.append({
+                    "season": r.get("season", yr), "week": r.get("week", wk),
+                    "game_id": r.get("gameId"), "team": r.get("team"),
+                    "player": r.get("player"), "attempts": float(att),
+                    "ppa": pd.to_numeric(r.get("ppa"), errors="coerce"),
+                })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["team_att"] = df.groupby(["game_id", "team"])["attempts"].transform("sum")
+    df["share"] = df["attempts"] / df["team_att"].replace(0, np.nan)
+    # primary passer per team-game
+    idx = df.groupby(["game_id", "team"])["attempts"].idxmax()
+    st_df = df.loc[idx].copy()
+    st_df = st_df[st_df["share"] >= 0.60]
+    st_df = st_df.sort_values(["team", "season", "week"])
+    prev = st_df.groupby(["team", "season"])["player"].shift(1)
+    st_df["prev_player"] = prev
+    st_df["qb_change"] = ((prev.notna()) & (st_df["player"] != prev)).astype(float)
+    # How many straight games this passer has been the primary — week one on
+    # a new quarterback is news; week four on him is not.
+    grp = st_df.groupby(["team", "season"])
+    st_df["run_id"] = grp["player"].transform(
+        lambda x: (x != x.shift(1)).cumsum())
+    st_df["starts_in_run"] = st_df.groupby(
+        ["team", "season", "run_id"]).cumcount()
+    st_df["qb_first_week"] = ((st_df["qb_change"] > 0)
+                              & (st_df["starts_in_run"] == 0)).astype(float)
+    return st_df[["season", "week", "game_id", "team", "player",
+                  "prev_player", "qb_change", "qb_first_week",
+                  "starts_in_run", "ppa", "attempts"]]
+
+
+def run_qb_lab(cal, qb):
+    """
+    Two questions, in order of what they would change.
+
+      1. Does a QB change move the result away from the closing line? If the
+         market prices it, the answer is no and there is nothing to add.
+      2. Are the model's BIGGEST disagreements concentrated in games where
+         the roster changed? That is the Pitt pattern — a large 'edge' that
+         is really the model failing to see a personnel change the market
+         already priced.
+    """
+    if cal.empty or qb.empty:
+        return None
+    c = cal.dropna(subset=["actual_margin", "mkt_margin", "model_margin"]).copy()
+    # One row per team-week before merging. A team should play once a week,
+    # but a makeup game or a duplicated feed row would turn the join into a
+    # many-to-many and silently multiply the sample.
+    qb = qb.sort_values("attempts", ascending=False).drop_duplicates(
+        subset=["season", "week", "team"], keep="first")
+    for side in ("home", "away"):
+        m = qb.rename(columns={
+            "team": f"{side}_team", "qb_change": f"{side}_qb_change",
+            "qb_first_week": f"{side}_qb_first", "player": f"{side}_qb",
+            "ppa": f"{side}_qb_ppa"})
+        c = c.merge(
+            m[["season", "week", f"{side}_team", f"{side}_qb_change",
+               f"{side}_qb_first", f"{side}_qb", f"{side}_qb_ppa"]],
+            on=["season", "week", f"{side}_team"], how="left")
+    matched = c[["home_qb", "away_qb"]].notna().all(axis=1)
+    c = c[matched].copy()
+    if len(c) < 200:
+        return {"error": f"only {len(c)} games matched QB data"}
+    for col in ("home_qb_change", "away_qb_change",
+                "home_qb_first", "away_qb_first"):
+        c[col] = c[col].fillna(0.0)
+
+    c["resid"] = c["actual_margin"] - c["mkt_margin"]
+    c["gap"] = c["model_margin"] - c["mkt_margin"]
+    c["abs_gap"] = c["gap"].abs()
+    c["any_change"] = ((c.home_qb_change > 0) | (c.away_qb_change > 0)).astype(float)
+    c["any_first"] = ((c.home_qb_first > 0) | (c.away_qb_first > 0)).astype(float)
+
+    out = {"n": len(c), "frame": c}
+
+    # --- Q1: does the market underprice it? ---
+    tests = [
+        ("QB change, home minus away", c["resid"],
+         c.away_qb_change - c.home_qb_change),
+        ("First week on a new QB, home minus away", c["resid"],
+         c.away_qb_first - c.home_qb_first),
+    ]
+    rows = []
+    for name, y, x in tests:
+        r = ols_t(np.asarray(y, float), np.asarray(x, float))
+        if r:
+            rows.append({"Signal": name, "Games": r[2],
+                         "Pts per change": round(r[0], 3),
+                         "t": round(r[1], 2),
+                         "Verdict": "SIGNAL" if abs(r[1]) > 2.5 else "nothing"})
+    out["market"] = pd.DataFrame(rows)
+
+    # --- Q2: the Pitt mechanism ---
+    base = c["any_change"].mean()
+    bands = []
+    for lo, hi, lab in [(0, 4, "under 4"), (4, 7, "4-7"), (7, 10, "7-10"),
+                        (10, 99, "10+")]:
+        b = c[(c.abs_gap >= lo) & (c.abs_gap < hi)]
+        if len(b) < 40:
+            continue
+        # did the model's side win against the closing line?
+        side_win = np.where(b.gap > 0, b.actual_margin > b.mkt_margin,
+                            b.actual_margin < b.mkt_margin)
+        bands.append({
+            "Model disagreement": f"{lab} pts", "Games": len(b),
+            "QB change rate": f"{b.any_change.mean():.1%}",
+            "vs baseline": f"{b.any_change.mean()-base:+.1%}",
+            "Model side wins": f"{side_win.mean():.1%}",
+        })
+    out["bands"] = pd.DataFrame(bands)
+    out["baseline"] = base
+
+    # --- Q3: conditional on a big gap, does a QB change make it worse? ---
+    big = c[c.abs_gap >= 7]
+    rows = []
+    for lab, sub in [("no QB change", big[big.any_change == 0]),
+                     ("QB change", big[big.any_change > 0])]:
+        if len(sub) < 30:
+            continue
+        sw = np.where(sub.gap > 0, sub.actual_margin > sub.mkt_margin,
+                      sub.actual_margin < sub.mkt_margin)
+        rows.append({"Big disagreements (7+ pts)": lab, "Games": len(sub),
+                     "Model side wins": f"{sw.mean():.1%}"})
+    out["conditional"] = pd.DataFrame(rows)
+    return out
+
+
+def _render_qb_lab():
+    st.markdown("### QB lab")
+    st.write(
+        "The model has no roster layer \u2014 SP+, SRS, talent and returning "
+        "production are all team-season aggregates, so a team's rating is the "
+        "same whether its starting quarterback plays or not. This asks two "
+        "things: whether the market underprices a QB change, and whether the "
+        "model's biggest disagreements are really just games where it cannot "
+        "see the roster."
+    )
+    st.caption(
+        "Pitt, Week 6: market had them -3.5 and the line never moved. The "
+        "model said -14.3. That 10.8-point \u2018edge\u2019 is about what a "
+        "starting-QB downgrade is worth."
+    )
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        yrs = st.multiselect("Seasons", list(range(2018, 2026)),
+                             default=[2021, 2022, 2023, 2024], key="qb_yrs")
+    with c2:
+        scope = st.selectbox("Game universe",
+                             ["All FBS", "Major FBS", "All college games"],
+                             index=0, key="qb_scope")
+    if not st.button("Run QB lab", type="primary", key="qb_run"):
+        return
+    if not yrs:
+        st.error("Pick at least one season.")
+        return
+
+    bar = st.progress(0.0, "Starting\u2026")
+    try:
+        qb = build_qb_starters(API_KEY, sorted(yrs),
+                               progress=lambda f, m: bar.progress(min(f, 1.0), m))
+    except Exception as e:
+        bar.empty(); st.error(f"Could not load QB data: {type(e).__name__}: {e}")
+        return
+    if qb.empty:
+        bar.empty()
+        st.error("No QB data returned for those seasons.")
+        return
+    bar.progress(0.95, "Matching to games and lines\u2026")
+    cal = _cal_run(sorted(yrs), scope=scope)
+    res = run_qb_lab(cal, qb)
+    bar.empty()
+    if res is None:
+        st.error("No overlap between QB data and graded games.")
+        return
+    if res.get("error"):
+        st.error(res["error"] + ". Widen the seasons or the game universe.")
+        return
+
+    st.caption(
+        f"{res['n']:,} games with a identified starting QB on both sides. "
+        f"A QB change appears in {res['baseline']:.1%} of them."
+    )
+
+    st.markdown("**1. Does the market underprice a QB change?**")
+    st.caption(
+        "Measured against the closing line, so this is not asking whether "
+        "quarterbacks matter \u2014 they obviously do \u2014 but whether the "
+        "market has already priced it."
+    )
+    st.dataframe(res["market"], hide_index=True, use_container_width=True)
+    _hits = res["market"][res["market"]["Verdict"] == "SIGNAL"]
+    if _hits.empty:
+        st.info(
+            "Nothing clears |t| > 2.5. The market prices it, even without a "
+            "mandatory injury report."
+        )
+    else:
+        st.success(
+            "A signal survived here. Split the seasons in half before "
+            "believing it \u2014 two tests were run."
+        )
+
+    st.markdown("**2. Are the model's biggest disagreements roster blindness?**")
+    st.caption(
+        "If the QB-change rate climbs with the size of the model's "
+        "disagreement, then its largest \u2018edges\u2019 are disproportionately "
+        "games where the market knew about a personnel change and the model "
+        "did not. That is a reason to distrust big gaps, not to bet them."
+    )
+    st.dataframe(res["bands"], hide_index=True, use_container_width=True)
+
+    if not res["conditional"].empty:
+        st.markdown("**3. Among big disagreements, does a QB change make it worse?**")
+        st.dataframe(res["conditional"], hide_index=True,
+                     use_container_width=True)
+        st.caption(
+            "If the QB-change row wins materially less, a roster-change flag "
+            "is worth adding as a filter \u2014 skip those bets rather than "
+            "trying to price them."
+        )
+
+    st.warning(
+        "**Read this before acting on any of it.** Who started is inferred "
+        "from who threw the passes, because CFBD has no injury endpoint. A "
+        "starter knocked out early still shows as the backup starting, and "
+        "that is an in-game event nobody could have bet \u2014 the 60%-of-"
+        "attempts threshold reduces that contamination but does not remove "
+        "it, and it biases toward finding an effect. Separately, availability "
+        "reports became mandatory for the CFP, Big 12 and Mountain West in "
+        "2025, so a 2021-24 result measures a world that is already partly "
+        "gone. And nothing here is live: to use it on Saturday you would need "
+        "a pregame injury source CFBD does not provide."
+    )
+
+
 def _render_calibration():
     st.markdown("### Calibration")
     st.write(
-        "V50_SHRINK is currently a hand-set 0.25. This measures what it "
+        f"V50_SHRINK is currently {V50_SHRINK:g}. This measures what it "
         "should be: the share of the model's disagreement with the closing "
         "line that actually showed up in results."
     )
@@ -19671,6 +20110,48 @@ def _render_calibration():
             )
     except Exception as _e:
         st.caption(f"Spread-size split unavailable: {type(_e).__name__}.")
+
+    # Scaling comes first: if the model's number is squashed toward a
+    # constant, every downstream diagnostic is measuring that artifact.
+    _disp = _cal_dispersion(df)
+    if _disp:
+        st.markdown("**Is the model's number scaled like the market's?**")
+        st.caption(
+            "A healthy model moves roughly one-for-one with the market and "
+            "then disagrees. If it keeps only a fraction of the market's "
+            "variation, its \u2018disagreements\u2019 are mostly distance from its "
+            "own average \u2014 big on extreme games, small on ordinary ones, "
+            "and carrying no information either way."
+        )
+        _rows = []
+        for lab, r in _disp.items():
+            _rows.append({
+                "Market": lab, "Games": r["n"],
+                "Keeps of market's variation": f"{r['track']:.2f}",
+                "Spread vs market": f"{r['ratio']:.2f}x",
+                "Tilt per market pt": f"{r['tilt']:+.3f}",
+                "t": round(r["tilt_t"], 2),
+            })
+        st.dataframe(pd.DataFrame(_rows), hide_index=True,
+                     use_container_width=True)
+        st.caption(
+            "\u2018Keeps\u2019 near 1.00 and \u2018spread\u2019 near 1.00x is healthy. "
+            "Well below 1 means squashed toward a constant; well above 1 "
+            "means exaggerated. A large tilt with |t| > 3 means the model "
+            "systematically takes unders on high numbers and overs on low "
+            "ones, which is the same defect seen from the card."
+        )
+        _r2 = [{"Market": lab,
+                "Actual ~ market": f"{r['act_mkt']:+.3f} (t={r['act_mkt_t']:+.2f})",
+                "Actual ~ model": f"{r['act_mdl']:+.3f} (t={r['act_mdl_t']:+.2f})"}
+               for lab, r in _disp.items()]
+        st.dataframe(pd.DataFrame(_r2), hide_index=True,
+                     use_container_width=True)
+        st.caption(
+            "Both should be strongly positive. A model slope near zero means "
+            "its number has no relationship with what actually happened \u2014 "
+            "a defect to fix in the projection, not a threshold to tune."
+        )
 
     _seg = _cal_segment_splits(df)
     for _k, _lab, _why in (
@@ -19857,6 +20338,9 @@ def _render_more_page():
 
     with st.expander("Calibration", expanded=False):
         _render_calibration()
+
+    with st.expander("QB lab", expanded=False):
+        _render_qb_lab()
 
     with st.expander("Grade a custom market", expanded=False):
         cg1, cg2 = st.columns(2)
@@ -20549,7 +21033,7 @@ def _se_pick_label(row, is_bet):
         return f"Spread {mk:+g}"
     except Exception:
         pass
-    return "Official bet" if is_bet else "No bet"
+    return "Bet" if is_bet else "No bet"
 
 
 # --- flavour text ----------------------------------------------------------
@@ -20800,7 +21284,7 @@ def _se_tock_takeover(df_today, day):
         f'<div class="se-take-av">{_se_tock_avatar(120, mood)}</div>'
         f'<div class="se-take-head">{head}</div>'
         f'<div class="se-take-rec">{wins}<span>-</span>{losses}</div>'
-        f'<div class="se-take-sub">official bets graded today</div>'
+        f'<div class="se-take-sub">bets graded today</div>'
         f'<div class="se-take-line">{html.escape(line)}</div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -20891,6 +21375,7 @@ def _render_visitor_card(selected_date):
             f'<small>{html.escape(str(r.get("away_team","")))} @ '
             f'{html.escape(str(r.get("home_team","")))} \u00b7 '
             f'{html.escape(_se_kick_label(r, str(selected_date)))}</small>'
+            f'<span class="se-evtag">{html.escape(_se_conf_label(_se_conf(r)))}</span>'
             f'{_shop}'
             f'</div>'
             f'{_se_frozen_status(r, _now, str(selected_date))}'
@@ -21093,12 +21578,13 @@ def _se_card_text(df, day):
     except Exception:
         pass
 
-    lines = [f"SATURDAY EDGE \u2014 {_label}", ""]
+    lines = [f"SATURDAY EDGE \u2014 {_label}",
+             "\u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low", ""]
     for r in x.to_dict("records"):
         _t = _se_kick_label(r, str(day))
         _sel = str(r.get("selection") or "")
         _away, _home = str(r.get("away_team") or ""), str(r.get("home_team") or "")
-        _line = f"{_sel}"
+        _line = f"{_se_stars(_se_conf(r))} {_sel}"
         if _away and _home:
             _line += f"  ({_away} @ {_home})"
         if _t:
@@ -21184,7 +21670,8 @@ def _se_window_banner(name, n_off, n_watch):
         f'xmlns="http://www.w3.org/2000/svg"><defs>{grad}</defs>{scene}</svg>'
         f'<div class="se-win-text" style="color:{tint}">'
         f'<b>{html.escape(name.upper())}</b>'
-        f'<span>{n_off} official \u00b7 {n_watch} watch</span>'
+        f'<span>{n_off} {"bet" if n_off == 1 else "bets"} \u00b7 '
+        f'{n_watch} {"lean" if n_watch == 1 else "leans"}</span>'
         f'</div></div>'
     )
 
@@ -21237,30 +21724,26 @@ def _se_card_pdf(df, day):
         wdf = df[df["_win"] == wname]
         if wdf.empty:
             continue
-        wdf = wdf.copy()
-        wdf["_isw"] = (wdf["bet_tier"].astype(str).str.upper() == "WATCH"
-                       if "bet_tier" in wdf.columns else False)
-        wdf["_evn"] = pd.to_numeric(wdf.get("expected_value"),
-                                    errors="coerce").fillna(-99)
-        wdf = wdf.sort_values(["_isw", "_evn"], ascending=[True, False])
+        wdf = _se_add_conf(wdf.copy())
+        wdf["_isw"] = wdf["_conf"] == 0
+        wdf["_gp"] = [_se_row_gap(r) for _, r in wdf.iterrows()]
+        wdf = wdf.sort_values(["_conf", "_gp"], ascending=[False, False])
 
         n_off = int((~wdf["_isw"]).sum())
         story.append(Paragraph(
-            f"{wname.upper()} &mdash; {n_off} official, "
-            f"{len(wdf)-n_off} watch", wh))
+            f"{wname.upper()} &mdash; {n_off} bets, "
+            f"{len(wdf)-n_off} leans", wh))
 
-        rows = [["#", "Pick", "Matchup", "Kick", "Line", "EV", "Result"]]
+        rows = [["#", "Pick", "Matchup", "Kick", "Line", "Conf.", "Result"]]
         for i, (_, r) in enumerate(wdf.iterrows(), start=1):
-            try:
-                ev = f'{float(r.get("expected_value"))*100:+.1f}%'
-            except Exception:
-                ev = "-"
+            # Plain-text level: the PDF's built-in fonts have no star glyph.
+            ev = {3: "High", 2: "Medium", 1: "Low", 0: "Lean"}[int(r["_conf"])]
             try:
                 ln = f'{float(r.get("bet_line")):+g}'
             except Exception:
                 ln = "-"
             res = str(r.get("result", "") or "").upper() or "pending"
-            tag = " (watch)" if r["_isw"] else ""
+            tag = " (lean)" if r["_isw"] else ""
             rows.append([
                 str(i),
                 f'{r.get("selection","")}{tag}',
@@ -21691,8 +22174,23 @@ def _render_home_page():
         the official record — so unlike frozen bets they do not survive an
         app restart.
         """
-        _f = (st.session_state.get("se_ml_flags") or {}).get(str(_for_date))
+        _store = st.session_state.get("se_ml_flags") or {}
+        _f = _store.get(str(_for_date))
         if not _f:
+            # Distinguish "slate not built" from "built, nothing qualified".
+            # At V50_SHRINK = 0 the model's probability IS the market's
+            # implied probability, so every moneyline prices at exactly minus
+            # the vig and none can ever clear the EV bar. That is the correct
+            # answer, but an empty section looks like a bug, so it says why.
+            if str(_for_date) in _store and V50_SHRINK == 0:
+                st.markdown('<div class="se-sec">MONEYLINES</div>',
+                            unsafe_allow_html=True)
+                st.caption(
+                    "None flagged, and none can be while the shrink is 0. A "
+                    "moneyline has no number to disagree about \u2014 only a "
+                    "price \u2014 so with the model adding nothing to the "
+                    "market, every one prices at exactly the vig."
+                )
             return
         _f = sorted(_f, key=lambda r: -r["ev"])
         st.markdown('<div class="se-sec">MONEYLINES WORTH A LOOK</div>',
@@ -21824,7 +22322,7 @@ def _render_home_page():
                         "lat": _la, "lon": _lo, "ev": _ev, "bet": True,
                         "matchup": _gm.get("matchup", ""),
                         "kick": _se_kick_label(_t),
-                        "pick": str(_t.get("selection", "") or "Official bet"),
+                        "pick": str(_t.get("selection", "") or "Bet"),
                         "evtxt": f"{_ev*100:+.1f}% EV",
                         "verdict": str(_t.get("verdict", "") or "BET"),
                     })
@@ -21896,7 +22394,7 @@ def _render_home_page():
             ), height=330)
             _nb = sum(1 for p in _pts if p["bet"])
             st.caption(
-                f"Green marks {_nb} official {'bet' if _nb == 1 else 'bets'} today, "
+                f"Green marks {_nb} {'bet' if _nb == 1 else 'bets'} today, "
                 f"sized by expected "
                 f"value. Grey dots are other games on the board. Tap for detail."
             )
@@ -22423,12 +22921,13 @@ if run_mode == "Full Slate":
         _n_off = int((_tier_col != "WATCH").sum())
 
         with st.expander(
-            f"Frozen card \u00b7 {_n_off} official, {len(_froz)-_n_off} watch",
+            f"Frozen card \u00b7 {_n_off} bets, {len(_froz)-_n_off} leans",
             expanded=not _slate_done,
         ):
             st.caption(
-                "Everything frozen for this date, split by kickoff window and "
-                "ranked strongest first. Lines are locked at the number they "
+                "Everything frozen for this date, split by kickoff window. Bets "
+                "first, most stars first; leans last. Stars are information "
+                "\u2014 every bet is 1 unit. Lines are locked at the number they "
                 "were frozen at."
             )
             try:
@@ -22457,32 +22956,26 @@ if run_mode == "Full Slate":
                                       int((_wt == "WATCH").sum())),
                     unsafe_allow_html=True,
                 )
-                # Strongest pick first. Official bets always outrank watch
-                # plays, then expected value within each tier.
-                _wdf = _wdf.copy()
-                _wdf["_isw"] = (_wdf["bet_tier"].astype(str).str.upper() == "WATCH"
-                                if "bet_tier" in _wdf.columns else False)
-                _wdf["_evn"] = pd.to_numeric(
-                    _wdf.get("expected_value"), errors="coerce").fillna(-99)
-                _wdf = _wdf.sort_values(["_isw", "_evn"], ascending=[True, False])
+                # Bets first, most stars first, then biggest gap; leans last.
+                _wdf = _se_add_conf(_wdf.copy())
+                _wdf["_isw"] = _wdf["_conf"] == 0
+                _wdf["_gp"] = [_se_row_gap(r) for _, r in _wdf.iterrows()]
+                _wdf = _wdf.sort_values(["_conf", "_gp"], ascending=[False, False])
 
                 for _n, (_, r) in enumerate(_wdf.iterrows(), start=1):
                     _isw = bool(r.get("_isw"))
-                    try:
-                        _evs = f'{float(r.get("expected_value"))*100:+.1f}%'
-                    except Exception:
-                        _evs = ""
+                    _evs = _se_conf_label(int(r.get("_conf") or 0))
                     st.markdown(
                         f'<div class="se-extra">'
                         f'<span class="se-extra-rank">{_n}</span>'
                         f'{_pick_logo_html(r, 22)}'
                         f'<div class="se-extra-main">'
                         f'<b>{html.escape(str(r.get("selection","")))}'
-                        f'{" <em class=\'se-w\'>WATCH</em>" if _isw else ""}</b>'
+                        f'{" <em class=\'se-w\'>LEAN</em>" if _isw else ""}</b>'
                         f'<small>{html.escape(str(r.get("away_team","")))} @ '
                         f'{html.escape(str(r.get("home_team","")))} \u00b7 '
                         f'{html.escape(_se_kick_label(r))}</small>'
-                        f'{f"<span class=\'se-evtag\'>{_evs} EV</span>" if _evs else ""}'
+                        f'{f"<span class=\'se-evtag\'>{html.escape(_evs)}</span>" if not _isw else ""}'
                         f'</div>'
                         f'{_se_frozen_status(r, _now_et, str(selected_date))}'
                         f'</div>',
@@ -23009,7 +23502,7 @@ if run_mode == "Full Slate":
 
         if _official.empty:
             st.info(
-                f"**No official bets today.** {_se_quip(SE_NO_BETS, selected_date)}"
+                f"**No bets today.** {_se_quip(SE_NO_BETS, selected_date)}"
             )
         else:
             _render_v36_live_card(_official, selected_date)
@@ -23017,9 +23510,9 @@ if run_mode == "Full Slate":
         if not _fun.empty:
             st.markdown(
                 '<div class="ge-leans-head"><div>'
-                '<div class="ge-section-title">Watch List</div>'
-                '<div class="ge-section-sub">Competitive games worth watching, with '
-                'the model\'s lean. Tracked separately — not part of the official record.</div></div>'
+                '<div class="ge-section-title">Leans</div>'
+                '<div class="ge-section-sub">The model leans this way, but not '
+                'enough to bet. Logged separately \u2014 not part of your record.</div></div>'
                 f'<div class="ge-count amber">{len(_fun)} {"PLAY" if len(_fun)==1 else "PLAYS"}</div>'
                 '</div>',
                 unsafe_allow_html=True,
@@ -23037,7 +23530,7 @@ if run_mode == "Full Slate":
                       <div class="ge-lean-stats">
                         <span>{_v390_prob_text(fr.get("expected_value"))} EV</span>
                       </div>
-                      <div class="ge-lean-pill">WATCH</div>
+                      <div class="ge-lean-pill">LEAN</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -23088,7 +23581,7 @@ if run_mode == "Full Slate":
             )
             if _v36_added or _watch_added:
                 st.toast(
-                    f"Froze {_v36_added} official and {_watch_added} watch-list bet(s)."
+                    f"Froze {_v36_added} bet(s) and {_watch_added} lean(s)."
                 )
             elif not _se_is_owner():
                 # A visitor just built a slate. It is real and correct; it
