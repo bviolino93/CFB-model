@@ -17935,6 +17935,10 @@ def _v410_total_card(slate_df):
             "suggested_units": 1.0 if verdict == "BET" else 0.0,
             "model_confidence": r.get("model_confidence"),
             "data_completeness": r.get("data_completeness"),
+            # Rated like spreads, minus the spread-only agreement score, so
+            # totals can earn stars and the tracker records the rating.
+            "reliability": _se_reliability_from(
+                r.get("model_confidence"), r.get("data_completeness")) or "LOW",
             "fcs_fallback_used": r.get("fcs_fallback_used"),
             "market_total": float(market_total),
             "fair_total": float(fair_total) if pd.notna(fair_total) else None,
@@ -18069,14 +18073,55 @@ SE_CONF_NAME = {3: "High", 2: "Medium", 1: "Low", 0: "Lean"}
 
 
 def _se_row_gap(r):
-    for k in ("raw_gap", "raw_gap_points", "point_edge"):
+    """Raw model-vs-market gap in points, before any shrink.
+
+    Rows frozen under v4.4-4.6 never wrote raw_gap_points, and their
+    point_edge is the SHRUNK edge (raw gap x shrink_param, 0.25 then), so a
+    real 6-point disagreement was stored as 1.5. Reading it as-is put every
+    old bet under the 5-point bar. Scale it back out; rows with no
+    shrink_param came from the same 0.25 era.
+    """
+    def _num(k):
         try:
-            v = abs(float(r.get(k)))
-            if math.isfinite(v):
-                return v
+            v = float(r.get(k))
+            return v if math.isfinite(v) else None
         except (TypeError, ValueError):
-            continue
-    return float("nan")
+            return None
+    for k in ("raw_gap", "raw_gap_points"):
+        v = _num(k)
+        if v is not None:
+            return abs(v)
+    pe = _num("point_edge")
+    if pe is None:
+        return float("nan")
+    sh = _num("shrink_param")
+    if sh is None:
+        sh = 0.25
+    # At shrink 0 the freeze stores the raw gap in point_edge directly.
+    return abs(pe) / sh if sh > 0 else abs(pe)
+
+
+def _se_reliability_from(mc, dc, sel=None):
+    """Same cutoffs as the spread card's reliability. Totals have no
+    ensemble-agreement score (selector_score is spread-only), so when sel is
+    missing the rating rests on model confidence and data completeness."""
+    def _f(v):
+        try:
+            v = float(v)
+            return v if math.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+    mc, dc, sel = _f(mc), _f(dc), _f(sel)
+    if mc is None or dc is None:
+        return ""
+    ok_sel = (lambda t: True) if sel is None else (lambda t: sel >= t)
+    if ok_sel(0.84) and mc >= 76 and dc >= 0.80:
+        return "PRIME"
+    if ok_sel(0.72) and mc >= 70 and dc >= 0.70:
+        return "HIGH"
+    if mc >= 66 and dc >= 0.60:
+        return "MODERATE"
+    return "LOW"
 
 
 def _se_conf(r):
@@ -18087,7 +18132,12 @@ def _se_conf(r):
                                                       "STRONG BET")):
         return 0
     g = _se_row_gap(r)
-    rel = str(r.get("reliability") or "").upper()
+    rel = str(r.get("reliability") or "").strip().upper()
+    if rel in ("", "NAN", "NONE"):
+        # Totals were frozen without a rating; rebuild it from the inputs
+        # that were saved with them.
+        rel = _se_reliability_from(r.get("model_confidence"),
+                                   r.get("data_completeness"))
     big = math.isfinite(g) and g >= SE_STAR_GAP
     if big and rel in SE_SOLID_REL:
         return 3
