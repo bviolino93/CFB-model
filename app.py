@@ -20051,6 +20051,507 @@ def _render_qb_lab():
     )
 
 
+# ===== Totals lab (v5.2) ==================================================
+# Build totals the way a book does -- possessions x points per possession,
+# opponent-adjusted and updated every week -- then measure, against the
+# CLOSING line, where (if anywhere) it knows something the market does not.
+#
+# Why: the live totals formula averages SP+ offense and defense, caps the
+# efficiency adjustment at +/-4 and the "pace" adjustment (really plays per
+# drive) at +/-2.5. It cannot reach a 70-point game, so it leans Under on
+# every big number. Of 22 bets on totals of 55+, 21 were Unders.
+#
+# Everything here is point in time: a Week N game only sees games and stats
+# through Week N-1, plus last season's numbers carried in as a prior.
+
+TOT2_FIRST_SEASON = 2018          # first season graded (2017 is burn-in)
+TOT2_TEST_SEASONS = (2022, 2023, 2024, 2025)
+TOT2_PRIOR_KEEP = 0.5             # last season's ratings carried at half
+TOT2_PRIOR_GAMES = 3.0            # the prior counts as ~3 games of evidence
+TOT2_PACE_PRIOR_GAMES = 3.0
+TOT2_GAP = 4.0                    # same bar the card uses
+TOT2_RIDGE = 1.0                  # on standardized features; light on purpose
+TOT2_TAB = "totals_lab"
+TOT2_VERSION = 1
+TOT2_FEATURES = [
+    "exp_total",          # opponent-adjusted points, both teams
+    "exp_plays",          # tempo: expected plays in the game
+    "exp_total_x_plays",  # efficiency and tempo multiply, they do not add
+    "cur_total_ppa", "cur_total_success", "cur_total_expl", "cur_total_ppo",
+    "prior_total_ppa", "prior_total_ppo",
+    "week_num", "neutral",
+]
+
+
+def _tot2_completed(games):
+    out = []
+    for g in games or []:
+        if g.get("completed") is not True:
+            continue
+        if g.get("homePoints") is None or g.get("awayPoints") is None:
+            continue
+        out.append(g)
+    return out
+
+
+def _tot2_fit_ratings(games, prior):
+    """
+    Points scored = mu + off[team] + dfn[opponent] + hfa * (true home game).
+    dfn is points ALLOWED above average, so a bad defense is positive.
+    Ridge-shrunk toward last season's ratings (prior), which is what makes
+    Week 1 usable and keeps a two-game sample from running wild.
+    """
+    p_off = prior.get("off", {})
+    p_dfn = prior.get("dfn", {})
+    mu0 = float(prior.get("mu", 28.0))
+    hfa0 = float(prior.get("hfa", 1.5))
+    if not games:
+        return {"off": dict(p_off), "dfn": dict(p_dfn), "mu": mu0, "hfa": hfa0}
+
+    teams = sorted({str(g["homeTeam"]) for g in games}
+                   | {str(g["awayTeam"]) for g in games}
+                   | set(p_off) | set(p_dfn))
+    ix = {t: i for i, t in enumerate(teams)}
+    T = len(teams)
+    P = 2 * T + 2                      # off..., dfn..., mu, hfa
+    n = 2 * len(games)
+    X = np.zeros((n, P))
+    y = np.zeros(n)
+    for k, g in enumerate(games):
+        h, a = ix[str(g["homeTeam"])], ix[str(g["awayTeam"])]
+        home = 0.0 if bool(g.get("neutralSite")) else 1.0
+        r = 2 * k
+        X[r, h] = 1; X[r, T + a] = 1; X[r, 2 * T] = 1; X[r, 2 * T + 1] = home
+        y[r] = float(g["homePoints"])
+        X[r + 1, a] = 1; X[r + 1, T + h] = 1; X[r + 1, 2 * T] = 1
+        y[r + 1] = float(g["awayPoints"])
+
+    b0 = np.zeros(P)
+    lam = np.full(P, TOT2_PRIOR_GAMES)
+    for t, i in ix.items():
+        b0[i] = float(p_off.get(t, 0.0))
+        b0[T + i] = float(p_dfn.get(t, 0.0))
+    b0[2 * T], b0[2 * T + 1] = mu0, hfa0
+    lam[2 * T] = 1e-3            # mu and hfa are estimated freely
+    lam[2 * T + 1] = 1e-3
+    A = X.T @ X + np.diag(lam)
+    b = np.linalg.solve(A, X.T @ y + lam * b0)
+    return {
+        "off": {t: float(b[i]) for t, i in ix.items()},
+        "dfn": {t: float(b[T + i]) for t, i in ix.items()},
+        "mu": float(b[2 * T]), "hfa": float(b[2 * T + 1]),
+    }
+
+
+def _tot2_carry(final):
+    """Last season's final ratings, regressed, as next season's prior."""
+    return {
+        "off": {t: v * TOT2_PRIOR_KEEP for t, v in final["off"].items()},
+        "dfn": {t: v * TOT2_PRIOR_KEEP for t, v in final["dfn"].items()},
+        "mu": final["mu"], "hfa": final["hfa"],
+    }
+
+
+def _tot2_expected(r, home, away, neutral):
+    hfa = 0.0 if neutral else r["hfa"]
+    hp = r["mu"] + r["off"].get(home, 0.0) + r["dfn"].get(away, 0.0) + hfa
+    ap = r["mu"] + r["off"].get(away, 0.0) + r["dfn"].get(home, 0.0)
+    return hp + ap
+
+
+def _tot2_per_game(adv, gp, key):
+    v = _v3_num((adv or {}).get(key))
+    if not np.isfinite(v) or gp <= 0:
+        return np.nan
+    return v / gp
+
+
+def _tot2_pace(cur_adv, prev_adv, gp_cur, gp_prev, home, away):
+    """Expected plays: each offense's tempo against what each defense
+    usually faces, blended from last season toward this season as games
+    accumulate."""
+    def team_rate(t, side):
+        key = f"{side}_plays"
+        c = _tot2_per_game(_v3_adv_fields(cur_adv.get(t)), gp_cur.get(t, 0), key)
+        p = _tot2_per_game(_v3_adv_fields(prev_adv.get(t)), gp_prev.get(t, 0), key)
+        g = float(gp_cur.get(t, 0))
+        if np.isfinite(c) and np.isfinite(p):
+            w = g / (g + TOT2_PACE_PRIOR_GAMES)
+            return w * c + (1 - w) * p
+        return c if np.isfinite(c) else p
+    vals = [team_rate(home, "off"), team_rate(away, "def"),
+            team_rate(away, "off"), team_rate(home, "def")]
+    if not all(np.isfinite(v) for v in vals):
+        return np.nan
+    return 0.5 * (vals[0] + vals[1]) + 0.5 * (vals[2] + vals[3])
+
+
+def _tot2_tier(g):
+    major = {"ACC", "SEC", "Big Ten", "Big 12", "Pac-12"}
+    h = str(g.get("homeConference") or "") in major
+    a = str(g.get("awayConference") or "") in major
+    return "Both major" if (h and a) else ("One major" if (h or a) else "Neither major")
+
+
+def _tot2_season_rows(year, prior, scope):
+    """All graded rows for one season, plus that season's final ratings
+    (which become next season's prior)."""
+    games = _tot2_completed(get_backtest_games(int(year)))
+    lines = get_backtest_lines(int(year)) or []
+    by_game = {}
+    for lr in lines:
+        gid = lr.get("id")
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        by_game[key] = normalize_game_lines([lr], game_id=gid)
+    pre = _v3_preseason_data(int(year))
+    prev_adv = pre.get("prev_adv") or {}
+    prev_games = _tot2_completed(get_backtest_games(int(year) - 1))
+    gp_prev = {}
+    for g in prev_games:
+        for t in (str(g["homeTeam"]), str(g["awayTeam"])):
+            gp_prev[t] = gp_prev.get(t, 0) + 1
+
+    try:
+        old_data = _bt_prior_only_data(get_backtest_model_data(int(year)))
+    except Exception:
+        old_data = None
+
+    rows = []
+    weeks = sorted({int(g.get("week") or 1) for g in games})
+    for w in weeks:
+        before = [g for g in games if int(g.get("week") or 1) < w]
+        r = _tot2_fit_ratings(before, prior)
+        cur_adv = _v3_advanced_through(int(year), w - 1) if w > 1 else {}
+        gp_cur = {}
+        for g in before:
+            for t in (str(g["homeTeam"]), str(g["awayTeam"])):
+                gp_cur[t] = gp_cur.get(t, 0) + 1
+        for g in games:
+            if int(g.get("week") or 1) != w or not _bt_game_scope(g, scope):
+                continue
+            gid = g.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            mk = _bt_consensus_line(by_game.get(key, []))
+            mt = _v3_num((mk or {}).get("total"))
+            if not np.isfinite(mt):
+                continue
+            home, away = str(g["homeTeam"]), str(g["awayTeam"])
+            neutral = bool(g.get("neutralSite"))
+            row = {
+                "season": int(year), "week": w, "game_id": gid,
+                "home_team": home, "away_team": away,
+                "tier": _tot2_tier(g),
+                "fcs": 1.0 if "fcs" in (str(g.get("homeClassification") or "").lower()
+                                         + str(g.get("awayClassification") or "").lower()) else 0.0,
+                "actual_total": float(g["homePoints"]) + float(g["awayPoints"]),
+                "market_total": mt,
+                "exp_total": _tot2_expected(r, home, away, neutral),
+                "exp_plays": _tot2_pace(cur_adv or {}, prev_adv, gp_cur, gp_prev, home, away),
+                "week_num": float(w),
+                "neutral": 1.0 if neutral else 0.0,
+                "min_gp": float(min(gp_cur.get(home, 0), gp_cur.get(away, 0))),
+            }
+            ha = _v3_adv_fields((cur_adv or {}).get(home))
+            aa = _v3_adv_fields((cur_adv or {}).get(away))
+            row.update(_v3_total_context(ha, aa, "cur"))
+            hp = _v3_adv_fields(prev_adv.get(home))
+            ap = _v3_adv_fields(prev_adv.get(away))
+            row.update(_v3_total_context(hp, ap, "prior"))
+            row["old_total"] = np.nan
+            if old_data is not None:
+                try:
+                    row["old_total"] = float(_bt_project_game(g, old_data)["model_total"])
+                except Exception:
+                    pass
+            rows.append(row)
+    final = _tot2_fit_ratings(games, prior)
+    return rows, final
+
+
+def _tot2_build(scope="All FBS", progress=None):
+    first = TOT2_FIRST_SEASON
+    last = max(TOT2_TEST_SEASONS)
+    # Burn-in: the season before the first graded one only supplies a prior.
+    burn = _tot2_completed(get_backtest_games(first - 1))
+    prior = _tot2_carry(_tot2_fit_ratings(
+        burn, {"off": {}, "dfn": {}, "mu": 28.0, "hfa": 1.5}))
+    all_rows = []
+    for yr in range(first, last + 1):
+        if progress:
+            progress(f"Season {yr}")
+        rows, final = _tot2_season_rows(yr, prior, scope)
+        all_rows.extend(rows)
+        prior = _tot2_carry(final)
+    df = pd.DataFrame(all_rows)
+    if not df.empty:
+        df["exp_total_x_plays"] = df["exp_total"] * df["exp_plays"]
+    return df
+
+
+def _tot2_fit_predict(train, test, feats):
+    """Standardize, median-impute from TRAIN only, light ridge."""
+    use = [f for f in feats if f in train.columns
+           and pd.to_numeric(train[f], errors="coerce").notna().mean() >= 0.5]
+    if len(use) < 2:
+        return None, use
+    tr = train.dropna(subset=["actual_total"])
+    Xtr = tr[use].apply(pd.to_numeric, errors="coerce")
+    med = Xtr.median()
+    Xtr = Xtr.fillna(med)
+    mu, sd = Xtr.mean(), Xtr.std().replace(0, 1.0)
+    Ztr = ((Xtr - mu) / sd).to_numpy()
+    ytr = tr["actual_total"].to_numpy(dtype=float)
+    ym = ytr.mean()
+    A = Ztr.T @ Ztr + TOT2_RIDGE * np.eye(Ztr.shape[1])
+    beta = np.linalg.solve(A, Ztr.T @ (ytr - ym))
+    Xte = test[use].apply(pd.to_numeric, errors="coerce").fillna(med)
+    pred = ym + ((Xte - mu) / sd).to_numpy() @ beta
+    return pred, use
+
+
+def _tot2_walk_forward(df):
+    out = []
+    for s in TOT2_TEST_SEASONS:
+        tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
+        te = df[df["season"] == s].copy()
+        if tr.empty or te.empty:
+            continue
+        pred, _ = _tot2_fit_predict(tr, te, TOT2_FEATURES)
+        if pred is None:
+            continue
+        te["new_total"] = pred
+        out.append(te)
+    return pd.concat(out) if out else pd.DataFrame()
+
+
+def _tot2_picks(d, col, gap=TOT2_GAP):
+    x = d[[col, "market_total", "actual_total"]].apply(pd.to_numeric, errors="coerce").dropna()
+    diff = x[col] - x["market_total"]
+    pick = x[diff.abs() >= gap].copy()
+    if pick.empty:
+        return {"n": 0, "w": 0, "l": 0, "rate": None}
+    over = (diff[pick.index] > 0)
+    res = pick["actual_total"] - pick["market_total"]
+    win = ((over & (res > 0)) | (~over & (res < 0)))
+    loss = ((over & (res < 0)) | (~over & (res > 0)))
+    w, l = int(win.sum()), int(loss.sum())
+    return {"n": int(len(pick)), "w": w, "l": l,
+            "rate": (w / (w + l)) if (w + l) else None,
+            "over_share": float(over.mean())}
+
+
+def _tot2_report(wf):
+    """Everything the decision needs, as plain numbers."""
+    rep = {"version": TOT2_VERSION, "n": int(len(wf)),
+           "seasons": list(TOT2_TEST_SEASONS), "models": {}}
+    y = wf["actual_total"].to_numpy(dtype=float)
+    m = wf["market_total"].to_numpy(dtype=float)
+    for name, col in (("new", "new_total"), ("old", "old_total"), ("market", "market_total")):
+        if col not in wf.columns:
+            continue
+        p = pd.to_numeric(wf[col], errors="coerce").to_numpy(dtype=float)
+        ok = np.isfinite(p)
+        if ok.sum() < 100:
+            continue
+        r = {"n": int(ok.sum()),
+             "mae": float(np.mean(np.abs(y[ok] - p[ok]))),
+             "sd": float(np.std(p[ok]))}
+        st_ = ols_t(y[ok], p[ok])
+        if st_:
+            r["slope"] = st_[0]          # 1.0 = calibrated; >1 = squeezed
+        if name != "market":
+            it = ols_t(y[ok] - m[ok], p[ok] - m[ok])
+            if it:
+                r["info_w"], r["info_t"] = it[0], it[1]
+            r["picks"] = _tot2_picks(wf[ok], col)
+            r["picks6"] = _tot2_picks(wf[ok], col, 6.0)
+            seg = {}
+            buckets = {
+                "Total 48 or less": wf["market_total"] <= 48,
+                "Total 48-58": (wf["market_total"] > 48) & (wf["market_total"] < 58),
+                "Total 58+": wf["market_total"] >= 58,
+                "Both major": wf["tier"] == "Both major",
+                "One major": wf["tier"] == "One major",
+                "Neither major": wf["tier"] == "Neither major",
+                "Weeks 1-4": wf["week"] <= 4,
+                "Weeks 5+": wf["week"] >= 5,
+            }
+            for lab, mask in buckets.items():
+                sub = wf[ok & mask.to_numpy()]
+                pk = _tot2_picks(sub, col)
+                it2 = ols_t(sub["actual_total"].to_numpy(float) - sub["market_total"].to_numpy(float),
+                            pd.to_numeric(sub[col], errors="coerce").to_numpy(float)
+                            - sub["market_total"].to_numpy(float))
+                seg[lab] = {"picks": pk,
+                            "info_w": it2[0] if it2 else None,
+                            "info_t": it2[1] if it2 else None}
+            r["segments"] = seg
+        rep["models"][name] = r
+    return rep
+
+
+def _tot2_save(rep, coefs=None):
+    ws = _v401_sheet(tab=TOT2_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps({"report": rep, "coefs": coefs,
+                                "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()})]],
+                  "A1", value_input_option="RAW")
+        try:
+            _tot2_load.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _tot2_load():
+    # Cached: expander bodies run on every visit to this page, open or not.
+    ws = _v401_sheet(tab=TOT2_TAB)
+    if ws is None:
+        return None
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _tot2_final_fit(df):
+    """Weights fit on every graded season, saved for live use once adopted."""
+    tr = df[df["season"] >= TOT2_FIRST_SEASON].dropna(subset=["actual_total"])
+    use = [f for f in TOT2_FEATURES if f in tr.columns
+           and pd.to_numeric(tr[f], errors="coerce").notna().mean() >= 0.5]
+    if len(use) < 2:
+        return None
+    X = tr[use].apply(pd.to_numeric, errors="coerce")
+    med = X.median()
+    X = X.fillna(med)
+    mu, sd = X.mean(), X.std().replace(0, 1.0)
+    Z = ((X - mu) / sd).to_numpy()
+    y = tr["actual_total"].to_numpy(dtype=float)
+    ym = float(y.mean())
+    beta = np.linalg.solve(Z.T @ Z + TOT2_RIDGE * np.eye(Z.shape[1]), Z.T @ (y - ym))
+    return {"features": use, "beta": [float(b) for b in beta], "ymean": ym,
+            "median": {k: float(v) for k, v in med.items()},
+            "mean": {k: float(v) for k, v in mu.items()},
+            "sd": {k: float(v) for k, v in sd.items()},
+            "n": int(len(tr))}
+
+
+def _tot2_fmt_pick(pk):
+    if not pk or not pk.get("n"):
+        return "—"
+    r = pk.get("rate")
+    return f"{pk['w']}-{pk['l']} ({r:.1%})" if r is not None else f"{pk['n']}"
+
+
+def _render_totals_lab():
+    st.markdown("### Totals lab")
+    st.write(
+        "Builds totals the way a book does — opponent-adjusted scoring, "
+        "updated every week, times expected plays from both teams' tempo — "
+        "using only what was known before each game. Fit on earlier seasons, "
+        f"tested on {TOT2_TEST_SEASONS[0]}–{TOT2_TEST_SEASONS[-1]} against "
+        "the closing line. Nothing here changes the live card."
+    )
+    saved = _tot2_load()
+    if _se_is_owner():
+        _scope = st.selectbox("Game universe", ["All FBS", "Major FBS", "All college games"],
+                              index=0, key="tot2_scope")
+        if st.button("Run totals lab", type="primary", key="tot2_run"):
+            with st.status("Rebuilding eight seasons week by week…") as _s:
+                try:
+                    df = _tot2_build(_scope, progress=lambda m: _s.update(label=m))
+                    if df.empty:
+                        st.error("No games with a closing total were found.")
+                        return
+                    _s.update(label="Testing against the closing line…")
+                    wf = _tot2_walk_forward(df)
+                    if wf.empty:
+                        st.error("Not enough history to test.")
+                        return
+                    rep = _tot2_report(wf)
+                    rep["scope"] = _scope
+                    coefs = _tot2_final_fit(df)
+                    if not _tot2_save(rep, coefs):
+                        st.warning("Results are below but could not be saved to Sheets.")
+                    saved = {"report": rep, "coefs": coefs,
+                             "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
+                    _s.update(label="Done", state="complete")
+                except Exception as e:
+                    st.error(f"Totals lab failed: {str(e)[:200]}")
+                    return
+    if not saved or not saved.get("report"):
+        st.caption("Not run yet.")
+        return
+
+    rep = saved["report"]
+    mods = rep.get("models", {})
+    new, old, mkt = mods.get("new", {}), mods.get("old", {}), mods.get("market", {})
+    st.caption(f"Last run {str(saved.get('saved_at', ''))[:16].replace('T', ' ')} "
+               f"· {rep.get('scope', '')} · {rep.get('n', 0):,} test games")
+
+    # 1. Can it reach the extremes?
+    st.markdown("**1. Can it reach big and small totals?**")
+    rows = []
+    for lab, m in (("New model", new), ("Current model", old), ("Closing line", mkt)):
+        if not m:
+            continue
+        rows.append({"": lab,
+                     "Spread of projections": f"{m.get('sd', float('nan')):.1f} pts",
+                     "Squeeze (1.00 = right)": f"{m['slope']:.2f}" if "slope" in m else "—",
+                     "Avg miss": f"{m.get('mae', float('nan')):.1f} pts"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Squeeze above 1.00 means real totals swing wider than the "
+               "projections do — the model is stuck near average.")
+
+    # 2. Does it know anything the close doesn't?
+    st.markdown("**2. Does it know anything the closing line doesn't?**")
+    rows = []
+    for lab, m in (("New model", new), ("Current model", old)):
+        if not m:
+            continue
+        t = m.get("info_t")
+        verdict = ("Yes — beats the close" if t is not None and t >= 2
+                   else "Worse than the close" if t is not None and t <= -2
+                   else "No proven edge")
+        rows.append({"": lab,
+                     "Share of gap that's real": f"{m['info_w']:.2f}" if m.get("info_w") is not None else "—",
+                     "Signal (t)": f"{t:+.2f}" if t is not None else "—",
+                     "Verdict": verdict,
+                     f"Bets {TOT2_GAP:g}+ off": _tot2_fmt_pick(m.get("picks")),
+                     "Overs among bets": f"{m['picks'].get('over_share', 0):.0%}" if m.get("picks", {}).get("n") else "—"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Signal above +2 means the model's disagreements with the close "
+               "showed up in final scores more than chance would explain. "
+               "Break-even on bets is 52.4%.")
+
+    # 3. Where is the edge, if anywhere?
+    seg = new.get("segments") or {}
+    if seg:
+        st.markdown("**3. Where the new model does best**")
+        rows = []
+        for lab, v in seg.items():
+            rows.append({"Segment": lab,
+                         f"Bets {TOT2_GAP:g}+ off": _tot2_fmt_pick(v.get("picks")),
+                         "Signal (t)": f"{v['info_t']:+.2f}" if v.get("info_t") is not None else "—"})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption("Books are sharpest on power-conference games; the thin-market "
+                   "case is that smaller games are priced less carefully. A segment "
+                   "only counts if its signal clears +2 on its own.")
+
+
+
 def _render_calibration():
     st.markdown("### Calibration")
     st.write(
@@ -20388,6 +20889,9 @@ def _render_more_page():
 
     with st.expander("Calibration", expanded=False):
         _render_calibration()
+
+    with st.expander("Totals lab", expanded=False):
+        _render_totals_lab()
 
     with st.expander("QB lab", expanded=False):
         _render_qb_lab()
