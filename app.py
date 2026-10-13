@@ -21620,37 +21620,47 @@ def _inj_slate_teams(games):
     return out
 
 
-def _inj_prompt(slate_date, games, saved):
-    """A ready-to-paste prompt listing every game on the date, so the AI has
-    to answer for each team instead of sweeping 'all teams' and skipping
-    most of them."""
+def _inj_prompt(slate_date, games, saved, part=None):
+    """Prompt for one batch of games. Small batches get real searches; a
+    52-game list came back 100 of 104 teams "checked, nothing new"."""
     d = pd.to_datetime(str(slate_date)[:10], errors="coerce")
     day = d.strftime("%A %b %-d") if pd.notna(d) else str(slate_date)
     lines = [f'{g.get("awayTeam", "")} @ {g.get("homeTeam", "")}' for g in games or []]
     have = [f"{r['team']}: {r['note']}" for _, r in saved.iterrows()] if not saved.empty else []
+    head = f"Injury check, college football, {day}" + (f" (batch {part})" if part else "")
     return (
-        f"Injury check for these college football games on {day}:\n"
-        + "\n".join(lines) + "\n\n"
-        "For EVERY team above, search X and the web (team accounts, coach press "
-        "conferences, official availability reports, established beat writers) "
-        "for players who are OUT or doubtful for this game, or out for the season "
-        "or multiple weeks and missed fewer than 3 games so far.\n\n"
+        head + ". Games:\n" + "\n".join(lines) + "\n\n"
+        "For EACH team above, actually search: its most recent injury report "
+        "or availability report, its depth chart, its head coach's latest press "
+        "conference, and its main beat writers on X. Find players who will miss "
+        "this game or may miss it.\n\n"
         "Output ONLY lines in this exact format, nothing else:\n"
         "Team | points | days | note | source link\n\n"
+        "Status -> points (use the status the SOURCE states, not a guess):\n"
+        "- Starting QB OUT (ruled out / out for season): 5. Use 7 only if he is a "
+        "star AND the backup has never started; 3 if the backup has real starts.\n"
+        "- Starting QB doubtful, questionable, uncertain or game-time decision: 2.5\n"
+        "- Star non-QB (top RB, WR1, best pass rusher, top LB/CB) OUT: 1.5; "
+        "doubtful/questionable: 0.75\n"
+        "- Two or more OL or defensive starters OUT: 2\n"
+        "- One OL or defensive starter OUT: 0.75\n"
+        "One line per player.\n\n"
+        "days: 6 = this game only or status unclear; 14 = out multiple weeks; "
+        "21 = season-ending and he has not missed a game yet (14 if he has missed "
+        "1, 7 if he has missed 2; skip if 3 or more).\n\n"
         "Rules:\n"
-        "- Write at least one line for EVERY team listed. If a team has no "
-        "qualifying news, write: Team | 0 | 0 | checked, nothing new\n"
-        "- points = how many points WORSE the team is: starting QB out 5 (7 if a "
-        "star, 3 if the backup has real starting experience); starting QB doubtful "
-        "2.5; star non-QB out 1.5; multiple OL or defensive starters out 2; one OL "
-        "or defensive starter out 0.75. One line per injury.\n"
-        "- days: 6 for this game only, 14 for multi-week, 21 for season-ending. If "
-        "a season-ending injury already cost the team 1 game, use 14; 2 games, use 7.\n"
-        "- note: player, position, status in under 10 words.\n"
-        "- Only the team, the coach, an official report or an established beat "
-        "writer counts. No fan accounts, aggregators or rumors.\n"
-        "- Skip players returning from injury and anything that makes a team better.\n"
+        "- Read the source before writing the line. If the source says the player "
+        "is available, probable, returning or cleared, do NOT include him.\n"
+        "- The source must be the team, the coach, an official report or an "
+        "established beat writer, dated within the last 10 days. No fan accounts, "
+        "aggregators, betting sites or rumors.\n"
+        "- Skip anything that makes a team better.\n"
+        "- note: player name, position, status as the source states it, under 12 words.\n"
         "- Use the team names exactly as written in the game list.\n"
+        "- Every team needs at least one line. Only write "
+        "\"Team | 0 | 0 | searched, nothing found\" if you actually searched that "
+        "team in this response and found nothing. If you could not search a team, "
+        "write \"Team | 0 | 0 | NOT SEARCHED\" instead.\n"
         + (("- Already saved, do NOT repeat: " + "; ".join(have) + "\n") if have else "")
     )
 
@@ -21671,11 +21681,19 @@ def _render_injury_panel(slate_date, games=None):
                 _u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
                 _act = df[(_u >= d) | _u.isna()]
             # A toggle, not an expander: Streamlit forbids nested expanders.
-            if st.toggle(f"Show prompt for Grok \u2014 all {len(games)} games on this date",
+            if st.toggle(f"Show prompt for Grok \u2014 {len(games)} games on this date",
                          key="inj_show_prompt"):
-                st.caption("Tap the copy icon, paste into Grok, then paste Grok's "
-                           "answer into Paste a list below.")
-                st.code(_inj_prompt(slate_date, games, _act), language=None)
+                _B = 15
+                _nb = max(1, -(-len(games) // _B))
+                _bi = st.selectbox("Batch", list(range(1, _nb + 1)),
+                                   format_func=lambda k: f"Batch {k} of {_nb}",
+                                   key="inj_batch") if _nb > 1 else 1
+                _bg = list(games)[(_bi - 1) * _B:_bi * _B]
+                st.caption("Run one batch at a time in a NEW Grok chat. Paste each "
+                           "answer into Paste a list below, then do the next batch.")
+                st.code(_inj_prompt(slate_date, _bg, _act,
+                                    f"{_bi} of {_nb}" if _nb > 1 else None),
+                        language=None)
         if not df.empty:
             u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
             act = df[(u >= d) | u.isna()] if pd.notna(d) else df
@@ -21746,7 +21764,8 @@ def _render_injury_panel(slate_date, games=None):
                     tm = parts[0]
                     pv = float(parts[1].replace("+", "").replace("-", "") or "x")
                     if pv == 0:
-                        checked.add(_inj_norm(tm))
+                        if "not searched" not in line.lower():
+                            checked.add(_inj_norm(tm))
                         continue
                     dv = int(float(parts[2]))
                     if not tm or not (0 < pv <= 21) or not (0 < dv <= 150):
