@@ -18271,6 +18271,12 @@ def _v50_apply_strict_selection(card):
     )
     # Totals lab adopted: a total is a bet only if it passed the validated
     # filter (which sets its own gap); the 4-point bar does not apply to it.
+    # Spread lab, same idea: a repriced spread is a bet only inside its filter.
+    if "spr2_rule_ok" in c.columns:
+        _sok = c["spr2_rule_ok"].fillna(False).astype(bool)
+        _issp = c["market_type"].astype(str).str.upper().eq("SPREAD")
+        _shas = c["spr2_rule_ok"].notna() & _issp
+        qualifies = (qualifies & ~_shas) | (_shas & _sok & (~_fcs) & (~c["excluded"]))
     if "tot2_rule_ok" in c.columns:
         _tok = c["tot2_rule_ok"].fillna(False).astype(bool)
         _istot = c["market_type"].astype(str).str.upper().eq("TOTAL")
@@ -20572,9 +20578,18 @@ def _tot2_live_state(season, week):
             "cur_adv": cur_adv or {}, "prev_adv": prev_adv}
 
 
+def _tot2_gid(x):
+    """Game ids arrive as int, str or float (a concat with any blank turns
+    the whole column to float: 401520321.0). Compare them as integers."""
+    try:
+        return int(float(x))
+    except Exception:
+        return str(x)
+
+
 def _tot2_week_of(game_id, season):
     for g in get_finals_games(int(season)) or []:
-        if str(g.get("id")) == str(game_id):
+        if _tot2_gid(g.get("id")) == _tot2_gid(game_id):
             return int(g.get("week") or 1)
     return None
 
@@ -20644,7 +20659,7 @@ def _tot2_apply_to_totals(out, ad):
         side = "OVER" if nt > mkt else "UNDER"
         season = _tot2_season_of(r.get("game_date"))
         g = next((x for x in (get_finals_games(season) or [])
-                  if str(x.get("id")) == str(r.get("game_id"))), {})
+                  if _tot2_gid(x.get("id")) == _tot2_gid(r.get("game_id"))), {})
         probe = pd.DataFrame([{"new_total": nt, "market_total": mkt,
                                "tier": _tot2_tier(g) if g else "Neither major",
                                "week": int(g.get("week") or 1) if g else 1}])
@@ -20871,6 +20886,505 @@ def _render_totals_lab():
                         st.rerun()
                     else:
                         st.error("Could not save to Sheets.")
+
+
+
+# ===== Spread lab (v5.3) ==================================================
+# Same approach as the totals lab, for spreads: rate every team week by week
+# from this season's actual results (opponent-adjusted, last season as a
+# prior), add matchup efficiency, Elo and talent, and test against the
+# CLOSING spread on seasons the fit never saw.
+#
+# Why: calibration found the current spread side winning 48.5% on 3,363
+# games, and live bets 6-8 points off went 11-20. Big disagreements have
+# mostly meant the model was missing something.
+
+SPR2_TAB = "spread_lab"
+SPR2_VERSION = 1
+SPR2_FEATURES = [
+    "exp_margin",            # opponent-adjusted scoring, this season so far
+    "elo_diff", "talent_diff",
+    "cur_ppa_match", "cur_success_match", "cur_ppo_match", "cur_expl_match",
+    "prior_ppa_match", "prior_ppo_match",
+    "hfa_flag", "week_num",
+]
+
+
+def _spr2_expected_margin(r, home, away, neutral):
+    hfa = 0.0 if neutral else r["hfa"]
+    hp = r["mu"] + r["off"].get(home, 0.0) + r["dfn"].get(away, 0.0) + hfa
+    ap = r["mu"] + r["off"].get(away, 0.0) + r["dfn"].get(home, 0.0)
+    return hp - ap
+
+
+def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent):
+    f = {
+        "exp_margin": _spr2_expected_margin(r, home, away, neutral),
+        "elo_diff": _v3_num(game.get("homePregameElo")) - _v3_num(game.get("awayPregameElo")),
+        "talent_diff": (_v3_num((talent.get(home) or {}).get("talent"))
+                        - _v3_num((talent.get(away) or {}).get("talent"))),
+        "hfa_flag": 0.0 if neutral else 1.0,
+        "week_num": float(week),
+    }
+    f.update(_v3_matchup(_v3_adv_fields(cur_adv.get(home)),
+                         _v3_adv_fields(cur_adv.get(away)), "cur"))
+    f.update(_v3_matchup(_v3_adv_fields(prev_adv.get(home)),
+                         _v3_adv_fields(prev_adv.get(away)), "prior"))
+    return f
+
+
+def _spr2_season_rows(year, prior, scope):
+    games = _tot2_completed(get_backtest_games(int(year)))
+    by_game = {}
+    for lr in get_backtest_lines(int(year)) or []:
+        gid = lr.get("id")
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        by_game[key] = normalize_game_lines([lr], game_id=gid)
+    pre = _v3_preseason_data(int(year)) or {}
+    prev_adv = pre.get("prev_adv") or {}
+    talent = pre.get("talent") or {}
+    try:
+        old_data = _bt_prior_only_data(get_backtest_model_data(int(year)))
+    except Exception:
+        old_data = None
+
+    rows = []
+    for w in sorted({int(g.get("week") or 1) for g in games}):
+        before = [g for g in games if int(g.get("week") or 1) < w]
+        r = _tot2_fit_ratings(before, prior)
+        cur_adv = (_v3_advanced_through(int(year), w - 1) if w > 1 else {}) or {}
+        for g in games:
+            if int(g.get("week") or 1) != w or not _bt_game_scope(g, scope):
+                continue
+            gid = g.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            mk = _bt_consensus_line(by_game.get(key, []))
+            hs = _v3_num((mk or {}).get("home_spread"))
+            if not np.isfinite(hs):
+                continue
+            home, away = str(g["homeTeam"]), str(g["awayTeam"])
+            neutral = bool(g.get("neutralSite"))
+            row = {
+                "season": int(year), "week": w, "game_id": gid,
+                "home_team": home, "away_team": away, "tier": _tot2_tier(g),
+                "actual_margin": float(g["homePoints"]) - float(g["awayPoints"]),
+                "market_margin": -hs,
+            }
+            row.update(_spr2_features(r, home, away, neutral, w, cur_adv,
+                                      prev_adv, g, talent))
+            row["old_margin"] = np.nan
+            if old_data is not None:
+                try:
+                    row["old_margin"] = -float(_bt_project_game(g, old_data)["model_home_spread"])
+                except Exception:
+                    pass
+            rows.append(row)
+    return rows, _tot2_fit_ratings(games, prior)
+
+
+def _spr2_build(scope="All FBS", progress=None):
+    burn = _tot2_completed(get_backtest_games(TOT2_FIRST_SEASON - 1))
+    prior = _tot2_carry(_tot2_fit_ratings(
+        burn, {"off": {}, "dfn": {}, "mu": 28.0, "hfa": 1.5}))
+    out = []
+    for yr in range(TOT2_FIRST_SEASON, max(TOT2_TEST_SEASONS) + 1):
+        if progress:
+            progress(f"Season {yr}")
+        rows, final = _spr2_season_rows(yr, prior, scope)
+        out.extend(rows)
+        prior = _tot2_carry(final)
+    return pd.DataFrame(out)
+
+
+def _spr2_fit(train, feats):
+    use = [f for f in feats if f in train.columns
+           and pd.to_numeric(train[f], errors="coerce").notna().mean() >= 0.5]
+    if len(use) < 2:
+        return None
+    tr = train.dropna(subset=["actual_margin"])
+    X = tr[use].apply(pd.to_numeric, errors="coerce")
+    med = X.median()
+    X = X.fillna(med)
+    mu, sd = X.mean(), X.std().replace(0, 1.0)
+    Z = ((X - mu) / sd).to_numpy()
+    y = tr["actual_margin"].to_numpy(dtype=float)
+    ym = float(y.mean())
+    beta = np.linalg.solve(Z.T @ Z + TOT2_RIDGE * np.eye(Z.shape[1]), Z.T @ (y - ym))
+    return {"features": use, "beta": [float(b) for b in beta], "ymean": ym,
+            "median": {k: float(v) for k, v in med.items()},
+            "mean": {k: float(v) for k, v in mu.items()},
+            "sd": {k: float(v) for k, v in sd.items()}, "n": int(len(tr))}
+
+
+def _spr2_predict(c, frame):
+    X = frame[c["features"]].apply(pd.to_numeric, errors="coerce")
+    for k in c["features"]:
+        X[k] = X[k].fillna(c["median"][k])
+        X[k] = (X[k] - c["mean"][k]) / (c["sd"][k] or 1.0)
+    return c["ymean"] + X.to_numpy() @ np.array(c["beta"])
+
+
+def _spr2_walk_forward(df):
+    out = []
+    for s in TOT2_TEST_SEASONS:
+        tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
+        te = df[df["season"] == s].copy()
+        if tr.empty or te.empty:
+            continue
+        c = _spr2_fit(tr, SPR2_FEATURES)
+        if c is None:
+            continue
+        te["new_margin"] = _spr2_predict(c, te)
+        out.append(te)
+    return pd.concat(out) if out else pd.DataFrame()
+
+
+def _spr2_rule_mask(d, rule, col="new_margin"):
+    gap = pd.to_numeric(d[col], errors="coerce") - pd.to_numeric(d["market_margin"], errors="coerce")
+    a = gap.abs()
+    m = a >= rule["gap"]
+    if rule.get("max_gap"):
+        m &= a < rule["max_gap"]
+    tier = rule.get("tier", "all")
+    if tier == "Any major":
+        m &= d["tier"].isin(["Both major", "One major"])
+    elif tier != "all":
+        m &= d["tier"] == tier
+    wk = pd.to_numeric(d["week"], errors="coerce")
+    ph = rule.get("phase", "all")
+    if ph == "Weeks 1-4":
+        m &= wk <= 4
+    elif ph == "Weeks 5+":
+        m &= wk >= 5
+    mm = pd.to_numeric(d["market_margin"], errors="coerce")
+    pick_home = gap > 0
+    fav = (pick_home & (mm > 0)) | (~pick_home & (mm < 0))
+    side = rule.get("side", "both")
+    if side == "Favorites":
+        m &= fav
+    elif side == "Underdogs":
+        m &= ~fav
+    ven = rule.get("venue", "both")
+    if ven == "Home teams":
+        m &= pick_home
+    elif ven == "Road teams":
+        m &= ~pick_home
+    return m.fillna(False)
+
+
+def _spr2_record(d, mask, col="new_margin"):
+    x = d[mask]
+    if x.empty:
+        return 0, 0
+    gap = pd.to_numeric(x[col], errors="coerce") - pd.to_numeric(x["market_margin"], errors="coerce")
+    res = pd.to_numeric(x["actual_margin"], errors="coerce") - pd.to_numeric(x["market_margin"], errors="coerce")
+    w = int((((gap > 0) & (res > 0)) | ((gap < 0) & (res < 0))).sum())
+    l = int((((gap > 0) & (res < 0)) | ((gap < 0) & (res > 0))).sum())
+    return w, l
+
+
+def _spr2_rule_text(rule):
+    g = f"{rule['gap']:g}+ pts off"
+    if rule.get("max_gap"):
+        g = f"{rule['gap']:g}–{rule['max_gap']:g} pts off"
+    parts = [g]
+    for k in ("tier", "phase", "side", "venue"):
+        v = rule.get(k, "all")
+        if v not in ("all", "both"):
+            parts.append(v)
+    return ", ".join(parts)
+
+
+def _spr2_edge_search(wf):
+    sel = wf[wf["season"].isin(TOT2_SELECT_SEASONS)]
+    val = wf[wf["season"].isin(TOT2_VALIDATE_SEASONS)]
+    rules = []
+    for gap in (3.0, 4.0, 5.0, 6.0, 8.0):
+        for mx in (None, 6.0, 8.0, 10.0):
+            if mx is not None and mx <= gap:
+                continue
+            for tier in ("all", "Both major", "One major", "Neither major", "Any major"):
+                for ph in ("all", "Weeks 1-4", "Weeks 5+"):
+                    for side in ("both", "Favorites", "Underdogs"):
+                        for ven in ("both", "Home teams", "Road teams"):
+                            rules.append({"gap": gap, "max_gap": mx, "tier": tier,
+                                          "phase": ph, "side": side, "venue": ven})
+    cands = []
+    for rule in rules:
+        w, l = _spr2_record(sel, _spr2_rule_mask(sel, rule))
+        if w + l >= TOT2_MIN_SELECT_BETS:
+            cands.append((_tot2_z(w, l), rule, w, l))
+    cands.sort(key=lambda c: -c[0])
+    top = []
+    for z, rule, w, l in cands[:5]:
+        vw, vl = _spr2_record(val, _spr2_rule_mask(val, rule))
+        top.append({"rule": rule, "select": [w, l], "validate": [vw, vl],
+                    "validated": _tot2_holds(vw, vl)})
+    allc = []
+    for rule in rules:
+        w, l = _spr2_record(wf, _spr2_rule_mask(wf, rule))
+        if w + l >= 2 * TOT2_MIN_SELECT_BETS:
+            allc.append({"rule": rule, "all": [w, l], "z": _tot2_z(w, l)})
+    allc.sort(key=lambda c: -c["z"])
+    return {"tried": len(rules), "top": top, "best": top[0] if top else None,
+            "top_all": allc[:5], "best_all": allc[0] if allc else None}
+
+
+def _spr2_report(wf):
+    rep = {"version": SPR2_VERSION, "n": int(len(wf)), "models": {}}
+    y = wf["actual_margin"].to_numpy(dtype=float)
+    m = wf["market_margin"].to_numpy(dtype=float)
+    for name, col in (("new", "new_margin"), ("old", "old_margin"), ("market", "market_margin")):
+        if col not in wf.columns:
+            continue
+        p = pd.to_numeric(wf[col], errors="coerce").to_numpy(dtype=float)
+        ok = np.isfinite(p)
+        if ok.sum() < 100:
+            continue
+        r = {"n": int(ok.sum()), "mae": float(np.mean(np.abs(y[ok] - p[ok]))),
+             "sd": float(np.std(p[ok]))}
+        s_ = ols_t(y[ok], p[ok])
+        if s_:
+            r["slope"] = s_[0]
+        if name != "market":
+            it = ols_t(y[ok] - m[ok], p[ok] - m[ok])
+            if it:
+                r["info_w"], r["info_t"] = it[0], it[1]
+            for lab, lo, hi in (("picks", 4.0, None), ("4-6", 4.0, 6.0),
+                                ("6-8", 6.0, 8.0), ("8+", 8.0, None)):
+                rule = {"gap": lo, "max_gap": hi}
+                r[lab] = list(_spr2_record(wf[ok], _spr2_rule_mask(wf[ok], rule, col), col))
+        rep["models"][name] = r
+    try:
+        rep["edge"] = _spr2_edge_search(wf)
+    except Exception as e:
+        rep["edge"] = {"error": str(e)[:120]}
+    return rep
+
+
+def _spr2_save(rep, coefs=None, adopted=True):
+    ws = _v401_sheet(tab=SPR2_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps({"report": rep, "coefs": coefs, "adopted": bool(adopted),
+                                "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()})]],
+                  "A1", value_input_option="RAW")
+        try:
+            _spr2_load.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _spr2_load():
+    ws = _v401_sheet(tab=SPR2_TAB)
+    if ws is None:
+        return None
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _spr2_adopted():
+    saved = _spr2_load()
+    if not saved or not saved.get("adopted", True) or not saved.get("coefs"):
+        return None
+    edge = (saved.get("report") or {}).get("edge") or {}
+    best = edge.get("best")
+    if best and best.get("validated"):
+        return {"rule": best["rule"], "coefs": saved["coefs"], "proven": True}
+    if edge.get("best_all"):
+        return {"rule": edge["best_all"]["rule"], "coefs": saved["coefs"], "proven": False}
+    return None
+
+
+def _spr2_apply_to_spreads(card, ad):
+    """Reprice spread rows with the new model; bets only inside the filter."""
+    if card is None or card.empty or "market_type" not in card.columns:
+        return card
+    out = card.copy()
+    is_sp = out["market_type"].astype(str).str.upper().eq("SPREAD")
+    out.loc[is_sp, "spr2_rule_ok"] = False
+    for idx in out.index[is_sp]:
+        r = out.loc[idx]
+        try:
+            season = int(_v3_num(r.get("season"), _tot2_season_of(r.get("game_date"))))
+            g = next((x for x in (get_finals_games(season) or [])
+                      if _tot2_gid(x.get("id")) == _tot2_gid(r.get("game_id"))), None)
+            if not g:
+                continue
+            week = int(g.get("week") or 1)
+            stt = _tot2_live_state(season, week)
+            talent = ((_v3_preseason_data(season) or {}).get("talent")) or {}
+            home, away = str(r.get("home_team")), str(r.get("away_team"))
+            neutral = bool(g.get("neutralSite"))
+            f = _spr2_features(stt["r"], home, away, neutral, week,
+                               stt["cur_adv"], stt["prev_adv"], g, talent)
+            nm = float(_spr2_predict(ad["coefs"], pd.DataFrame([f]))[0])
+            mh = _v3_num(r.get("market_home_spread_display"))
+            if not np.isfinite(mh):
+                mh = float(r.get("market_home_spread"))
+            fair_home = -nm
+            edge = mh - fair_home
+            if abs(edge) < 1e-9:
+                continue
+            side = "HOME" if edge > 0 else "AWAY"
+            flipped = side != str(r.get("pick_side"))
+            probe = pd.DataFrame([{"new_margin": nm, "market_margin": -mh,
+                                   "tier": _tot2_tier(g), "week": week}])
+            ok = bool(_spr2_rule_mask(probe, ad["rule"]).iloc[0])
+            team = home if side == "HOME" else away
+            line = mh if side == "HOME" else -mh
+            out.at[idx, "fair_home_spread"] = fair_home
+            out.at[idx, "signed_home_edge"] = edge
+            out.at[idx, "point_edge"] = abs(edge)
+            out.at[idx, "pick_side"] = side
+            out.at[idx, "selection"] = f"{team} {line:+.1f}"
+            out.at[idx, "market_display"] = line
+            out.at[idx, "fair_display"] = fair_home if side == "HOME" else -fair_home
+            if flipped:
+                # The old reliability rating graded the other side; rebuild it
+                # from data quality alone.
+                out.at[idx, "reliability"] = _se_reliability_from(
+                    r.get("model_confidence"), r.get("data_completeness")) or "LOW"
+            out.at[idx, "verdict"] = "BET" if ok else "LEAN"
+            out.at[idx, "spr2_rule_ok"] = ok
+        except Exception:
+            continue
+    return out
+
+
+def _render_spread_lab():
+    st.markdown("### Spread lab")
+    st.write(
+        "Rates every team week by week from this season's actual results, "
+        "adjusted for opponents, plus matchup efficiency, Elo and talent — "
+        "only what was known before each game. Tested on "
+        f"{TOT2_TEST_SEASONS[0]}–{TOT2_TEST_SEASONS[-1]} against the closing spread."
+    )
+    saved = _spr2_load()
+    if _se_is_owner():
+        _scope = st.selectbox("Game universe", ["All FBS", "Major FBS", "All college games"],
+                              index=0, key="spr2_scope")
+        if st.button("Run spread lab", type="primary", key="spr2_run"):
+            with st.status("Rebuilding eight seasons week by week…") as _s:
+                try:
+                    df = _spr2_build(_scope, progress=lambda m: _s.update(label=m))
+                    if df.empty:
+                        st.error("No games with a closing spread were found.")
+                        return
+                    _s.update(label="Testing against the closing spread…")
+                    wf = _spr2_walk_forward(df)
+                    if wf.empty:
+                        st.error("Not enough history to test.")
+                        return
+                    rep = _spr2_report(wf)
+                    rep["scope"] = _scope
+                    coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+                    if not _spr2_save(rep, coefs, adopted=True):
+                        st.warning("Results are below but could not be saved to Sheets.")
+                    saved = {"report": rep, "coefs": coefs, "adopted": True,
+                             "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
+                    _s.update(label="Done", state="complete")
+                except Exception as e:
+                    st.error(f"Spread lab failed: {str(e)[:200]}")
+                    return
+    if not saved or not saved.get("report"):
+        st.caption("Not run yet.")
+        return
+    rep = saved["report"]
+    mods = rep.get("models", {})
+    st.caption(f"Last run {str(saved.get('saved_at', ''))[:16].replace('T', ' ')} "
+               f"· {rep.get('scope', '')} · {rep.get('n', 0):,} test games")
+
+    def _rec(v):
+        if not v or not (v[0] + v[1]):
+            return "—"
+        return f"{v[0]}-{v[1]} ({v[0] / (v[0] + v[1]):.1%})"
+
+    st.markdown("**1. How each model does against the closing spread**")
+    rows = []
+    for lab, k in (("New model", "new"), ("Current model", "old"), ("Closing line", "market")):
+        m = mods.get(k)
+        if not m:
+            continue
+        t = m.get("info_t")
+        rows.append({
+            "": lab,
+            "Avg miss": f"{m.get('mae', float('nan')):.1f} pts",
+            "Calibration (1.00 = right)": f"{m['slope']:.2f}" if "slope" in m else "—",
+            "Signal (t)": f"{t:+.2f}" if t is not None else "—",
+            "Bets 4+ off": _rec(m.get("picks")) if k != "market" else "—",
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Signal above +2 means the model's disagreements with the close "
+               "showed up in results more than chance explains. Break-even 52.4%.")
+
+    st.markdown("**2. Does a bigger disagreement mean a better bet?**")
+    rows = []
+    for lab, k in (("New model", "new"), ("Current model", "old")):
+        m = mods.get(k)
+        if m:
+            rows.append({"": lab, "4–6 off": _rec(m.get("4-6")),
+                         "6–8 off": _rec(m.get("6-8")), "8+ off": _rec(m.get("8+"))})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    edge = rep.get("edge") or {}
+    st.markdown("**3. Best filter, checked on seasons it never saw**")
+    if edge.get("error"):
+        st.caption(f"Edge search failed: {edge['error']}")
+        return
+    rows = []
+    for c in edge.get("top") or []:
+        sw, sl = c["select"]
+        vw, vl = c["validate"]
+        rows.append({"Filter": _spr2_rule_text(c["rule"]),
+                     "2022–23 (chosen on)": _rec([sw, sl]),
+                     "2024–25 (unseen)": _rec([vw, vl]),
+                     "Held up": "Yes" if c["validated"] else "No"})
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if edge.get("top_all"):
+        st.markdown("**Best filters over all four seasons**")
+        st.dataframe(pd.DataFrame([{"Filter": _spr2_rule_text(c["rule"]),
+                                    "2022–25": _rec(c["all"])}
+                                   for c in edge["top_all"]]),
+                     hide_index=True, use_container_width=True)
+    if not edge.get("top") and not edge.get("top_all"):
+        st.caption("No filter had enough bets to judge — the new model rarely "
+                   "disagrees with the close by 3+ points. The live card keeps the "
+                   "current spread model.")
+    best = edge.get("best") or {}
+    use = best if best.get("validated") else (edge.get("best_all") or {})
+    if use.get("rule"):
+        on = bool(saved.get("adopted", True))
+        st.markdown(
+            f"**Live card:** {'ON' if on else 'off'} — spreads priced by the new "
+            f"model; bets only when: {_spr2_rule_text(use['rule'])}. "
+            + ("Passed the unseen-season test." if best.get("validated") else
+               "Best record overall, but NOT proven — expect live results "
+               "below this record.")
+            + " Every other spread can still show as a lean.")
+        if _se_is_owner():
+            if st.button("Turn off on live card" if on else "Use on live card",
+                         key="spr2_adopt"):
+                if _spr2_save(rep, saved.get("coefs"), adopted=not on):
+                    st.success("Saved. Rebuild the slate to see it.")
+                    st.rerun()
+                else:
+                    st.error("Could not save to Sheets.")
 
 
 
@@ -21214,6 +21728,9 @@ def _render_more_page():
 
     with st.expander("Totals lab", expanded=False):
         _render_totals_lab()
+
+    with st.expander("Spread lab", expanded=False):
+        _render_spread_lab()
 
     with st.expander("QB lab", expanded=False):
         _render_qb_lab()
@@ -24288,6 +24805,14 @@ if run_mode == "Full Slate":
 
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
         st.session_state["cfb_v36_latest_slate"] = slate_choice
+
+        # Spread lab, on by default once it has been run.
+        try:
+            _sad = _spr2_adopted()
+            if _sad:
+                combined_card = _spr2_apply_to_spreads(combined_card, _sad)
+        except Exception as _spe:
+            st.caption(f"Spread model update skipped: {str(_spe)[:80]}")
 
         # Two tiers: strict official bets, plus an always-there watch list.
         _official, _fun = _v50_apply_strict_selection(combined_card)
