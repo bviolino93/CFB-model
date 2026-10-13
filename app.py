@@ -16454,7 +16454,8 @@ V401_TRACKER_COLUMNS = [
     "week",                    # CFB week number
     "neutral_site",
     "conference_game",
-    "closing_captured_at"      # timestamp of the closing snapshot
+    "closing_captured_at",     # timestamp of the closing snapshot
+    "filter_match",            # passed the lab's best filter (blank = no lab)
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -16948,6 +16949,13 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "neutral_site": r.get("neutral_site"),
             "conference_game": r.get("conference_game"),
             "closing_captured_at": None,
+            "filter_match": (
+                bool(r.get("spr2_rule_ok")) if market_type == "SPREAD"
+                and pd.notna(r.get("spr2_rule_ok", np.nan))
+                else bool(r.get("tot2_rule_ok")) if market_type == "TOTAL"
+                and pd.notna(r.get("tot2_rule_ok", np.nan))
+                else ""
+            ),
         })
         existing.add(key)
 
@@ -18141,6 +18149,13 @@ def _se_conf(r):
     if tier == "WATCH" or (not tier and verdict not in ("BET", "BEST BET",
                                                       "STRONG BET")):
         return 0
+    # Lab filter: a play inside the best filter is the top level; a normal
+    # play outside it is capped at two stars. Blank = priced before the labs.
+    fm = r.get("filter_match")
+    fm_s = str(fm).strip().upper() if fm is not None else ""
+    if fm_s in ("TRUE", "1", "1.0"):
+        return 3
+    cap = 2 if fm_s in ("FALSE", "0", "0.0") else 3
     g = _se_row_gap(r)
     rel = str(r.get("reliability") or "").strip().upper()
     if rel in ("", "NAN", "NONE"):
@@ -18150,7 +18165,7 @@ def _se_conf(r):
                                    r.get("data_completeness"))
     big = math.isfinite(g) and g >= SE_STAR_GAP
     if big and rel in SE_SOLID_REL:
-        return 3
+        return min(3, cap)
     if (big and rel == "MODERATE") or (not big and rel in SE_SOLID_REL):
         return 2
     return 1
@@ -18276,12 +18291,14 @@ def _v50_apply_strict_selection(card):
         _sok = c["spr2_rule_ok"].fillna(False).astype(bool)
         _issp = c["market_type"].astype(str).str.upper().eq("SPREAD")
         _shas = c["spr2_rule_ok"].notna() & _issp
-        qualifies = (qualifies & ~_shas) | (_shas & _sok & (~_fcs) & (~c["excluded"]))
+        # Your call: normal 4+ point plays stay bets (lower stars); the
+        # filter only ADDS plays, such as a 3-point gap it likes.
+        qualifies = qualifies | (_shas & _sok & (~_fcs) & (~c["excluded"]))
     if "tot2_rule_ok" in c.columns:
         _tok = c["tot2_rule_ok"].fillna(False).astype(bool)
         _istot = c["market_type"].astype(str).str.upper().eq("TOTAL")
         _has = c["tot2_rule_ok"].notna() & _istot
-        qualifies = (qualifies & ~_has) | (_has & _tok & (~_fcs) & (~c["excluded"]))
+        qualifies = qualifies | (_has & _tok & (~_fcs) & (~c["excluded"]))
 
     official = c[qualifies].copy()
     if not official.empty:
@@ -20671,8 +20688,8 @@ def _tot2_apply_to_totals(out, ad):
         out.at[idx, "pick_side"] = side
         out.at[idx, "selection"] = f"{side.title()} {mkt:g}"
         out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
-        out.at[idx, "verdict"] = "BET" if ok else "LEAN"
         out.at[idx, "tot2_rule_ok"] = ok
+        out.at[idx, "filter_match"] = ok
         out.at[idx, "model_version"] = f"{MODEL_VERSION}-tot2"
     return out
 
@@ -20873,11 +20890,11 @@ def _render_totals_lab():
             proven = bool(best.get("validated"))
             st.markdown(
                 f"**Live card:** {'ON' if on else 'off'} \u2014 totals priced by the "
-                f"new model; bets only when: {_tot2_rule_text(use['rule'])}. "
+                f"new model; top bets when: {_tot2_rule_text(use['rule'])}. "
                 + ("Passed the unseen-season test." if proven else
                    "Best record overall, but NOT proven \u2014 it did not pass the "
                    "unseen-season test, so expect live results below this record.")
-                + " Every other total can still show as a lean.")
+                + " Those are \u2605\u2605\u2605; other totals 4+ off stay bets at \u2605\u2605 or \u2605.")
             if _se_is_owner():
                 if st.button("Turn off on live card" if on else "Use on live card",
                              key="tot2_adopt"):
@@ -21259,8 +21276,8 @@ def _spr2_apply_to_spreads(card, ad):
                 # from data quality alone.
                 out.at[idx, "reliability"] = _se_reliability_from(
                     r.get("model_confidence"), r.get("data_completeness")) or "LOW"
-            out.at[idx, "verdict"] = "BET" if ok else "LEAN"
             out.at[idx, "spr2_rule_ok"] = ok
+            out.at[idx, "filter_match"] = ok
         except Exception:
             continue
     return out
@@ -21372,11 +21389,11 @@ def _render_spread_lab():
         on = bool(saved.get("adopted", True))
         st.markdown(
             f"**Live card:** {'ON' if on else 'off'} — spreads priced by the new "
-            f"model; bets only when: {_spr2_rule_text(use['rule'])}. "
+            f"model; top bets when: {_spr2_rule_text(use['rule'])}. "
             + ("Passed the unseen-season test." if best.get("validated") else
                "Best record overall, but NOT proven — expect live results "
                "below this record.")
-            + " Every other spread can still show as a lean.")
+            + " Those are \u2605\u2605\u2605; other spreads 4+ off stay bets at \u2605\u2605 or \u2605.")
         if _se_is_owner():
             if st.button("Turn off on live card" if on else "Use on live card",
                          key="spr2_adopt"):
