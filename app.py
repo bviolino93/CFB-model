@@ -21473,6 +21473,12 @@ INJ_DURATIONS = {
 # A worse team mostly scores less; its defense is usually unaffected.
 INJ_TOTAL_SHARE = 0.6
 INJ_COLS = ["team", "points", "note", "until", "added_at"]
+# Sources the prompt already forbids but AI tools cite anyway: betting and
+# ratings sites. Their injury pages list season-old absences with no date.
+INJ_BLOCKED_SOURCES = ("covers.com", "dratings.com", "actionnetwork.com",
+                       "oddsshark.com", "vegasinsider.com", "sportsbookreview.com",
+                       "teamrankings.com", "pickswise.com", "docsports.com",
+                       "easportstoday.com")
 
 
 def _inj_norm(t):
@@ -21683,6 +21689,27 @@ def _render_injury_panel(slate_date, games=None):
             # A toggle, not an expander: Streamlit forbids nested expanders.
             if st.toggle(f"Show prompt for Grok \u2014 {len(games)} games on this date",
                          key="inj_show_prompt"):
+                # Focus: only games where an injury could change the card.
+                _sc = st.session_state.get("cfb_v36_latest_card")
+                _near = []
+                if isinstance(_sc, pd.DataFrame) and not _sc.empty:
+                    try:
+                        _gp = (pd.to_numeric(_sc["fair_display"], errors="coerce")
+                               - pd.to_numeric(_sc["market_display"], errors="coerce")).abs()
+                        _ids = {_tot2_gid(x) for x in _sc.loc[_gp >= 2.0, "game_id"]}
+                        _near = [g for g in games if _tot2_gid(g.get("id")) in _ids]
+                    except Exception:
+                        _near = []
+                _scope = st.radio(
+                    "Which games",
+                    [f"Near a bet \u2014 {len(_near)} games (2+ pts off)",
+                     f"All {len(games)} games"],
+                    index=0 if _near else 1, key="inj_scope", horizontal=True)
+                if _scope.startswith("Near") and not _near:
+                    st.caption("Build the slate first (Preview is fine) so the app "
+                               "knows which games are near a bet.")
+                if _scope.startswith("Near"):
+                    games = _near
                 _B = 15
                 _nb = max(1, -(-len(games) // _B))
                 _bi = st.selectbox("Batch", list(range(1, _nb + 1)),
@@ -21752,6 +21779,7 @@ def _render_injury_panel(slate_date, games=None):
             _seen = {(_inj_norm(t), str(n).strip().lower())
                      for t, n in zip(df.get("team", []), df.get("note", []))}
             dup = []
+            blocked = []
             checked = set()
             for line in _txt.splitlines():
                 line = line.strip().strip("-*\u2022 ").strip()
@@ -21763,6 +21791,11 @@ def _render_injury_panel(slate_date, games=None):
                         raise ValueError
                     tm = parts[0]
                     pv = float(parts[1].replace("+", "").replace("-", "") or "x")
+                    _src = (parts[4] if len(parts) > 4 else "").lower()
+                    if any(b_ in _src for b_ in INJ_BLOCKED_SOURCES):
+                        blocked.append(line)
+                        checked.add(_inj_norm(tm))
+                        continue
                     if pv == 0:
                         if "not searched" not in line.lower():
                             checked.add(_inj_norm(tm))
@@ -21788,6 +21821,9 @@ def _render_injury_panel(slate_date, games=None):
                 st.error("Could not save to Google Sheets.")
             if bad:
                 st.warning("Skipped (format): \n- " + "\n- ".join(bad[:15]))
+            if blocked:
+                st.warning("Skipped (betting or ratings site, not a real injury "
+                           "source):\n- " + "\n- ".join(blocked[:10]))
             if dup:
                 st.caption(f"Skipped {len(dup)} already saved.")
                 for _l in dup:
@@ -24722,6 +24758,10 @@ if run_mode == "Full Slate":
             help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
         )
         st.caption("Unreliable or conflicting line feeds are ignored automatically.")
+        st.toggle("Preview only \u2014 build without freezing", key="se_preview",
+                  help="See the card and which games are near a bet, add "
+                       "injuries for those, then turn this off and rebuild to "
+                       "freeze. Freezing is permanent, so check injuries first.")
 
     # Collapsed summary + a way back to the controls.
     if _slate_done:
@@ -25411,9 +25451,15 @@ if run_mode == "Full Slate":
         try:
             # One combined write. Freezing each tier separately meant loading
             # and saving the sheet twice, which made every build slow.
-            _v36_added, _watch_added = _v401_track_both(
-                _official, _fun, selected_date
-            )
+            if st.session_state.get("se_preview"):
+                _v36_added, _watch_added = 0, 0
+                st.info("**Preview \u2014 nothing frozen.** Check injuries for the "
+                        "games near a bet (Injuries & news \u2192 Show prompt), "
+                        "then turn Preview off in Line settings and rebuild.")
+            else:
+                _v36_added, _watch_added = _v401_track_both(
+                    _official, _fun, selected_date
+                )
             if _v36_added or _watch_added:
                 st.toast(
                     f"Froze {_v36_added} bet(s) and {_watch_added} lean(s)."
