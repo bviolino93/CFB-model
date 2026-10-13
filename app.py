@@ -7232,7 +7232,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .ge-verdict.bet{color:#7ce5b4;border:1px solid rgba(58,202,145,.28);background:rgba(39,178,121,.08)}
 .ge-pick{margin:12px 0 0 42px;color:#fff;font-size:1.17rem;font-weight:950;letter-spacing:-.035em}
 .ge-game{margin:4px 0 0 42px;color:#6d869e;font-size:.59rem}
-.ge-metric-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin-top:14px}
+.ge-metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:14px}
 .ge-metric-grid>div{padding:8px 3px;text-align:center;border-radius:10px;background:rgba(3,13,24,.35);border:1px solid rgba(104,145,181,.08)}
 .ge-metric-grid span{display:block;color:#58728b;font-size:.41rem;font-weight:950;letter-spacing:.07em;text-transform:uppercase}
 .ge-metric-grid b{display:block;margin-top:3px;color:#e4eef8;font-size:.65rem;font-weight:950;white-space:nowrap}
@@ -18179,6 +18179,17 @@ def _se_conf_label(n):
     return f"{_se_stars(n)} {SE_CONF_NAME[n]}" if n else "Lean"
 
 
+def _se_gap_text(r):
+    """Model-vs-market gap in points, for display."""
+    g = _se_row_gap(r)
+    if not math.isfinite(g):
+        try:
+            g = abs(float(r.get("fair_display")) - float(r.get("market_display")))
+        except (TypeError, ValueError):
+            return "\u2014"
+    return f"{g:.1f} pts"
+
+
 def _se_add_conf(df):
     if df is None or len(df) == 0:
         return df
@@ -18767,8 +18778,6 @@ def _render_v36_live_card(card, selected_date):
                     <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
                     <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
                     <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
-                    <div><span>Cover</span><b>{_v390_prob_text(r.get("cover_probability"))}</b></div>
-                    <div><span>EV</span><b>{_v390_prob_text(r.get("expected_value"))}</b></div>
                   </div>
                   {_shop}
                   {_inj}
@@ -18802,9 +18811,7 @@ def _render_v36_live_card(card, selected_date):
                     <small>{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</small>
                   </div>
                   <div class="ge-lean-stats">
-                    <span>{_v390_edge_text(r.get("point_edge"))}</span>
-                    <span>{_v390_prob_text(r.get("cover_probability"))}</span>
-                    <span>{_v390_prob_text(r.get("expected_value"))}</span>
+                    <span>{html.escape(_se_gap_text(r))} off</span>
                   </div>
                   <div class="ge-lean-pill">LEAN</div>
                 </div>
@@ -23636,9 +23643,12 @@ def _render_home_page():
     else:
         # Front page shows the five strongest only; the Slate has the full set.
         try:
+            # Stars first, then the size of the gap. EV is the same for every
+            # bet at shrink 0, so it cannot rank anything.
+            _off = _se_add_conf(_off)
             _off = _off.assign(
-                _ev=pd.to_numeric(_off.get("expected_value"), errors="coerce").fillna(-9)
-            ).sort_values("_ev", ascending=False)
+                _gp=[_se_row_gap(r) for _, r in _off.iterrows()]
+            ).sort_values(["_conf", "_gp"], ascending=[False, False])
         except Exception:
             pass
         _total = len(_off)
@@ -23733,7 +23743,7 @@ def _render_home_page():
                         "matchup": _gm.get("matchup", ""),
                         "kick": _se_kick_label(_t),
                         "pick": str(_t.get("selection", "") or "Bet"),
-                        "evtxt": f"{_ev*100:+.1f}% EV",
+                        "evtxt": f"{_se_conf_label(_se_conf(_t))} \u00b7 {_se_gap_text(_t)} off",
                         "verdict": str(_t.get("verdict", "") or "BET"),
                     })
 
@@ -23760,7 +23770,7 @@ def _render_home_page():
                         "matchup": _gm.get("matchup", ""),
                         "kick": _gm.get("kick", ""),
                         "pick": _se_pick_label(_b, False),
-                        "evtxt": f"{_ev*100:+.1f}% EV",
+                        "evtxt": f"{_se_gap_text(_b)} off",
                         "verdict": str(_b.get("verdict", "") or "PASS"),
                     })
 
@@ -23855,8 +23865,8 @@ def _render_home_page():
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
             f'{_se_hero_meta(_h, _now, _today)}</div>'
-            f'<div class="se-hero-ev"><b>{_v390_prob_text(_h.get("expected_value"))}</b>'
-            f'<span>EV</span></div>'
+            f'<div class="se-hero-ev"><b>{_se_stars(_se_conf(_h))}</b>'
+            f'<span>{html.escape(SE_CONF_NAME[_se_conf(_h)])}</span></div>'
             f'</div>'
             + _score_html
             + (f'<div class="se-hero-curve">{_hero_svg}</div>' if _hero_svg else '')
@@ -23953,7 +23963,9 @@ def _render_home_page():
         _t = pd.DataFrame()
 
     # --- where every market falls on EV -----------------------------------
-    if _sc:
+    # Hidden at shrink 0: every market prices at the same EV, so the chart
+    # would be one stack of dots that says nothing.
+    if _sc and V50_SHRINK > 0:
         st.markdown('<div class="se-sec">EDGE SPREAD</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="se-curve">{_se_edge_scatter_svg(_sc, V50_MIN_EV)}</div>',
@@ -24946,7 +24958,7 @@ if run_mode == "Full Slate":
                         <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
                       </div>
                       <div class="ge-lean-stats">
-                        <span>{_v390_prob_text(fr.get("expected_value"))} EV</span>
+                        <span>{html.escape(_se_gap_text(fr))} off</span>
                       </div>
                       <div class="ge-lean-pill">LEAN</div>
                     </div>
@@ -25710,53 +25722,48 @@ if True:
         n = nm.lower()
         return n.endswith(" ml") or " ml " in f" {n} "
 
-    _qual = []
-    for (v, name, odds, prob, e, ev, fml) in markets:
-        if _is_ml(name):
-            continue
-        # If the ratings cannot be trusted for the spread, they cannot be
-        # trusted for the total on the same game either — both come from the
-        # same team ratings. An out-of-range game yields no official bet.
-        if _oor:
-            continue
-        try:
-            if float(ev) >= V50_MIN_EV:
-                _qual.append((name, float(ev), float(prob)))
-        except Exception:
-            pass
-    _qual.sort(key=lambda x: -x[1])
-
-    if _qual:
-        _n, _ev_q, _p_q = _qual[0]
-        st.success(
-            f"**Yes — {_n} clears the official-bet criteria.** "
-            f"{_ev_q*100:+.1f}% EV, {_p_q*100:.1f}% win probability after calibration."
-        )
-        if len(_qual) > 1:
-            st.caption(
-                "Also qualifying: "
-                + ", ".join(f"{n} ({e*100:+.1f}% EV)" for n, e, _ in _qual[1:])
-            )
-    else:
-        _why = []
-        if _oor:
-            _why.append(
-                f"the spread ({float(home_spread):+.1f}) is beyond the "
-                f"{V50_MAX_SPREAD:.0f}-point range where the ratings hold up, "
-                f"so no market on this game qualifies"
-            )
-        _sides = [m[5] for m in markets if not _is_ml(m[1])]
-        _best_ev = max(_sides, default=None)
-        if _best_ev is not None and _best_ev < V50_MIN_EV:
-            _why.append(
-                f"the best market here is {_best_ev*100:+.1f}% EV, below the "
-                f"{V50_MIN_EV*100:.1f}% threshold"
-            )
+    # Same answer the Slate gives: read the verdict off the built card, so
+    # this tab can never say "no" to a game the Slate is betting. (The old
+    # EV test could not pass at shrink 0, so it said no to everything.)
+    _gc = st.session_state.get("cfb_v36_latest_card")
+    _grows = None
+    if isinstance(_gc, pd.DataFrame) and not _gc.empty and "game_id" in _gc.columns:
+        _grows = _gc[_gc["game_id"].map(_tot2_gid) == _tot2_gid(game_id)]
+    if _grows is None or _grows.empty:
         st.info(
-            "**No — this would not be an official bet.** "
-            + ("Because " + "; and ".join(_why) + "." if _why else
-               "Nothing here clears the threshold.")
+            "**Build the slate for this date to get the verdict.** Bets are "
+            "picked across the whole slate \u2014 4+ points off the market, "
+            "plus the lab filters for \u2605\u2605\u2605 \u2014 so this tab "
+            "reads the answer from the built card."
         )
+    else:
+        _gb = _grows[_grows["verdict"].astype(str).isin(["BET", "BEST BET"])]
+        if not _gb.empty:
+            _gb = _se_add_conf(_gb)
+            for _, _r in _gb.iterrows():
+                st.success(
+                    f"**Yes \u2014 {_r.get('selection', '')}** is on the card "
+                    f"\u00b7 {_se_conf_label(int(_r['_conf']))} \u00b7 "
+                    f"{_se_gap_text(_r)} off the market."
+                )
+        else:
+            _gaps = []
+            for _, _r in _grows.iterrows():
+                try:
+                    _gaps.append((abs(float(_r.get("fair_display"))
+                                      - float(_r.get("market_display"))),
+                                  str(_r.get("selection", ""))))
+                except Exception:
+                    pass
+            _gaps.sort(reverse=True)
+            st.info(
+                "**No \u2014 not a bet on today's card.** "
+                + (f"Biggest disagreement here: {_gaps[0][1]}, "
+                   f"{_gaps[0][0]:.1f} pts off; a bet needs 4+."
+                   if _gaps else "")
+                + (" The game is also outside the range where the ratings "
+                   "hold up." if _oor else "")
+            )
 
     # Moneylines stay out of the official record, but a genuinely priced one
     # is worth surfacing now that it is on the same scale as everything else.
@@ -25816,8 +25823,11 @@ if True:
             continue
         _watch.append((name, _pw - 0.5, _pw))
     _watch.sort(key=lambda x: -x[1])
+    # Once the slate is built, its verdict above is the answer; a second,
+    # older "worth a look" could contradict it.
+    _slate_says = _grows is not None and not _grows.empty
 
-    if _watch:
+    if _watch and not _slate_says:
         _wn, _wl, _wp = _watch[0]
         st.warning(
             f"**Worth a look — {_wn}.** The model leans this way at "
@@ -25825,7 +25835,7 @@ if True:
             "Watch List material: fine to play for interest, tracked separately "
             "from the official record."
         )
-    elif not _qual:
+    elif not _qual and not _slate_says:
         try:
             _blow = abs(float(home_spread)) > V50_FUN_MAX_SPREAD
         except Exception:
@@ -25837,7 +25847,7 @@ if True:
         )
 
     st.caption(
-        f"Same criteria the Slate uses: {V50_MIN_EV*100:.1f}% EV minimum after "
+        f"Reference only \u2014 the verdict above comes from the Slate. Old EV bar: {V50_MIN_EV*100:.1f}% minimum after "
         f"calibration, spreads within {V50_MAX_SPREAD:.0f} points, moneylines excluded."
     )
 
