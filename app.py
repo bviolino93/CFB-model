@@ -16456,6 +16456,7 @@ V401_TRACKER_COLUMNS = [
     "conference_game",
     "closing_captured_at",     # timestamp of the closing snapshot
     "filter_match",            # passed the lab's best filter (blank = no lab)
+    "inj_adj",                 # your injury adjustment that touched this play
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -16589,6 +16590,12 @@ def _v401_clean_tracker(df):
     if df is None or df.empty:
         return _v401_empty_tracker()
     x = df.copy()
+    # Rows blanked by a save (see _v401_save_tracker) are not bets.
+    if "record_key" in x.columns:
+        x = x[x["record_key"].astype(str).str.strip().ne("")
+              & x["record_key"].notna()].copy()
+        if x.empty:
+            return _v401_empty_tracker()
 
     # Legacy v3.6 migration.
     legacy_map = {
@@ -16715,17 +16722,25 @@ def _v401_save_tracker(df):
             # Overwrite in place instead, then trim any surplus rows. There is
             # no moment at which the sheet is empty.
             try:
-                _old_rows = len(ws.get_all_values())
+                _old_vals = ws.get_all_values()
             except Exception:
-                _old_rows = 0
+                _old_vals = []
+            _old_rows = len(_old_vals)
+            _old_w = max([len(r) for r in _old_vals] + [len(body[0])])
             ws.update(body, value_input_option="RAW")
             _new_rows = len(body)
             if _old_rows > _new_rows:
+                # Blank the leftover rows FIRST. If only the delete was tried
+                # and it failed, the old bottom rows -- always the newest
+                # freezes -- survived, so a cleared date came straight back.
+                try:
+                    ws.update([[""] * _old_w] * (_old_rows - _new_rows),
+                              f"A{_new_rows + 1}", value_input_option="RAW")
+                except Exception:
+                    pass
                 try:
                     ws.delete_rows(_new_rows + 1, _old_rows)
                 except Exception:
-                    # Trailing stale rows are recoverable and visible; an
-                    # empty sheet is not. Leave them rather than risk more.
                     pass
             # Bump the revision so the next read misses the cache. Without
             # this a freeze would not appear for up to 90 seconds.
@@ -16949,6 +16964,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "neutral_site": r.get("neutral_site"),
             "conference_game": r.get("conference_game"),
             "closing_captured_at": None,
+            "inj_adj": str(r.get("inj_adj") or "") if pd.notna(r.get("inj_adj", np.nan)) else "",
             "filter_match": (
                 bool(r.get("spr2_rule_ok")) if market_type == "SPREAD"
                 and pd.notna(r.get("spr2_rule_ok", np.nan))
@@ -17638,6 +17654,15 @@ def _v401_render_official_tracker():
                 "Bets": _sm["bets"], "Graded": _sm["graded"],
                 "Win rate": _sm["win_rate"], "Units": _sm["units"],
                 "ROI": _sm["roi"]})
+        if "inj_adj" in _cf.columns:
+            _ij = _cf[(_cf["_conf"] > 0) & _cf["inj_adj"].astype(str).str.strip().ne("")
+                      & _cf["inj_adj"].notna() & _cf["inj_adj"].astype(str).ne("nan")]
+            if not _ij.empty:
+                _sm = _v401_summary(_ij)
+                _rows_cf.append({"Level": "Injury-adjusted bets",
+                                 "Bets": _sm["bets"], "Graded": _sm["graded"],
+                                 "Win rate": _sm["win_rate"], "Units": _sm["units"],
+                                 "ROI": _sm["roi"]})
         if _rows_cf:
             st.markdown("### By confidence")
             st.caption(
@@ -18187,7 +18212,9 @@ def _se_gap_text(r):
             g = abs(float(r.get("fair_display")) - float(r.get("market_display")))
         except (TypeError, ValueError):
             return "\u2014"
-    return f"{g:.1f} pts"
+    # Round DOWN: 3.96 shown as "4.0 pts off" next to a LEAN label (bets
+    # need 4+) looked like a bug.
+    return f"{math.floor(g * 10) / 10:.1f} pts"
 
 
 def _se_add_conf(df):
@@ -18576,16 +18603,8 @@ def _render_v36_live_card(card, selected_date):
               "only — it does not change the model's numbers."),
     )
 
-    _adj_raw = st.text_input(
-        "Injury adjustments (points a team is WORSE than the model thinks)",
-        key="se_manual_adjustments",
-        placeholder="Colorado State: -7, Navy: -5",
-        help=("Format: 'Team: -N'. Applies on the next Rebuild Slate, so it "
-              "lands in the frozen card and your tracker. One-way by design: "
-              "it can kill or shrink a pick, never create or enlarge one."),
-    )
-    if _adj_raw and not st.session_state.get("_se_adj_applied_hint"):
-        st.caption("Adjustments take effect on the next **Rebuild Slate**.")
+    st.caption("Injury point adjustments now live in **Injuries & news** above "
+               "the build button \u2014 saved, and applied to every build.")
 
     _manual_flags = {}
     for _chunk in str(_flag_raw or "").split(","):
@@ -18722,6 +18741,11 @@ def _render_v36_live_card(card, selected_date):
                         _warns.append(f"<b>{html.escape(_adj_note)}</b>")
                     else:
                         _warns.append(html.escape(_adj_note))
+
+                # 2b. Your saved injuries, if they moved this play.
+                _inj_note = str(r.get("inj_adj") or "").strip()
+                if _inj_note and _inj_note.lower() != "nan":
+                    _warns.append(f"<b>Injury applied:</b> {html.escape(_inj_note)}")
 
                 # 3. Kickoff conditions, when notable.
                 _wx_note = str(r.get("weather_note") or "").strip()
@@ -21412,6 +21436,359 @@ def _render_spread_lab():
 
 
 
+# ===== Injury overrides (v5.4) ============================================
+# Your own news, built into the model. Each entry says a team is N points
+# WORSE than the model thinks, until a date. Saved to the Sheet so it
+# survives restarts and works from any device.
+#
+# Two-way on purpose (your call): an injury moves the model's line, so it
+# can CREATE a bet when the market has not caught up yet, as well as kill
+# one. The guard against talking yourself into bets is measurement: every
+# play an injury touched is tagged, and the tracker shows how those do on
+# their own.
+#
+# Point values are judgement, not measured. College starting QB to backup
+# is commonly priced around 3-7 points, more for a star, less with an
+# experienced backup. The presets are starting points; edit freely.
+
+INJ_TAB = "injuries"
+INJ_PRESETS = {
+    "Starting QB out": 5.0,
+    "Starting QB doubtful / limited": 2.5,
+    "Star non-QB out (RB, WR, edge)": 1.5,
+    "Multiple OL / defensive starters out": 2.0,
+    "One OL / defensive starter out": 0.75,
+    "Custom": 3.0,
+}
+INJ_DURATIONS = {
+    "This game only": 6,
+    "2 weeks": 14,
+    # Season-ending: the new ratings learn from actual results, so after a
+    # few games without the player the effect is already in the numbers.
+    # Keeping the adjustment longer would count it twice.
+    "3 weeks (season-ending)": 21,
+    "Rest of season": 120,
+}
+# Unmeasured: share of a team-strength hit that comes off the game total.
+# A worse team mostly scores less; its defense is usually unaffected.
+INJ_TOTAL_SHARE = 0.6
+INJ_COLS = ["team", "points", "note", "until", "added_at"]
+
+
+def _inj_norm(t):
+    return str(t or "").strip().lower()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _inj_rows(_bust=0):
+    ws = _v401_sheet(tab=INJ_TAB)
+    if ws is None:
+        raise RuntimeError("no sheet")
+    return ws.get_all_records()
+
+
+def _inj_load():
+    try:
+        rows = _inj_rows(st.session_state.get("inj_rev", 0))
+    except Exception:
+        return pd.DataFrame(columns=INJ_COLS)
+    df = pd.DataFrame(rows)
+    for c in INJ_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[df["team"].astype(str).str.strip().ne("")]
+    return df[INJ_COLS].copy()
+
+
+def _inj_save(df):
+    ws = _v401_sheet(tab=INJ_TAB)
+    if ws is None:
+        return False
+    try:
+        x = df[INJ_COLS].copy() if not df.empty else pd.DataFrame(columns=INJ_COLS)
+        body = [INJ_COLS] + x.astype(object).where(pd.notna(x), "").values.tolist()
+        old = ws.get_all_values()
+        ws.update(body, value_input_option="RAW")
+        if len(old) > len(body):
+            w = max([len(r) for r in old] + [len(INJ_COLS)])
+            ws.update([[""] * w] * (len(old) - len(body)), f"A{len(body) + 1}",
+                      value_input_option="RAW")
+        st.session_state["inj_rev"] = st.session_state.get("inj_rev", 0) + 1
+        return True
+    except Exception:
+        return False
+
+
+def _inj_active(on_date):
+    """{team_lower: (points, note)} for entries still in force on a date.
+    Several entries for one team add up."""
+    df = _inj_load()
+    out = {}
+    d = pd.to_datetime(str(on_date)[:10], errors="coerce")
+    for _, r in df.iterrows():
+        u = pd.to_datetime(str(r.get("until"))[:10], errors="coerce")
+        if pd.notna(d) and pd.notna(u) and u < d:
+            continue
+        try:
+            pts = float(r.get("points"))
+        except (TypeError, ValueError):
+            continue
+        k = _inj_norm(r.get("team"))
+        p0, n0 = out.get(k, (0.0, ""))
+        note = str(r.get("note") or "").strip()
+        out[k] = (p0 + pts, (n0 + "; " if n0 else "") + note)
+    return out
+
+
+def _inj_hit(team, adj):
+    t = _inj_norm(team)
+    if t in adj:
+        return adj[t]
+    return (0.0, "")
+
+
+def _inj_apply(card, adj):
+    """Move the model's line by your injury numbers, BEFORE bets are chosen,
+    so an injury can add a bet as well as remove one."""
+    if card is None or card.empty or not adj:
+        return card, []
+    out = card.copy()
+    if "inj_adj" not in out.columns:
+        out["inj_adj"] = ""
+    touched = []
+    for idx, r in out.iterrows():
+        hp, hn = _inj_hit(r.get("home_team"), adj)
+        ap, an = _inj_hit(r.get("away_team"), adj)
+        if not hp and not ap:
+            continue
+        mt = str(r.get("market_type") or "").upper()
+        note = "; ".join(x for x in (
+            f"{r.get('home_team')} -{hp:g} ({hn})" if hp else "",
+            f"{r.get('away_team')} -{ap:g} ({an})" if ap else "") if x)
+        try:
+            if mt == "SPREAD":
+                mh = _v3_num(r.get("market_home_spread_display"))
+                if not np.isfinite(mh):
+                    mh = float(r.get("market_home_spread"))
+                fh0 = float(r.get("fair_home_spread"))
+                # A weaker home team needs more points: home spread rises.
+                fh = fh0 + hp - ap
+                edge = mh - fh
+                if abs(edge) < 1e-9:
+                    continue
+                side = "HOME" if edge > 0 else "AWAY"
+                if side != str(r.get("pick_side")) and "spr2_rule_ok" in out.columns:
+                    out.at[idx, "spr2_rule_ok"] = False
+                    out.at[idx, "filter_match"] = False
+                team = r.get("home_team") if side == "HOME" else r.get("away_team")
+                line = mh if side == "HOME" else -mh
+                out.at[idx, "fair_home_spread"] = fh
+                out.at[idx, "signed_home_edge"] = edge
+                out.at[idx, "point_edge"] = abs(edge)
+                out.at[idx, "pick_side"] = side
+                out.at[idx, "selection"] = f"{team} {line:+.1f}"
+                out.at[idx, "market_display"] = line
+                out.at[idx, "fair_display"] = fh if side == "HOME" else -fh
+            elif mt == "TOTAL":
+                mkt = float(r.get("market_total", r.get("market_display")))
+                ft = float(r.get("fair_display")) - INJ_TOTAL_SHARE * (hp + ap)
+                side = "OVER" if ft > mkt else "UNDER"
+                if side != str(r.get("pick_side")).upper() and "tot2_rule_ok" in out.columns:
+                    out.at[idx, "tot2_rule_ok"] = False
+                    out.at[idx, "filter_match"] = False
+                out.at[idx, "fair_display"] = ft
+                out.at[idx, "fair_total"] = ft
+                out.at[idx, "point_edge"] = abs(ft - mkt)
+                out.at[idx, "pick_side"] = side
+                out.at[idx, "selection"] = f"{side.title()} {mkt:g}"
+            else:
+                continue
+            out.at[idx, "inj_adj"] = note
+            touched.append(f"{r.get('away_team')} @ {r.get('home_team')} ({mt.lower()}): {note}")
+        except Exception:
+            continue
+    return out, touched
+
+
+def _inj_slate_teams(games):
+    out = []
+    for g in games or []:
+        for k in ("awayTeam", "homeTeam"):
+            t = str(g.get(k) or "").strip()
+            if t and t not in out:
+                out.append(t)
+    return out
+
+
+def _inj_prompt(slate_date, games, saved):
+    """A ready-to-paste prompt listing every game on the date, so the AI has
+    to answer for each team instead of sweeping 'all teams' and skipping
+    most of them."""
+    d = pd.to_datetime(str(slate_date)[:10], errors="coerce")
+    day = d.strftime("%A %b %-d") if pd.notna(d) else str(slate_date)
+    lines = [f'{g.get("awayTeam", "")} @ {g.get("homeTeam", "")}' for g in games or []]
+    have = [f"{r['team']}: {r['note']}" for _, r in saved.iterrows()] if not saved.empty else []
+    return (
+        f"Injury check for these college football games on {day}:\n"
+        + "\n".join(lines) + "\n\n"
+        "For EVERY team above, search X and the web (team accounts, coach press "
+        "conferences, official availability reports, established beat writers) "
+        "for players who are OUT or doubtful for this game, or out for the season "
+        "or multiple weeks and missed fewer than 3 games so far.\n\n"
+        "Output ONLY lines in this exact format, nothing else:\n"
+        "Team | points | days | note | source link\n\n"
+        "Rules:\n"
+        "- Write at least one line for EVERY team listed. If a team has no "
+        "qualifying news, write: Team | 0 | 0 | checked, nothing new\n"
+        "- points = how many points WORSE the team is: starting QB out 5 (7 if a "
+        "star, 3 if the backup has real starting experience); starting QB doubtful "
+        "2.5; star non-QB out 1.5; multiple OL or defensive starters out 2; one OL "
+        "or defensive starter out 0.75. One line per injury.\n"
+        "- days: 6 for this game only, 14 for multi-week, 21 for season-ending. If "
+        "a season-ending injury already cost the team 1 game, use 14; 2 games, use 7.\n"
+        "- note: player, position, status in under 10 words.\n"
+        "- Only the team, the coach, an official report or an established beat "
+        "writer counts. No fan accounts, aggregators or rumors.\n"
+        "- Skip players returning from injury and anything that makes a team better.\n"
+        "- Use the team names exactly as written in the game list.\n"
+        + (("- Already saved, do NOT repeat: " + "; ".join(have) + "\n") if have else "")
+    )
+
+
+def _render_injury_panel(slate_date, games=None):
+    with st.expander("Injuries & news", expanded=False):
+        st.caption(
+            "Points a team is WORSE than the model thinks. Applied to every "
+            "build until the end date, and moves the model's line both ways "
+            "— it can add a bet as well as remove one. Plays it touches "
+            "are tagged so the tracker shows whether your reads win."
+        )
+        df = _inj_load()
+        d = pd.to_datetime(str(slate_date)[:10], errors="coerce")
+        if games:
+            _act = df
+            if not df.empty and pd.notna(d):
+                _u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
+                _act = df[(_u >= d) | _u.isna()]
+            # A toggle, not an expander: Streamlit forbids nested expanders.
+            if st.toggle(f"Show prompt for Grok \u2014 all {len(games)} games on this date",
+                         key="inj_show_prompt"):
+                st.caption("Tap the copy icon, paste into Grok, then paste Grok's "
+                           "answer into Paste a list below.")
+                st.code(_inj_prompt(slate_date, games, _act), language=None)
+        if not df.empty:
+            u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
+            act = df[(u >= d) | u.isna()] if pd.notna(d) else df
+            for i, r in act.iterrows():
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(f"**{r['team']}** −{float(r['points']):g} · "
+                            f"{r['note']} · through {str(r['until'])[:10]}")
+                if _se_is_owner() and c2.button("✕", key=f"inj_del_{i}"):
+                    if _inj_save(df.drop(index=i)):
+                        st.rerun()
+            if act.empty:
+                st.caption("Nothing in force for this date.")
+        if not _se_is_owner():
+            return
+        st.markdown("**Add**")
+        team = st.text_input("Team (as the app spells it)", key="inj_team",
+                             placeholder="UCLA")
+        kind = st.selectbox("What happened", list(INJ_PRESETS), key="inj_kind")
+        pts = st.number_input("Points worse", min_value=0.0, max_value=21.0,
+                              step=0.5, value=INJ_PRESETS[kind],
+                              key=f"inj_pts_{kind}")
+        dur = st.selectbox("Lasts", list(INJ_DURATIONS), index=2
+                           if kind == "Starting QB out" else 0, key="inj_dur")
+        note = st.text_input("Note", key="inj_note",
+                             placeholder="QB out for season")
+        if st.button("Add injury", type="primary", key="inj_add",
+                     use_container_width=True):
+            if not team.strip():
+                st.error("Enter a team.")
+            else:
+                start = d if pd.notna(d) else pd.Timestamp.now()
+                row = {"team": team.strip(), "points": pts,
+                       "note": note.strip() or kind,
+                       "until": (start + pd.Timedelta(days=INJ_DURATIONS[dur])).strftime("%Y-%m-%d"),
+                       "added_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
+                if _inj_save(pd.concat([df, pd.DataFrame([row])], ignore_index=True)):
+                    st.success("Saved. Rebuild the slate to apply it.")
+                    st.rerun()
+                else:
+                    st.error("Could not save to Google Sheets.")
+        st.caption("Team names must match the app's spelling (e.g. 'Miami (OH)'). "
+                   "If an injury doesn't seem to apply, check the spelling on the slate.")
+
+        st.markdown("**Paste a list**")
+        st.caption("One per line: Team | points worse | days | note. "
+                   "Lines that don't fit the format are skipped and listed.")
+        raw = st.text_area("Injury list", key="inj_bulk", height=140,
+                           placeholder="UCLA | 5 | 21 | Starting QB out for season\n"
+                                       "Navy | 2 | 6 | Two OL starters out")
+        if st.button("Add all", key="inj_bulk_add", use_container_width=True):
+            rows, bad = [], []
+            start = d if pd.notna(d) else pd.Timestamp.now()
+            # AI tools sometimes run two entries together on one line; a
+            # line break after every link splits them back apart.
+            _txt = re.sub(r"(https?://\S+)", r"\1\n", str(raw or ""))
+            _seen = {(_inj_norm(t), str(n).strip().lower())
+                     for t, n in zip(df.get("team", []), df.get("note", []))}
+            dup = []
+            checked = set()
+            for line in _txt.splitlines():
+                line = line.strip().strip("-*\u2022 ").strip()
+                if not line:
+                    continue
+                parts = [x.strip() for x in line.split("|")]
+                try:
+                    if len(parts) < 3:
+                        raise ValueError
+                    tm = parts[0]
+                    pv = float(parts[1].replace("+", "").replace("-", "") or "x")
+                    if pv == 0:
+                        checked.add(_inj_norm(tm))
+                        continue
+                    dv = int(float(parts[2]))
+                    if not tm or not (0 < pv <= 21) or not (0 < dv <= 150):
+                        raise ValueError
+                    _key = (_inj_norm(tm), (parts[3] if len(parts) > 3 else "").strip().lower())
+                    if _key in _seen:
+                        dup.append(line)
+                        continue
+                    _seen.add(_key)
+                    checked.add(_inj_norm(tm))
+                    rows.append({"team": tm, "points": pv,
+                                 "note": parts[3] if len(parts) > 3 else "",
+                                 "until": (start + pd.Timedelta(days=dv)).strftime("%Y-%m-%d"),
+                                 "added_at": pd.Timestamp.now(tz="America/New_York").isoformat()})
+                except Exception:
+                    bad.append(line)
+            if rows and _inj_save(pd.concat([df, pd.DataFrame(rows)], ignore_index=True)):
+                st.success(f"Added {len(rows)}. Rebuild the slate to apply.")
+            elif rows:
+                st.error("Could not save to Google Sheets.")
+            if bad:
+                st.warning("Skipped (format): \n- " + "\n- ".join(bad[:15]))
+            if dup:
+                st.caption(f"Skipped {len(dup)} already saved.")
+                for _l in dup:
+                    try:
+                        checked.add(_inj_norm(_l.split("|")[0]))
+                    except Exception:
+                        pass
+            # Coverage: every team on the date should have an answer.
+            _teams = _inj_slate_teams(games)
+            if _teams and (rows or checked):
+                _miss = [t for t in _teams if _inj_norm(t) not in checked]
+                if _miss:
+                    st.warning(f"No answer for {len(_miss)} of {len(_teams)} teams: "
+                               + ", ".join(_miss[:30])
+                               + ". Ask Grok to check just those, then paste again.")
+                else:
+                    st.success(f"All {len(_teams)} teams on this date were checked.")
+
+
+
 def _render_calibration():
     st.markdown("### Calibration")
     st.write(
@@ -21832,13 +22209,36 @@ def _render_more_page():
                     st.info("Tracker is already empty.")
                 else:
                     _before = len(_t)
-                    _t = _t[_t["game_date"].astype(str) != str(_cd)]
-                    _v401_save_tracker(_t)
+                    _t = _t[_t["game_date"].astype(str).str[:10] != str(_cd)]
+                    _ok_save = _v401_save_tracker(_t)
                     for _k in list(st.session_state.keys()):
                         if _k.startswith("se_board_saved_") or _k == "cfb_v36_latest_card":
                             del st.session_state[_k]
-                    st.success(f"Removed {_before - len(_t)} bet(s) for {_cd}. "
-                               "Rebuild the slate to refreeze on current logic.")
+                    # Otherwise the Slate tab rebuilds (and refreezes) the
+                    # moment you open it, which looks like the clear failed.
+                    st.session_state["cfb_build_requested"] = False
+                    # Read it back: the message reports what the sheet now
+                    # holds, not what we meant to write.
+                    try:
+                        _v401_tracker_rows.clear()
+                    except Exception:
+                        pass
+                    _chk = _v401_load_tracker()
+                    _left = int((_chk["game_date"].astype(str).str[:10] == str(_cd)).sum()) \
+                        if not _chk.empty else 0
+                    if not _ok_save:
+                        st.error("The save did not go through, so nothing was "
+                                 "removed. " + str(st.session_state.get(
+                                     "se_last_save_error", "")))
+                    elif _left:
+                        st.error(f"{_left} bet(s) for {_cd} are still in the "
+                                 "sheet. Try once more; if they stay, open the "
+                                 "tracker tab in your Google Sheet and "
+                                 "delete those rows by hand.")
+                    else:
+                        st.success(f"Removed {_before - len(_t)} bet(s) for {_cd} "
+                                   "\u2014 checked, none left. Rebuild the slate "
+                                   "to refreeze on current logic.")
             except Exception as _e:
                 st.error(f"Could not clear: {_e}")
 
@@ -24293,6 +24693,8 @@ if run_mode == "Full Slate":
             st.rerun()
         st.stop()
 
+    _render_injury_panel(selected_date, production_games)
+
     with st.container(key="se_line_settings"), st.expander("Line settings", expanded=False):
         include_lines = st.checkbox(
             "Use live sportsbook lines",
@@ -24843,6 +25245,19 @@ if run_mode == "Full Slate":
         except Exception as _spe:
             st.caption(f"Spread model update skipped: {str(_spe)[:80]}")
 
+        # Your injuries, before bets are chosen (two-way).
+        try:
+            _inj = _inj_active(selected_date)
+            if _inj:
+                combined_card, _inj_touched = _inj_apply(combined_card, _inj)
+                if _inj_touched:
+                    st.info("**Injuries applied**\n\n- " + "\n- ".join(_inj_touched))
+                else:
+                    st.caption("Injuries in force, but none involve this slate's games. "
+                               "Check the team spelling if that's unexpected.")
+        except Exception as _ie:
+            st.caption(f"Injuries skipped: {str(_ie)[:80]}")
+
         # Two tiers: strict official bets, plus an always-there watch list.
         _official, _fun = _v50_apply_strict_selection(combined_card)
 
@@ -24867,35 +25282,6 @@ if run_mode == "Full Slate":
             st.caption("Weather filter: ran, nothing suppressed.")
         else:
             st.caption(f"Weather filter: {_wx_status} \u2014 no adjustment made.")
-
-        # Your own injury / news information, applied before the freeze.
-        # One-way by design: this can kill or shrink a pick, never add one.
-        _adj = _se_parse_adjustments(
-            st.session_state.get("se_manual_adjustments", "")
-        )
-        if _adj:
-            try:
-                _official, _adj_killed, _adj_soft = _se_apply_adjustments(
-                    _official, _adj
-                )
-                if _adj_killed:
-                    st.warning(
-                        f"**Your adjustments killed {len(_adj_killed)} play"
-                        f"{'s' if len(_adj_killed) != 1 else ''}**\n\n- "
-                        + "\n- ".join(_adj_killed)
-                    )
-                if _adj_soft:
-                    st.info(
-                        f"**Edge reduced on {len(_adj_soft)} play"
-                        f"{'s' if len(_adj_soft) != 1 else ''}** "
-                        "(still qualifying)\n\n- " + "\n- ".join(_adj_soft)
-                    )
-                if not _adj_killed and not _adj_soft:
-                    st.caption(
-                        "Adjustments applied: no qualifying pick was affected."
-                    )
-            except Exception as _adj_err:
-                st.caption(f"Adjustments failed: {str(_adj_err)[:80]}")
 
         # Store the POST-selection card so other views report the real verdict.
         _stored = combined_card.copy()
