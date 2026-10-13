@@ -17949,6 +17949,16 @@ def _v410_total_card(slate_df):
     if out.empty:
         return out
 
+    # Totals lab, once adopted: price every total with the book-style model
+    # and let only the filter that held up on unseen seasons become a bet.
+    # Everything else stays on the board and can still show as a lean.
+    try:
+        _ad = _tot2_adopted()
+    except Exception:
+        _ad = None
+    if _ad:
+        out = _tot2_apply_to_totals(out, _ad)
+
     # Highest-EV official total gets BEST BET only within totals. When combined
     # with spreads below, a single overall BEST BET is chosen.
     return out
@@ -18259,6 +18269,13 @@ def _v50_apply_strict_selection(card):
         & (~c["excluded"])
         & (c["raw_gap"] >= V50_MIN_GAP_PTS)
     )
+    # Totals lab adopted: a total is a bet only if it passed the validated
+    # filter (which sets its own gap); the 4-point bar does not apply to it.
+    if "tot2_rule_ok" in c.columns:
+        _tok = c["tot2_rule_ok"].fillna(False).astype(bool)
+        _istot = c["market_type"].astype(str).str.upper().eq("TOTAL")
+        _has = c["tot2_rule_ok"].notna() & _istot
+        qualifies = (qualifies & ~_has) | (_has & _tok & (~_fcs) & (~c["excluded"]))
 
     official = c[qualifies].copy()
     if not official.empty:
@@ -20350,6 +20367,10 @@ def _tot2_report(wf):
     """Everything the decision needs, as plain numbers."""
     rep = {"version": TOT2_VERSION, "n": int(len(wf)),
            "seasons": list(TOT2_TEST_SEASONS), "models": {}}
+    try:
+        rep["edge"] = _tot2_edge_search(wf)
+    except Exception as _ee:
+        rep["edge"] = {"error": str(_ee)[:120]}
     y = wf["actual_total"].to_numpy(dtype=float)
     m = wf["market_total"].to_numpy(dtype=float)
     for name, col in (("new", "new_total"), ("old", "old_total"), ("market", "market_total")):
@@ -20396,12 +20417,257 @@ def _tot2_report(wf):
     return rep
 
 
-def _tot2_save(rep, coefs=None):
+# --- Edge search -----------------------------------------------------------
+# Try every filter combination, pick the best using the SELECTION seasons
+# only, then grade that one pick on VALIDATION seasons it never saw. Picking
+# the best of ~900 filters always finds something that looks good; only the
+# validation record says whether it was real.
+TOT2_SELECT_SEASONS = (2022, 2023)
+TOT2_VALIDATE_SEASONS = (2024, 2025)
+TOT2_MIN_SELECT_BETS = 60
+TOT2_MIN_VALIDATE_BETS = 40
+TOT2_BREAKEVEN = 0.5238
+
+
+def _tot2_rule_mask(d, rule, col="new_total"):
+    gap = pd.to_numeric(d[col], errors="coerce") - pd.to_numeric(d["market_total"], errors="coerce")
+    m = gap.abs() >= rule["gap"]
+    mt = pd.to_numeric(d["market_total"], errors="coerce")
+    rng = rule.get("range", "all")
+    if rng == "48 or less":
+        m &= mt <= 48
+    elif rng == "48-58":
+        m &= (mt > 48) & (mt < 58)
+    elif rng == "58+":
+        m &= mt >= 58
+    tier = rule.get("tier", "all")
+    if tier == "Any major":
+        m &= d["tier"].isin(["Both major", "One major"])
+    elif tier != "all":
+        m &= d["tier"] == tier
+    ph = rule.get("phase", "all")
+    wk = pd.to_numeric(d["week"], errors="coerce")
+    if ph == "Weeks 1-4":
+        m &= wk <= 4
+    elif ph == "Weeks 5+":
+        m &= wk >= 5
+    side = rule.get("side", "both")
+    if side == "Over":
+        m &= gap > 0
+    elif side == "Under":
+        m &= gap < 0
+    return m.fillna(False)
+
+
+def _tot2_record(d, mask, col="new_total"):
+    x = d[mask]
+    if x.empty:
+        return 0, 0
+    gap = pd.to_numeric(x[col], errors="coerce") - pd.to_numeric(x["market_total"], errors="coerce")
+    res = pd.to_numeric(x["actual_total"], errors="coerce") - pd.to_numeric(x["market_total"], errors="coerce")
+    w = int((((gap > 0) & (res > 0)) | ((gap < 0) & (res < 0))).sum())
+    l = int((((gap > 0) & (res < 0)) | ((gap < 0) & (res > 0))).sum())
+    return w, l
+
+
+def _tot2_z(w, l):
+    n = w + l
+    return ((w / n) - TOT2_BREAKEVEN) / math.sqrt(0.25 / n) if n else float("-inf")
+
+
+def _tot2_holds(w, l):
+    """Unseen seasons must beat break-even AND beat a fair coin at 95%
+    (one-sided). Only one filter faces this test, so the bar is honest; a
+    filter with no edge clears 52.4% by luck about a third of the time,
+    which is why break-even alone is not enough."""
+    n = w + l
+    if n < TOT2_MIN_VALIDATE_BETS:
+        return False
+    rate = w / n
+    return bool(rate > TOT2_BREAKEVEN and (rate - 0.5) / math.sqrt(0.25 / n) >= 1.645)
+
+
+def _tot2_edge_search(wf):
+    sel = wf[wf["season"].isin(TOT2_SELECT_SEASONS)]
+    val = wf[wf["season"].isin(TOT2_VALIDATE_SEASONS)]
+    cands = []
+    for gap in (3.0, 4.0, 5.0, 6.0, 8.0):
+        for rng in ("all", "48 or less", "48-58", "58+"):
+            for tier in ("all", "Both major", "One major", "Neither major", "Any major"):
+                for ph in ("all", "Weeks 1-4", "Weeks 5+"):
+                    for side in ("both", "Over", "Under"):
+                        rule = {"gap": gap, "range": rng, "tier": tier,
+                                "phase": ph, "side": side}
+                        w, l = _tot2_record(sel, _tot2_rule_mask(sel, rule))
+                        if w + l < TOT2_MIN_SELECT_BETS:
+                            continue
+                        cands.append((_tot2_z(w, l), rule, w, l))
+    cands.sort(key=lambda c: -c[0])
+    top = []
+    for z, rule, w, l in cands[:5]:
+        vw, vl = _tot2_record(val, _tot2_rule_mask(val, rule))
+        top.append({"rule": rule, "select": [w, l], "validate": [vw, vl],
+                    "validated": _tot2_holds(vw, vl)})
+    # Your call: also rank on ALL test seasons together and allow the best of
+    # those onto the card even without passing the unseen-season test. More
+    # data per filter, but no honest check -- part of its record is luck.
+    allc = []
+    seen = set()
+    for _, rule, _, _ in cands:
+        k = json.dumps(rule, sort_keys=True)
+        if k in seen:
+            continue
+        seen.add(k)
+        w, l = _tot2_record(wf, _tot2_rule_mask(wf, rule))
+        if w + l >= 2 * TOT2_MIN_SELECT_BETS:
+            allc.append({"rule": rule, "all": [w, l], "z": _tot2_z(w, l)})
+    allc.sort(key=lambda c: -c["z"])
+    return {"tried": len(cands), "top": top,
+            "best": top[0] if top else None,
+            "top_all": allc[:5], "best_all": allc[0] if allc else None}
+
+
+def _tot2_rule_text(rule):
+    parts = [f"{rule['gap']:g}+ pts off"]
+    if rule.get("range", "all") != "all":
+        parts.append(f"total {rule['range']}")
+    if rule.get("tier", "all") != "all":
+        parts.append(rule["tier"])
+    if rule.get("phase", "all") != "all":
+        parts.append(rule["phase"])
+    if rule.get("side", "both") != "both":
+        parts.append(f"{rule['side']}s only")
+    return ", ".join(parts)
+
+
+# --- Live use ----------------------------------------------------------------
+def _tot2_season_of(game_date):
+    d = pd.to_datetime(str(game_date)[:10], errors="coerce")
+    if pd.isna(d):
+        d = pd.Timestamp.now(tz="America/New_York")
+    return int(d.year - 1) if d.month <= 2 else int(d.year)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _tot2_live_state(season, week):
+    """Ratings and tempo inputs for this season through week-1, built the
+    same way the lab built them. Two seasons of history feed the prior."""
+    prior = {"off": {}, "dfn": {}, "mu": 28.0, "hfa": 1.5}
+    for yr in (season - 2, season - 1):
+        prior = _tot2_carry(_tot2_fit_ratings(
+            _tot2_completed(get_backtest_games(int(yr))), prior))
+    cur = [g for g in _tot2_completed(get_finals_games(int(season)))
+           if int(g.get("week") or 1) < int(week)]
+    r = _tot2_fit_ratings(cur, prior)
+    gp_cur, gp_prev = {}, {}
+    for g in cur:
+        for t in (str(g["homeTeam"]), str(g["awayTeam"])):
+            gp_cur[t] = gp_cur.get(t, 0) + 1
+    for g in _tot2_completed(get_backtest_games(int(season) - 1)):
+        for t in (str(g["homeTeam"]), str(g["awayTeam"])):
+            gp_prev[t] = gp_prev.get(t, 0) + 1
+    cur_adv = _v3_advanced_through(int(season), int(week) - 1) if int(week) > 1 else {}
+    prev_adv = (_v3_preseason_data(int(season)) or {}).get("prev_adv") or {}
+    return {"r": r, "gp_cur": gp_cur, "gp_prev": gp_prev,
+            "cur_adv": cur_adv or {}, "prev_adv": prev_adv}
+
+
+def _tot2_week_of(game_id, season):
+    for g in get_finals_games(int(season)) or []:
+        if str(g.get("id")) == str(game_id):
+            return int(g.get("week") or 1)
+    return None
+
+
+def _tot2_live_total(row, coefs):
+    """New-model total for one live slate row, or None."""
+    if not coefs:
+        return None
+    try:
+        season = _tot2_season_of(row.get("game_date"))
+        week = _tot2_week_of(row.get("game_id"), season)
+        if week is None:
+            return None
+        stt = _tot2_live_state(season, week)
+        home, away = str(row.get("home_team")), str(row.get("away_team"))
+        neutral = bool(row.get("neutral_site"))
+        f = {
+            "exp_total": _tot2_expected(stt["r"], home, away, neutral),
+            "exp_plays": _tot2_pace(stt["cur_adv"], stt["prev_adv"],
+                                    stt["gp_cur"], stt["gp_prev"], home, away),
+            "week_num": float(week), "neutral": 1.0 if neutral else 0.0,
+        }
+        f["exp_total_x_plays"] = f["exp_total"] * f["exp_plays"]
+        f.update(_v3_total_context(_v3_adv_fields(stt["cur_adv"].get(home)),
+                                   _v3_adv_fields(stt["cur_adv"].get(away)), "cur"))
+        f.update(_v3_total_context(_v3_adv_fields(stt["prev_adv"].get(home)),
+                                   _v3_adv_fields(stt["prev_adv"].get(away)), "prior"))
+        z = []
+        for k in coefs["features"]:
+            v = _v3_num(f.get(k))
+            if not np.isfinite(v):
+                v = coefs["median"][k]
+            z.append((v - coefs["mean"][k]) / (coefs["sd"][k] or 1.0))
+        return float(coefs["ymean"] + np.dot(np.array(coefs["beta"]), np.array(z)))
+    except Exception:
+        return None
+
+
+def _tot2_adopted():
+    """The saved lab result, only if the owner turned it on AND its best
+    filter held up on the validation seasons."""
+    saved = _tot2_load()
+    # On by default once the lab has produced weights; off only if the owner
+    # switched it off.
+    if not saved or not saved.get("adopted", True):
+        return None
+    edge = (saved.get("report") or {}).get("edge") or {}
+    if not saved.get("coefs"):
+        return None
+    best = edge.get("best")
+    if best and best.get("validated"):
+        return {"rule": best["rule"], "coefs": saved["coefs"], "proven": True}
+    best_all = edge.get("best_all")
+    if best_all:
+        return {"rule": best_all["rule"], "coefs": saved["coefs"], "proven": False}
+    return None
+
+
+def _tot2_apply_to_totals(out, ad):
+    out = out.copy()
+    out["tot2_rule_ok"] = False
+    for idx, r in out.iterrows():
+        nt = _tot2_live_total(r, ad["coefs"])
+        if nt is None:
+            continue
+        mkt = float(r["market_total"])
+        side = "OVER" if nt > mkt else "UNDER"
+        season = _tot2_season_of(r.get("game_date"))
+        g = next((x for x in (get_finals_games(season) or [])
+                  if str(x.get("id")) == str(r.get("game_id"))), {})
+        probe = pd.DataFrame([{"new_total": nt, "market_total": mkt,
+                               "tier": _tot2_tier(g) if g else "Neither major",
+                               "week": int(g.get("week") or 1) if g else 1}])
+        ok = bool(_tot2_rule_mask(probe, ad["rule"]).iloc[0])
+        p_over = 1.0 - NormalDist(mu=nt, sigma=16.0).cdf(mkt)
+        out.at[idx, "fair_display"] = nt
+        out.at[idx, "fair_total"] = nt
+        out.at[idx, "point_edge"] = abs(nt - mkt)
+        out.at[idx, "pick_side"] = side
+        out.at[idx, "selection"] = f"{side.title()} {mkt:g}"
+        out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
+        out.at[idx, "verdict"] = "BET" if ok else "LEAN"
+        out.at[idx, "tot2_rule_ok"] = ok
+        out.at[idx, "model_version"] = f"{MODEL_VERSION}-tot2"
+    return out
+
+
+def _tot2_save(rep, coefs=None, adopted=False):
     ws = _v401_sheet(tab=TOT2_TAB)
     if ws is None:
         return False
     try:
-        ws.update([[json.dumps({"report": rep, "coefs": coefs,
+        ws.update([[json.dumps({"report": rep, "coefs": coefs, "adopted": bool(adopted),
                                 "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()})]],
                   "A1", value_input_option="RAW")
         try:
@@ -20483,9 +20749,9 @@ def _render_totals_lab():
                     rep = _tot2_report(wf)
                     rep["scope"] = _scope
                     coefs = _tot2_final_fit(df)
-                    if not _tot2_save(rep, coefs):
+                    if not _tot2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
-                    saved = {"report": rep, "coefs": coefs,
+                    saved = {"report": rep, "coefs": coefs, "adopted": True,
                              "saved_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
                     _s.update(label="Done", state="complete")
                 except Exception as e:
@@ -20512,8 +20778,9 @@ def _render_totals_lab():
                      "Squeeze (1.00 = right)": f"{m['slope']:.2f}" if "slope" in m else "—",
                      "Avg miss": f"{m.get('mae', float('nan')):.1f} pts"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    st.caption("Squeeze above 1.00 means real totals swing wider than the "
-               "projections do — the model is stuck near average.")
+    st.caption("1.00 means projections and results swing together. Above "
+               "1.00 the model is stuck near average; below 1.00 its big and "
+               "small calls only partly come true.")
 
     # 2. Does it know anything the close doesn't?
     st.markdown("**2. Does it know anything the closing line doesn't?**")
@@ -20549,6 +20816,61 @@ def _render_totals_lab():
         st.caption("Books are sharpest on power-conference games; the thin-market "
                    "case is that smaller games are priced less carefully. A segment "
                    "only counts if its signal clears +2 on its own.")
+
+    # 4. The edge search and the switch that puts it on the card.
+    edge = rep.get("edge") or {}
+    st.markdown("**4. Best filter, checked on seasons it never saw**")
+    if edge.get("error"):
+        st.caption(f"Edge search failed: {edge['error']}")
+    elif not edge.get("top"):
+        st.caption("Run the lab again to search for a filter.")
+    else:
+        rows = []
+        for c in edge["top"]:
+            sw, sl = c["select"]
+            vw, vl = c["validate"]
+            rows.append({
+                "Filter": _tot2_rule_text(c["rule"]),
+                "2022\u201323 (chosen on)": f"{sw}-{sl} ({sw / max(sw + sl, 1):.1%})",
+                "2024\u201325 (unseen)": (f"{vw}-{vl} ({vw / max(vw + vl, 1):.1%})"
+                                         if vw + vl else "\u2014"),
+                "Held up": "Yes" if c["validated"] else "No",
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption(
+            f"{edge.get('tried', 0)} filters tried. The top one was picked on "
+            "2022\u201323 alone; the unseen column is the honest test. Picking the "
+            "best of hundreds always finds something that looks good \u2014 a filter "
+            "only counts if, on the unseen seasons, it beats break-even by more "
+            "than luck could (95% confidence).")
+        if edge.get("top_all"):
+            st.markdown("**Best filters over all four seasons**")
+            rows = []
+            for c in edge["top_all"]:
+                w, l = c["all"]
+                rows.append({"Filter": _tot2_rule_text(c["rule"]),
+                             "2022\u201325": f"{w}-{l} ({w / max(w + l, 1):.1%})"})
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        best = edge.get("best") or {}
+        use = best if best.get("validated") else (edge.get("best_all") or {})
+        if use.get("rule"):
+            on = bool(saved.get("adopted", True))
+            proven = bool(best.get("validated"))
+            st.markdown(
+                f"**Live card:** {'ON' if on else 'off'} \u2014 totals priced by the "
+                f"new model; bets only when: {_tot2_rule_text(use['rule'])}. "
+                + ("Passed the unseen-season test." if proven else
+                   "Best record overall, but NOT proven \u2014 it did not pass the "
+                   "unseen-season test, so expect live results below this record.")
+                + " Every other total can still show as a lean.")
+            if _se_is_owner():
+                if st.button("Turn off on live card" if on else "Use on live card",
+                             key="tot2_adopt"):
+                    if _tot2_save(rep, saved.get("coefs"), adopted=not on):
+                        st.success("Saved. Rebuild the slate to see it.")
+                        st.rerun()
+                    else:
+                        st.error("Could not save to Sheets.")
 
 
 
