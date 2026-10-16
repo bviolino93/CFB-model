@@ -24605,31 +24605,40 @@ def _render_home_page():
             # Today is always offered, whether or not anything is frozen for
             # it, so the picker exists on a blank day and the default never
             # silently jumps to another date.
-            _opts = sorted(set(_frozen_dates) | {_today})
-            _default = _today
-
-            _idx = (_opts.index(st.session_state["se_home_date"])
-                    if st.session_state.get("se_home_date") in _opts
-                    else _opts.index(_default))
+            # Tap targets instead of a dropdown: on a phone the dropdown
+            # opened the keyboard and hid upcoming dates under it. Today and
+            # the next few frozen dates are one tap; older dates sit behind
+            # "Past".
+            def _cnt(d):
+                return int((_off_all["game_date"].astype(str) == str(d)).sum())
 
             def _lbl(d):
+                if d == "__past__":
+                    return "Past"
                 try:
                     _dt = pd.to_datetime(d)
                 except Exception:
                     return str(d)
                 if str(d) == _today:
-                    _tag = " · today"
-                elif str(d) in _frozen_dates:
-                    _n = int((_off_all["game_date"].astype(str) == str(d)).sum())
-                    _tag = f" · {_n} bet" + ("" if _n == 1 else "s")
-                else:
-                    _tag = ""
-                return f"{_dt:%a, %b %-d}{_tag}"
+                    _n = _cnt(d)
+                    return "Today" + (f" \u00b7 {_n}" if _n else "")
+                return f"{_dt:%a %-m/%-d} \u00b7 {_cnt(d)}"
 
-            _view_date = st.selectbox(
-                "Card date", _opts, index=_idx, format_func=_lbl,
-                key="se_home_date",
+            _future = [d for d in _frozen_dates if str(d) > _today][:3]
+            _past = sorted([d for d in _frozen_dates if str(d) < _today], reverse=True)
+            _quick = [_today] + _future + (["__past__"] if _past else [])
+            _pick = st.radio(
+                "Card date", _quick, index=0, format_func=_lbl,
+                horizontal=True, key="se_home_pick", label_visibility="collapsed",
             )
+            if _pick == "__past__":
+                _view_date = st.selectbox(
+                    "Past card", _past, index=0,
+                    format_func=lambda d: f"{pd.to_datetime(d):%a, %b %-d} \u00b7 {_cnt(d)} bets",
+                    key="se_home_past",
+                )
+            else:
+                _view_date = _pick
 
             _trk_today = _off_all[_off_all["game_date"].astype(str) == _view_date]
     except Exception:
