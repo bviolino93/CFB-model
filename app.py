@@ -29,6 +29,7 @@ except Exception:
     XGBClassifier = None
     XGBOOST_AVAILABLE = False
 import re
+import unicodedata
 import streamlit.components.v1 as components
 from datetime import date
 from pathlib import Path
@@ -7458,6 +7459,21 @@ def _se_power_table(year, week):
     return out, _at, _through
 
 
+@st.cache_resource(show_spinner=False)
+def _v401_ws_cached(creds_json, name, tab):
+    """One Google connection and worksheet handle per tab, kept for the life
+    of the app. A failure is not cached, so the slow path below still runs
+    and still reports the real error."""
+    import json as _json
+    import gspread
+    sa = gspread.service_account_from_dict(_json.loads(creds_json))
+    book = sa.open(name)
+    try:
+        return book.worksheet(tab)
+    except Exception:
+        return book.add_worksheet(title=tab, rows=4000, cols=40)
+
+
 # Moved up with the ratings helpers: the Games tab can render rankings
 # before this point in the script on a date with no scheduled games.
 def _v401_sheet(return_error=False, tab="tracker"):
@@ -7488,8 +7504,20 @@ def _v401_sheet(return_error=False, tab="tracker"):
                    "gcp_service_account_json block.")
             return (None, err) if return_error else None
 
-        sa = gspread.service_account_from_dict(creds)
         name = st.secrets.get("tracker_sheet_name", "Saturday Edge Tracker")
+        # Fast path: reuse one signed-in connection and worksheet handle per
+        # tab. Signing in, finding the spreadsheet by name and looking up
+        # the tab were three Google round trips on EVERY sheet read.
+        try:
+            return ((_v401_ws_cached(_json.dumps(creds, sort_keys=True), name, tab), None)
+                    if return_error else
+                    _v401_ws_cached(_json.dumps(creds, sort_keys=True), name, tab))
+        except Exception:
+            try:
+                _v401_ws_cached.clear()
+            except Exception:
+                pass
+        sa = gspread.service_account_from_dict(creds)
         try:
             book = sa.open(name)
         except Exception as e:
@@ -16637,7 +16665,7 @@ def _v401_clean_tracker(df):
     return x[V401_TRACKER_COLUMNS]
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _v401_tracker_rows(_bust=0):
     """
     The Sheets round trip on its own, cached.
@@ -16649,21 +16677,29 @@ def _v401_tracker_rows(_bust=0):
     of it fetching the same rows. Cached for 90 seconds and cleared on
     write, so a render costs one request at most.
     """
+    # Failures raise instead of returning None: Streamlit does not cache an
+    # exception, so one Google hiccup is not remembered for ten minutes.
     ws = _v401_sheet()
     if ws is None:
-        return None
-    try:
-        return ws.get_all_records()
-    except Exception:
-        return None
+        raise RuntimeError("tracker sheet unavailable")
+    return ws.get_all_records()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _v401_tracker_df(_bust=0):
+    """The cleaned tracker, cached. Pages call _v401_load_tracker() many
+    times per tap; the cleanup now runs once instead of every time."""
+    rows = _v401_tracker_rows(_bust)
+    if rows:
+        return _v401_clean_tracker(pd.DataFrame(rows))
+    return _v401_empty_tracker()
 
 
 def _v401_load_tracker():
-    rows = _v401_tracker_rows(st.session_state.get("se_tracker_rev", 0))
-    if rows is not None:
-        if rows:
-            return _v401_clean_tracker(pd.DataFrame(rows))
-        return _v401_empty_tracker()
+    try:
+        return _v401_tracker_df(st.session_state.get("se_tracker_rev", 0))
+    except Exception:
+        pass
     # Fallback: local file (ephemeral on Streamlit Cloud).
     try:
         if V36_TRACKER_PATH.exists():
@@ -16747,6 +16783,13 @@ def _v401_save_tracker(df):
             st.session_state["se_tracker_rev"] = (
                 st.session_state.get("se_tracker_rev", 0) + 1
             )
+            # Clear for everyone, not just this session, so friends viewing
+            # the record see a freeze right away despite the longer cache.
+            try:
+                _v401_tracker_rows.clear()
+                _v401_tracker_df.clear()
+            except Exception:
+                pass
             return True
         except Exception as _save_err:
             # A failed Sheets write used to fall through to the local CSV and
@@ -21481,11 +21524,91 @@ INJ_BLOCKED_SOURCES = ("covers.com", "dratings.com", "actionnetwork.com",
                        "easportstoday.com")
 
 
+# Different tools spell the same school differently ("UMass" vs
+# "Massachusetts"), which let one injury be saved twice and counted twice.
+# Every spelling below maps to one key; the slate's names go through the
+# same function, so matching to games is unchanged.
+INJ_TEAM_ALIASES = {
+    "umass": "massachusetts",
+    "pitt": "pittsburgh",
+    "miami ohio": "miami (oh)", "miami-ohio": "miami (oh)",
+    "miami (ohio)": "miami (oh)", "miami oh": "miami (oh)",
+    "miami fl": "miami", "miami (fl)": "miami", "miami (fla)": "miami",
+    "ulm": "ul monroe", "louisiana-monroe": "ul monroe",
+    "louisiana monroe": "ul monroe",
+    "ul lafayette": "louisiana", "louisiana-lafayette": "louisiana",
+    "louisiana lafayette": "louisiana",
+    "appalachian state": "app state", "app st": "app state",
+    "southern mississippi": "southern miss",
+    "mississippi": "ole miss",
+    "fiu": "florida international", "fau": "florida atlantic",
+    "usf": "south florida", "central florida": "ucf",
+    "connecticut": "uconn", "brigham young": "byu",
+    "southern methodist": "smu", "texas christian": "tcu",
+    "louisiana state": "lsu", "north carolina state": "nc state",
+    "unc": "north carolina", "ut san antonio": "utsa",
+    "texas-san antonio": "utsa", "texas el paso": "utep",
+    "jmu": "james madison", "sam houston state": "sam houston",
+    "unlv rebels": "unlv", "hawaii": "hawaii", "san jose state": "san jose state",
+    "texas am": "texas a&m", "ecu": "east carolina", "wku": "western kentucky",
+    "niu": "northern illinois", "wmu": "western michigan",
+    "cmu": "central michigan", "emu": "eastern michigan",
+    "bgsu": "bowling green", "uab": "uab", "ucla": "ucla",
+    "ole miss": "ole miss", "sacramento st": "sacramento state",
+}
+
+
 def _inj_norm(t):
-    return str(t or "").strip().lower()
+    s = str(t or "").strip().lower()
+    # Strip accents and apostrophes: "San José State" / "Hawai'i".
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[‘’'`\.]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r" st$", " state", s)
+    return INJ_TEAM_ALIASES.get(s, s)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+def _inj_kind(note):
+    """What an entry is about, so a newer line for the same thing replaces
+    the older one instead of adding to it. A team has one starting QB, so
+    every QB line for a team is one slot."""
+    n = str(note or "").lower()
+    if re.search(r"\bqb\b|quarterback", n):
+        return "qb"
+    if re.search(r"offensive line|\bol\b|o-line|offensive linem", n):
+        return "ol"
+    if re.search(r"defens|\blbs?\b|\bcbs?\b|\bdbs?\b|\bdl\b|safet|secondary|"
+                 r"linebacker|cornerback", n):
+        return "def"
+    return "other:" + re.sub(r"\W+", " ", n).strip()
+
+
+def _inj_key(team, note):
+    return (_inj_norm(team), _inj_kind(note))
+
+
+def _inj_dedupe(df):
+    """Keep only the newest entry per team + kind. Older copies stay in the
+    sheet but no longer count."""
+    if df is None or df.empty:
+        return df
+    x = df.copy()
+    x["_k"] = [_inj_key(t, n) for t, n in zip(x["team"], x["note"])]
+    x["_t"] = pd.to_datetime(x["added_at"].astype(str), errors="coerce", utc=True)
+    x["_o"] = range(len(x))
+    x = x.sort_values(["_t", "_o"], na_position="first")
+    x = x[~x["_k"].duplicated(keep="last")].sort_values("_o")
+    return x.drop(columns=["_k", "_t", "_o"])
+
+
+def _inj_fmt(p):
+    """Positive = team worse (shown as a minus); negative = team better."""
+    p = float(p)
+    return f"−{p:g}" if p > 0 else f"+{abs(p):g}"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def _inj_rows(_bust=0):
     ws = _v401_sheet(tab=INJ_TAB)
     if ws is None:
@@ -21520,21 +21643,27 @@ def _inj_save(df):
             ws.update([[""] * w] * (len(old) - len(body)), f"A{len(body) + 1}",
                       value_input_option="RAW")
         st.session_state["inj_rev"] = st.session_state.get("inj_rev", 0) + 1
+        try:
+            _inj_rows.clear()
+        except Exception:
+            pass
         return True
     except Exception:
         return False
 
 
 def _inj_active(on_date):
-    """{team_lower: (points, note)} for entries still in force on a date.
-    Several entries for one team add up."""
+    """{team_key: (points, note)} for entries still in force on a date.
+    Different kinds of entry for one team add up (QB out + 3 OL out), but
+    two entries for the same thing only count once: the newest wins."""
     df = _inj_load()
     out = {}
     d = pd.to_datetime(str(on_date)[:10], errors="coerce")
+    if not df.empty and pd.notna(d):
+        _u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
+        df = df[(_u >= d) | _u.isna()]
+    df = _inj_dedupe(df)
     for _, r in df.iterrows():
-        u = pd.to_datetime(str(r.get("until"))[:10], errors="coerce")
-        if pd.notna(d) and pd.notna(u) and u < d:
-            continue
         try:
             pts = float(r.get("points"))
         except (TypeError, ValueError):
@@ -21569,8 +21698,8 @@ def _inj_apply(card, adj):
             continue
         mt = str(r.get("market_type") or "").upper()
         note = "; ".join(x for x in (
-            f"{r.get('home_team')} -{hp:g} ({hn})" if hp else "",
-            f"{r.get('away_team')} -{ap:g} ({an})" if ap else "") if x)
+            f"{r.get('home_team')} {_inj_fmt(hp)} ({hn})" if hp else "",
+            f"{r.get('away_team')} {_inj_fmt(ap)} ({an})" if ap else "") if x)
         try:
             if mt == "SPREAD":
                 mh = _v3_num(r.get("market_home_spread_display"))
@@ -21647,6 +21776,8 @@ def _inj_prompt(slate_date, games, saved, part=None):
         "- Starting QB doubtful, questionable or game-time decision: 2.5\n"
         "- Three or more starters OUT on the same unit (offensive line, or "
         "defense): 2\n"
+        "- Starting QB RETURNING this game after missing games: -1 if he missed "
+        "1, -1.5 if 2, -2 if 3 or more (negative = team better). days: 21.\n"
         "Do NOT report backups, single non-QB players, or questionable non-QBs.\n\n"
         "Output ONLY lines in this exact format, nothing else:\n"
         "Team | points | days | note | source link\n\n"
@@ -21706,7 +21837,7 @@ def _render_injury_panel(slate_date, games=None):
                      f"All {len(games)} games"],
                     index=0 if _near else 1, key="inj_scope", horizontal=True)
                 if _scope.startswith("Near") and not _near:
-                    st.caption("Build the slate first (Preview is fine) so the app "
+                    st.caption("Build the slate first so the app "
                                "knows which games are near a bet.")
                 if _scope.startswith("Near"):
                     games = _near
@@ -21723,10 +21854,23 @@ def _render_injury_panel(slate_date, games=None):
                         language=None)
         if not df.empty:
             u = pd.to_datetime(df["until"].astype(str).str[:10], errors="coerce")
-            act = df[(u >= d) | u.isna()] if pd.notna(d) else df
+            act_all = df[(u >= d) | u.isna()] if pd.notna(d) else df
+            act = _inj_dedupe(act_all)
+            _old = act_all.drop(index=act.index)
+            if not _old.empty:
+                st.caption(f"{len(_old)} older duplicate(s) hidden and not counted "
+                           "(a newer entry for the same team and player replaced them).")
+                if _se_is_owner() and st.button("Remove older duplicates",
+                                                key="inj_dedupe_btn"):
+                    if _inj_save(df.drop(index=_old.index)):
+                        st.rerun()
             for i, r in act.iterrows():
                 c1, c2 = st.columns([5, 1])
-                c1.markdown(f"**{r['team']}** −{float(r['points']):g} · "
+                try:
+                    _pts = _inj_fmt(r["points"])
+                except (TypeError, ValueError):
+                    _pts = str(r["points"])
+                c1.markdown(f"**{r['team']}** {_pts} · "
                             f"{r['note']} · through {str(r['until'])[:10]}")
                 if _se_is_owner() and c2.button("✕", key=f"inj_del_{i}"):
                     if _inj_save(df.drop(index=i)):
@@ -21739,7 +21883,8 @@ def _render_injury_panel(slate_date, games=None):
         team = st.text_input("Team (as the app spells it)", key="inj_team",
                              placeholder="UCLA")
         kind = st.selectbox("What happened", list(INJ_PRESETS), key="inj_kind")
-        pts = st.number_input("Points worse", min_value=0.0, max_value=21.0,
+        pts = st.number_input("Points worse (negative = better, e.g. QB back)",
+                              min_value=-21.0, max_value=21.0,
                               step=0.5, value=INJ_PRESETS[kind],
                               key=f"inj_pts_{kind}")
         dur = st.selectbox("Lasts", list(INJ_DURATIONS), index=2
@@ -21756,8 +21901,12 @@ def _render_injury_panel(slate_date, games=None):
                        "note": note.strip() or kind,
                        "until": (start + pd.Timedelta(days=INJ_DURATIONS[dur])).strftime("%Y-%m-%d"),
                        "added_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
-                if _inj_save(pd.concat([df, pd.DataFrame([row])], ignore_index=True)):
-                    st.success("Saved. Rebuild the slate to apply it.")
+                _k = _inj_key(row["team"], row["note"])
+                _base = df[[_inj_key(t, n) != _k for t, n in
+                            zip(df["team"], df["note"])]] if not df.empty else df
+                if _inj_save(pd.concat([_base, pd.DataFrame([row])], ignore_index=True)):
+                    st.success("Saved (replaced any older entry for the same thing). "
+                               "Rebuild the slate to apply it.")
                     st.rerun()
                 else:
                     st.error("Could not save to Google Sheets.")
@@ -21778,6 +21927,12 @@ def _render_injury_panel(slate_date, games=None):
             _txt = re.sub(r"(https?://\S+)", r"\1\n", str(raw or ""))
             _seen = {(_inj_norm(t), str(n).strip().lower())
                      for t, n in zip(df.get("team", []), df.get("note", []))}
+            # Same team + same kind (e.g. its starting QB) = an update, not a
+            # new injury: the new line replaces the old one.
+            _have = {_inj_key(t, n) for t, n in
+                     zip(df.get("team", []), df.get("note", []))}
+            _new = {}
+            replaced = []
             dup = []
             blocked = []
             checked = set()
@@ -21790,7 +21945,9 @@ def _render_injury_panel(slate_date, games=None):
                     if len(parts) < 3:
                         raise ValueError
                     tm = parts[0]
-                    pv = float(parts[1].replace("+", "").replace("-", "") or "x")
+                    # Keep the sign: -2 means a starter is back (team better).
+                    pv = float(parts[1].replace("−", "-").replace("+", "")
+                               .replace(" ", "") or "x")
                     _src = (parts[4] if len(parts) > 4 else "").lower()
                     if any(b_ in _src for b_ in INJ_BLOCKED_SOURCES):
                         blocked.append(line)
@@ -21801,22 +21958,34 @@ def _render_injury_panel(slate_date, games=None):
                             checked.add(_inj_norm(tm))
                         continue
                     dv = int(float(parts[2]))
-                    if not tm or not (0 < pv <= 21) or not (0 < dv <= 150):
+                    if not tm or not (0 < abs(pv) <= 21) or not (0 < dv <= 150):
                         raise ValueError
-                    _key = (_inj_norm(tm), (parts[3] if len(parts) > 3 else "").strip().lower())
+                    _nt = parts[3] if len(parts) > 3 else ""
+                    _key = (_inj_norm(tm), _nt.strip().lower())
                     if _key in _seen:
                         dup.append(line)
                         continue
                     _seen.add(_key)
                     checked.add(_inj_norm(tm))
-                    rows.append({"team": tm, "points": pv,
-                                 "note": parts[3] if len(parts) > 3 else "",
+                    _k2 = _inj_key(tm, _nt)
+                    if _k2 in _have:
+                        replaced.append(tm)
+                    # A later line in the same paste also replaces an earlier one.
+                    _new[_k2] = {"team": tm, "points": pv, "note": _nt,
                                  "until": (start + pd.Timedelta(days=dv)).strftime("%Y-%m-%d"),
-                                 "added_at": pd.Timestamp.now(tz="America/New_York").isoformat()})
+                                 "added_at": pd.Timestamp.now(tz="America/New_York").isoformat()}
                 except Exception:
                     bad.append(line)
-            if rows and _inj_save(pd.concat([df, pd.DataFrame(rows)], ignore_index=True)):
+            rows = list(_new.values())
+            _base = df
+            if rows and not df.empty:
+                _base = df[[_inj_key(t, n) not in _new for t, n in
+                            zip(df["team"], df["note"])]]
+            if rows and _inj_save(pd.concat([_base, pd.DataFrame(rows)], ignore_index=True)):
                 st.success(f"Added {len(rows)}. Rebuild the slate to apply.")
+                if replaced:
+                    st.caption("Replaced the older entry for: "
+                               + ", ".join(dict.fromkeys(replaced)))
             elif rows:
                 st.error("Could not save to Google Sheets.")
             if bad:
@@ -22276,6 +22445,7 @@ def _render_more_page():
                     # holds, not what we meant to write.
                     try:
                         _v401_tracker_rows.clear()
+                        _v401_tracker_df.clear()
                     except Exception:
                         pass
                     _chk = _v401_load_tracker()
@@ -24758,10 +24928,8 @@ if run_mode == "Full Slate":
             help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
         )
         st.caption("Unreliable or conflicting line feeds are ignored automatically.")
-        st.toggle("Preview only \u2014 build without freezing", key="se_preview",
-                  help="See the card and which games are near a bet, add "
-                       "injuries for those, then turn this off and rebuild to "
-                       "freeze. Freezing is permanent, so check injuries first.")
+        st.caption("Building never freezes anything. Picks are added to the "
+                   "tracker only when you tap Freeze under the card.")
 
     # Collapsed summary + a way back to the controls.
     if _slate_done:
@@ -24872,6 +25040,8 @@ if run_mode == "Full Slate":
         _panel_open = bool(st.session_state.get("se_edit_filters"))
         st.session_state["cfb_build_requested"] = True
         st.session_state["se_edit_filters"] = False
+        # A rebuild never carries over a Freeze tap from earlier.
+        st.session_state["se_freeze_now"] = False
         # Refresh whenever the panel was open, so the collapse lands before
         # the build renders anything. Doing both in one pass is what left a
         # stale spinner behind. Guarded against a rerun loop.
@@ -25451,15 +25621,35 @@ if run_mode == "Full Slate":
         try:
             # One combined write. Freezing each tier separately meant loading
             # and saving the sheet twice, which made every build slow.
-            if st.session_state.get("se_preview"):
-                _v36_added, _watch_added = 0, 0
-                st.info("**Preview \u2014 nothing frozen.** Check injuries for the "
-                        "games near a bet (Injuries & news \u2192 Show prompt), "
-                        "then turn Preview off in Line settings and rebuild.")
-            else:
+            # Freezing is a separate, deliberate tap. A build used to freeze
+            # straight away, and because a built slate re-runs on every tap
+            # it kept re-checking and writing to the sheet the whole time
+            # you were on the page.
+            _v36_added, _watch_added = 0, 0
+            if st.session_state.pop("se_freeze_now", False) and _se_is_owner():
                 _v36_added, _watch_added = _v401_track_both(
                     _official, _fun, selected_date
                 )
+                if not (_v36_added or _watch_added):
+                    st.info("Nothing new to freeze \u2014 these picks are "
+                            "already in the tracker.")
+            elif _se_is_owner():
+                try:
+                    _n_off, _n_fun = len(_official), len(_fun)
+                except Exception:
+                    _n_off, _n_fun = 0, 0
+                if _n_off or _n_fun:
+                    st.info("**Not frozen yet.** Check injuries for the games near "
+                            "a bet (Injuries & news \u2192 Show prompt), rebuild if "
+                            "you add any, then tap Freeze. Freezing is permanent.")
+                    st.button(
+                        f"Freeze these picks \u2014 {_n_off} bet"
+                        f"{'' if _n_off == 1 else 's'}, {_n_fun} lean"
+                        f"{'' if _n_fun == 1 else 's'}",
+                        type="primary", use_container_width=True,
+                        key="se_freeze_btn",
+                        on_click=lambda: st.session_state.update(se_freeze_now=True),
+                    )
             if _v36_added or _watch_added:
                 st.toast(
                     f"Froze {_v36_added} bet(s) and {_watch_added} lean(s)."
