@@ -23847,6 +23847,108 @@ def _se_frozen_result(row):
         return '<span style="color:#8fa6bd">pending</span>'
 
 
+_SE_TIX_CSS = """<style>
+/* Star tiers: gold = High, teal = Medium, blue = Low */
+.se-hero-bet{position:relative;overflow:hidden}
+.se-hero-bet > *:not(.se-hero-glow){position:relative;z-index:1}
+.se-hero-glow{position:absolute;inset:-40% -20% auto auto;width:70%;height:120%;
+  pointer-events:none;opacity:.55;filter:blur(40px);
+  background:radial-gradient(circle,rgba(127,180,255,.25),transparent 65%)}
+.se-hero-bet.t3{border-color:rgba(255,217,122,.55)!important;
+  box-shadow:0 0 0 1px rgba(255,217,122,.18),0 18px 50px -18px rgba(255,190,70,.45)}
+.se-hero-bet.t3 .se-hero-glow{background:radial-gradient(circle,rgba(255,200,90,.35),transparent 65%)}
+.se-hero-bet.t3 .se-hero-ev b{color:#ffd97a!important;text-shadow:0 0 18px rgba(255,200,90,.6)}
+.se-hero-bet.t2{border-color:rgba(74,224,170,.45)!important;
+  box-shadow:0 18px 50px -20px rgba(74,224,170,.35)}
+.se-hero-bet.t2 .se-hero-glow{background:radial-gradient(circle,rgba(74,224,170,.28),transparent 65%)}
+.se-hm-gap{color:#7dffcf}
+.se-hm-kick{color:#c9d6e4;font-weight:700}
+
+.se-tier-head{display:flex;align-items:center;gap:8px;margin:22px 2px 10px}
+.se-tier-stars{font-size:.95rem;letter-spacing:.08em}
+.se-tier-name{font-size:.62rem;letter-spacing:.2em;font-weight:900;color:#9fb3c8}
+.se-tier-line{flex:1;height:1px;background:linear-gradient(90deg,rgba(120,154,188,.35),transparent)}
+.se-tier-head em{font-style:normal;font-size:.62rem;font-weight:800;color:#7f97ae;
+  padding:2px 8px;border-radius:999px;border:1px solid rgba(120,154,188,.2)}
+.se-tier-head.t3 .se-tier-stars{color:#ffd97a;text-shadow:0 0 12px rgba(255,200,90,.55)}
+.se-tier-head.t2 .se-tier-stars{color:#4ae0aa;text-shadow:0 0 12px rgba(74,224,170,.45)}
+.se-tier-head.t1 .se-tier-stars{color:#7fb4ff}
+
+.se-tix{--tc:#7fb4ff;position:relative;display:flex;align-items:stretch;
+  margin:0 0 9px;border-radius:16px;overflow:hidden;
+  background:linear-gradient(100deg,rgba(18,36,60,.92),rgba(10,22,38,.92));
+  border:1px solid rgba(120,154,188,.14)}
+.se-tix::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--tc);box-shadow:0 0 14px var(--tc)}
+.se-tix.t3{--tc:#ffd97a;border-color:rgba(255,217,122,.28)}
+.se-tix.t2{--tc:#4ae0aa;border-color:rgba(74,224,170,.22)}
+.se-tix-time{flex:0 0 68px;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;padding:12px 4px 12px 8px;text-align:center}
+.se-tix-time b{font-size:1.15rem;line-height:1;color:#eef4fb;font-weight:900;
+  font-variant-numeric:tabular-nums}
+.se-tix-time span{font-size:.56rem;letter-spacing:.14em;color:#7f97ae;font-weight:800;margin-top:3px}
+.se-tix-time i{font-style:normal;font-size:.56rem;font-weight:800;margin-top:6px;
+  padding:2px 6px;border-radius:999px;color:#8ea4ba;background:rgba(120,154,188,.1)}
+.se-tix-time i.soon{color:#ffd97a;background:rgba(255,217,122,.12)}
+.se-tix-time i.live{color:#06170f;background:#4ae0aa;animation:seTixPulse 1.6s infinite}
+.se-tix-time i.won{color:#06170f;background:#4ae0aa}
+.se-tix-time i.lost{color:#fff;background:#d9506a}
+.se-tix-time i.push{color:#1a1200;background:#f2c14e}
+@keyframes seTixPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,224,170,.55)}
+  50%{box-shadow:0 0 0 5px rgba(74,224,170,0)}}
+.se-tix-cut{flex:0 0 0;border-left:2px dashed rgba(120,154,188,.18);margin:10px 0;position:relative}
+.se-tix-main{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:12px 8px 12px 12px}
+.se-tix-main > div{min-width:0}
+.se-tix-main b{display:block;font-size:.95rem;color:#f2f7fc;font-weight:900;line-height:1.2;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-tix-main small{display:block;font-size:.66rem;color:#7f97ae;margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-tix-side{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;
+  justify-content:center;gap:4px;padding:10px 12px 10px 4px}
+.se-tix-chip{font-size:.5rem;letter-spacing:.16em;font-weight:900;color:var(--tc);
+  padding:2px 6px;border-radius:5px;border:1px solid currentColor;opacity:.85}
+.se-tix-side b{font-size:.8rem;color:#dfe8f2;font-weight:800;font-variant-numeric:tabular-nums}
+</style>"""
+
+
+def _se_ticket_html(r, now, day=None):
+    """One play as a ticket stub: kickoff on the left, pick in the middle,
+    market and gap on the right, edge colored by star level."""
+    lv = _se_conf(r)
+    kd = _se_kick_dt(r, day)
+    if kd is not None:
+        t_main, t_ampm = kd.strftime("%-I:%M"), kd.strftime("%p")
+    else:
+        t_main, t_ampm = "TBD", ""
+    res = str(r.get("result", "") or "").strip().upper()
+    if res in ("WIN", "WON"):
+        tag, cls = "WON", "won"
+    elif res in ("LOSS", "LOST"):
+        tag, cls = "LOST", "lost"
+    elif res == "PUSH":
+        tag, cls = "PUSH", "push"
+    else:
+        tag, cls = _se_time_to_kick(r, now, day)
+    mt = "TOTAL" if str(r.get("market_type", "")).upper() == "TOTAL" else "SPREAD"
+    try:
+        gap = _se_gap_text(r)
+    except Exception:
+        gap = ""
+    return (
+        f'<div class="se-tix t{lv}">'
+        f'<div class="se-tix-time"><b>{html.escape(t_main)}</b>'
+        f'<span>{html.escape(t_ampm)}</span><i class="{cls}">{html.escape(tag)}</i></div>'
+        f'<div class="se-tix-cut"></div>'
+        f'<div class="se-tix-main">{_pick_logo_html(r, 30)}<div>'
+        f'<b>{html.escape(str(r.get("selection", "")))}</b>'
+        f'<small>{html.escape(str(r.get("away_team", "")))} @ '
+        f'{html.escape(str(r.get("home_team", "")))}</small></div></div>'
+        f'<div class="se-tix-side"><span class="se-tix-chip">{mt}</span>'
+        f'<b>{html.escape(gap)}</b></div>'
+        f'</div>'
+    )
+
+
 def _se_hero_meta(row, now, day=None):
     """Compact one-line meta for the hero card, which lays out horizontally."""
     if str(row.get("result", "") or "").strip():
@@ -23858,11 +23960,19 @@ def _se_hero_meta(row, now, day=None):
         fa = float(row.get("fair_total") if _is_tot else row.get("fair_home_spread"))
         if not _is_tot and str(row.get("pick_side", "")).strip().upper() == "AWAY":
             mk, fa = -mk, -fa
-        bits.append(f"fair <b>{fa:{'.1f' if _is_tot else '+.1f'}}</b>")
+        _fmt = '.1f' if _is_tot else '+.1f'
+        bits.append(f"model <b>{fa:{_fmt}}</b>")
+        bits.append(f"mkt <b>{mk:{_fmt}}</b>")
+    except Exception:
+        pass
+    # The gap, not the cover chance: at shrink 0 every bet prices at 50%,
+    # which says nothing about why this one is on top.
+    try:
+        bits.append(f"<b class='se-hm-gap'>{html.escape(_se_gap_text(row))}</b> off")
     except Exception:
         pass
     try:
-        bits.append(f"<b>{float(row.get('cover_probability'))*100:.1f}%</b> cover")
+        bits.append(f"<span class='se-hm-kick'>{html.escape(_se_kick_label(row, day))}</span>")
     except Exception:
         pass
     label, state = _se_time_to_kick(row, now, day)
@@ -24270,10 +24380,14 @@ def _render_home_page():
         try:
             # Stars first, then the size of the gap. EV is the same for every
             # bet at shrink 0, so it cannot rank anything.
+            # Stars first, then kickoff: the best plays lead, and within a
+            # star level you read down the day in the order games start.
             _off = _se_add_conf(_off)
+            _kts = [_se_kick_dt(r, _today) for _, r in _off.iterrows()]
             _off = _off.assign(
-                _gp=[_se_row_gap(r) for _, r in _off.iterrows()]
-            ).sort_values(["_conf", "_gp"], ascending=[False, False])
+                _gp=[_se_row_gap(r) for _, r in _off.iterrows()],
+                _kt=[k.timestamp() if k is not None else float("inf") for k in _kts],
+            ).sort_values(["_conf", "_kt", "_gp"], ascending=[False, True, False])
         except Exception:
             pass
         _total = len(_off)
@@ -24480,9 +24594,11 @@ def _render_home_page():
                     unsafe_allow_html=True,
                 )
 
+        st.markdown(_SE_TIX_CSS, unsafe_allow_html=True)
         st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="se-hero-bet">'
+            f'<div class="se-hero-bet t{_se_conf(_h)}">'
+            f'<div class="se-hero-glow"></div>'
             f'<div class="se-hero-bet-top">'
             f'<div class="se-hero-logo">{_pick_logo_html(_h, 46)}</div>'
             f'<div class="se-hero-bet-copy">'
@@ -24507,76 +24623,34 @@ def _render_home_page():
                 f"shaded area is where this bet covers."
             )
 
-        # Split the rest into spreads and totals, top five of each, so one
-        # market type cannot crowd the other off the page.
+        # The rest, by star level, each level in kickoff order. Spreads and
+        # totals share one list; a chip on each ticket says which it is.
         _rest_df = _top.iloc[1:].copy()
-        _mt = _rest_df["market_type"].astype(str).str.upper() \
-            if "market_type" in _rest_df.columns else pd.Series("", index=_rest_df.index)
-        _all_spreads = _rest_df[_mt != "TOTAL"]
-        _all_totals = _rest_df[_mt == "TOTAL"]
-        _spreads, _totals = _all_spreads.head(5), _all_totals.head(5)
-
-        _rest = []
-        if not _spreads.empty:
-            _rest.append(("TOP SPREADS", list(_spreads.iterrows()),
-                          list(_all_spreads.iloc[5:].iterrows())))
-        if not _totals.empty:
-            _rest.append(("TOP TOTALS", list(_totals.iterrows()),
-                          list(_all_totals.iloc[5:].iterrows())))
-        st.markdown(
-            '<style>'
-            'div[class*="st-key-se_pair"] [data-testid="stHorizontalBlock"]{'
-            'display:flex!important;flex-direction:row!important;'
-            'flex-wrap:nowrap!important;gap:8px!important}'
-            'div[class*="st-key-se_pair"] [data-testid="stColumn"]{'
-            'width:50%!important;flex:1 1 50%!important;min-width:0!important}'
-            '</style>',
-            unsafe_allow_html=True,
-        )
-        for _grp_name, _grp, _extra in _rest:
+        if "_conf" not in _rest_df.columns:
+            _rest_df["_conf"] = 1
+        for _lv, _nm in ((3, "HIGH"), (2, "MEDIUM"), (1, "LOW")):
+            _g = _rest_df[_rest_df["_conf"] == _lv]
+            if _g.empty:
+                continue
             st.markdown(
-                f'<div class="se-sec">{_grp_name} \u00b7 {len(_grp)}</div>',
+                f'<div class="se-tier-head t{_lv}">'
+                f'<span class="se-tier-stars">{"★" * _lv}</span>'
+                f'<span class="se-tier-name">{_nm}</span>'
+                f'<span class="se-tier-line"></span>'
+                f'<em>{len(_g)}</em></div>',
                 unsafe_allow_html=True,
             )
-            for _ps in range(0, len(_grp), 2):
-                _pc = st.container(key=f"se_pair_{_grp_name}_{_ps}")
-                with _pc:
-                    _cols = st.columns(2, gap="small")
-                    for _c, _idx in zip(_cols, range(_ps, min(_ps + 2, len(_grp)))):
-                        r = _grp[_idx][1]
-                        with _c:
-                            st.markdown(
-                                f'<div class="se-mini">'
-                                f'<div class="se-mini-top">'
-                                f'<span class="se-mini-rank">{_idx + 1}</span>'
-                                f'{_pick_logo_html(r, 26)}'
-                                f'<span class="se-mini-ev">'
-                                f'{_v390_prob_text(r.get("expected_value"))}</span></div>'
-                                f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                                f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                                f'{html.escape(str(r.get("home_team","")))}</small>'
-                                f'{_se_card_meta(r, _now, _today, lean=True)}'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-
-            if _extra:
-                _lbl = _grp_name.replace("TOP ", "").lower()
-                with st.expander(f"Show {len(_extra)} more {_lbl}", expanded=False):
-                    for _j, (_, r) in enumerate(_extra, start=6):
-                        st.markdown(
-                            f'<div class="se-extra">'
-                            f'<span class="se-extra-rank">{_j}</span>'
-                            f'{_pick_logo_html(r, 22)}'
-                            f'<div class="se-extra-main">'
-                            f'<b>{html.escape(str(r.get("selection","")))}</b>'
-                            f'<small>{html.escape(str(r.get("away_team","")))} @ '
-                            f'{html.escape(str(r.get("home_team","")))}</small></div>'
-                            f'<span class="se-extra-ev">'
-                            f'{_v390_prob_text(r.get("expected_value"))}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
+            st.markdown(
+                "".join(_se_ticket_html(r, _now, _today) for _, r in _g.head(6).iterrows()),
+                unsafe_allow_html=True,
+            )
+            if len(_g) > 6:
+                with st.expander(f"Show {len(_g) - 6} more", expanded=False):
+                    st.markdown(
+                        "".join(_se_ticket_html(r, _now, _today)
+                                for _, r in _g.iloc[6:].iterrows()),
+                        unsafe_allow_html=True,
+                    )
 
 
     # --- record ------------------------------------------------------------
