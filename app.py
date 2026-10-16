@@ -22548,13 +22548,9 @@ except Exception:
     _owner_code = None
 
 if not _owner_code:
-    # Unset means every visitor is treated as owner, which is fine alone and
-    # dangerous the moment the URL is shared. Say so where it cannot be missed.
-    st.warning(
-        "**No owner code set.** Anyone with this link can freeze bets and clear "
-        "dates from the shared record. Add an `owner_code` to Streamlit Secrets "
-        "before sharing the URL."
-    )
+    # Unset means every visitor is treated as owner. The banner was removed
+    # at the owner's request; set owner_code in Secrets before sharing.
+    pass
 elif not _se_is_owner():
     st.caption(
         "Viewing the shared record \u2014 explore freely. Picks and grading are "
