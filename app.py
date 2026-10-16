@@ -7835,7 +7835,7 @@ def ios_save_button(label, csv_text, filename):
     )
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def get_finals_games(year):
     """Fresh games feed for grading. Short TTL so completed games appear quickly."""
     return cfbd_get("/games", API_KEY, {"year": int(year), "seasonType": "regular"})
@@ -17035,7 +17035,7 @@ def _v401_track_daily_card(card, selected_date, tier="OFFICIAL"):
     return len(rows)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _v401_fetch_finals(date_strings):
     out = {}
     years = set()
@@ -23909,6 +23909,20 @@ _SE_TIX_CSS = """<style>
 .se-tix-stars{font-size:.78rem;letter-spacing:.04em;color:var(--tc);
   text-shadow:0 0 10px var(--tc);line-height:1}
 .se-tier-head.live .se-tier-name{color:#4ae0aa}
+.se-lv{margin:-4px 0 6px 12px;padding:8px 10px 9px;border-radius:12px;
+  background:rgba(74,224,170,.06);border:1px solid rgba(74,224,170,.18)}
+.se-lv-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.se-lv-sc{font-size:.7rem;color:#9fb3c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-lv-sc b{color:#f2f7fc;font-size:.82rem;font-weight:900;font-variant-numeric:tabular-nums}
+.se-lv-ck{font-size:.6rem;font-weight:900;letter-spacing:.1em;color:#4ae0aa;white-space:nowrap}
+.se-lv-bar{position:relative;height:6px;border-radius:99px;margin:8px 0 6px;
+  background:rgba(120,154,188,.16)}
+.se-lv-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;transition:width .6s}
+.se-lv-bar em{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:rgba(220,230,240,.35)}
+.se-lv-bot{display:flex;align-items:baseline;gap:6px;font-size:.66rem;font-weight:700}
+.se-lv-bot span{flex:1}
+.se-lv-bot b{font-size:.9rem;font-weight:900;font-variant-numeric:tabular-nums}
+.se-lv-bot small{font-size:.56rem;color:#71879d;letter-spacing:.08em;text-transform:uppercase}
 .se-rows{margin:-4px 0 2px}
 .se-row{--tc:#7fb4ff;display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;
   border-bottom:1px solid rgba(120,154,188,.08);position:relative}
@@ -24132,6 +24146,140 @@ def _se_star_record_html(g):
         '.se-sr-rec .pos{color:#4ae0aa}.se-sr-rec .neg{color:#f2748a}'
                 '</style>'
         '<div class="se-sr">' + "".join(rows) + '</div>'
+    )
+
+
+@st.cache_data(ttl=55, show_spinner=False)
+def _se_live_scoreboard():
+    """{game_id: live state} from College Football Data's scoreboard.
+    Empty if the feed is unavailable on this API plan; the app then falls
+    back to plain "live now"."""
+    try:
+        rows = cfbd_get("/scoreboard", API_KEY, {}) or []
+    except Exception:
+        return {}
+    out = {}
+    for g in rows if isinstance(rows, list) else []:
+        try:
+            gid = str(g.get("id") or "")
+            ht, at = g.get("homeTeam") or {}, g.get("awayTeam") or {}
+            hp = ht.get("points", g.get("homePoints"))
+            ap = at.get("points", g.get("awayPoints"))
+            if not gid or hp is None or ap is None:
+                continue
+            out[gid] = {
+                "status": str(g.get("status") or "").lower(),
+                "period": g.get("period"),
+                "clock": str(g.get("clock") or ""),
+                "home_pts": float(hp), "away_pts": float(ap),
+                "possession": str(g.get("possession") or "").lower(),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _se_secs_left(period, clock):
+    """Regulation seconds remaining; overtime counts as a sliver."""
+    try:
+        q = int(period)
+    except Exception:
+        return None
+    if q >= 5:
+        return 0.04 * 3600
+    try:
+        parts = [int(float(x)) for x in str(clock).split(":")]
+        cs = parts[-2] * 60 + parts[-1] if len(parts) >= 2 else int(parts[0])
+    except Exception:
+        cs = 450
+    return max(0.0, (4 - q) * 900 + min(cs, 900))
+
+
+def _se_live_cover_prob(row, live):
+    """Chance this bet covers from here.
+
+    Rest of the game ~ Normal(mean = what the market expected over the time
+    left, sd = full-game sd x sqrt(share of game left)). Uses the market's
+    expectation, not the model's, so at kickoff it is exactly 50% -- the
+    same honest number the app prices every bet at.
+    Returns (prob, margin_vs_number) or (None, None).
+    """
+    try:
+        bl = float(row.get("bet_line"))
+    except (TypeError, ValueError):
+        return None, None
+    if not math.isfinite(bl):
+        return None, None
+    hs, as_ = live["home_pts"], live["away_pts"]
+    cur = _v401_bet_margin(bl, row.get("market_type"), row.get("pick_side"), hs, as_)
+    if cur is None:
+        return None, None
+    is_tot = str(row.get("market_type", "")).upper() == "TOTAL"
+    if live.get("status") == "completed":
+        return (1.0 if cur > 0 else 0.0 if cur < 0 else 0.5), cur
+    sl = _se_secs_left(live.get("period"), live.get("clock"))
+    if sl is None:
+        return None, cur
+    f = max(sl / 3600.0, 0.0)
+    if f <= 1e-6:
+        return (1.0 if cur > 0 else 0.0 if cur < 0 else 0.5), cur
+    if is_tot:
+        over = str(row.get("pick_side", "")).upper() == "OVER"
+        swing = (bl * f) if over else -(bl * f)
+        sd = BASE_TOTAL_SD * math.sqrt(f)
+    else:
+        # Market's expected margin for the side bet is -line, so over the
+        # time left it adds -line x f.
+        swing = -bl * f
+        sd = BASE_MARGIN_SD * math.sqrt(f)
+    z = (cur + swing) / sd
+    p = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    return min(max(p, 0.0), 1.0), cur
+
+
+def _se_live_strip_html(row, live):
+    """Score, clock and cover odds under a live row."""
+    if not live:
+        return ""
+    p, cur = _se_live_cover_prob(row, live)
+    try:
+        q = int(live.get("period"))
+    except Exception:
+        q = 0
+    if live.get("status") == "completed":
+        clock = "FINAL"
+    elif q >= 5:
+        clock = "OT"
+    elif q:
+        ck = str(live.get("clock") or "")
+        ck = ":".join(ck.split(":")[-2:]) if ck.count(":") >= 2 else ck
+        clock = f"Q{q} {ck}".strip()
+    else:
+        clock = "LIVE"
+    away, home = str(row.get("away_team", "")), str(row.get("home_team", ""))
+    sc = (f'<span class="se-lv-sc">{html.escape(away)} <b>{live["away_pts"]:g}</b>'
+          f' · {html.escape(home)} <b>{live["home_pts"]:g}</b></span>')
+    if p is None:
+        return (f'<div class="se-lv">{sc}<span class="se-lv-ck">{clock}</span></div>')
+    pct = p * 100
+    col = "#4ae0aa" if pct >= 60 else ("#f2748a" if pct <= 40 else "#ffd97a")
+    if cur is not None:
+        if cur > 0:
+            say = f"covering by {cur:g}"
+        elif cur < 0:
+            say = f"needs {abs(cur):g}" if live.get("status") != "completed" else f"missed by {abs(cur):g}"
+        else:
+            say = "dead on the number"
+    else:
+        say = ""
+    return (
+        f'<div class="se-lv">'
+        f'<div class="se-lv-top">{sc}<span class="se-lv-ck">{clock}</span></div>'
+        f'<div class="se-lv-bar"><i style="width:{pct:.0f}%;background:{col};'
+        f'box-shadow:0 0 10px {col}"></i><em></em></div>'
+        f'<div class="se-lv-bot"><span style="color:{col}">{html.escape(say)}</span>'
+        f'<b style="color:{col}">{pct:.0f}%</b><small>to cover</small></div>'
+        f'</div>'
     )
 
 
@@ -24939,8 +25087,27 @@ def _render_home_page():
                         'Right side: stars, then points off the market.</div>',
                         unsafe_allow_html=True)
         if not _live.empty:
-            st.markdown(_head("\u25cf LIVE NOW", len(_live), "live") + _rows(_live),
-                        unsafe_allow_html=True)
+            def _live_block(_lv=_live):
+                _sb = _se_live_scoreboard()
+                _html = [_head("\u25cf LIVE NOW", len(_lv), "live"), '<div class="se-rows">']
+                for _, _r in _lv.iterrows():
+                    _html.append(_se_row_html(_r, pd.Timestamp.now(tz="America/New_York"), _view_date))
+                    _html.append(_se_live_strip_html(_r, _sb.get(str(_r.get("game_id")))))
+                _html.append('</div>')
+                st.markdown("".join(_html), unsafe_allow_html=True)
+                if _sb:
+                    st.caption("Live odds: the market's expectation for the time left, "
+                               "not a model edge. Updates every minute.")
+            # Only the live section re-runs each minute, and only while a game
+            # you bet on is in progress.
+            _frag = getattr(st, "fragment", None)
+            if _frag is not None:
+                try:
+                    _frag(run_every=60)(_live_block)()
+                except Exception:
+                    _live_block()
+            else:
+                _live_block()
         if not _near.empty:
             st.markdown(_head("COMING UP", len(_near)) + _rows(_near),
                         unsafe_allow_html=True)
