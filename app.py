@@ -23910,7 +23910,7 @@ _SE_TIX_CSS = """<style>
   text-shadow:0 0 10px var(--tc);line-height:1}
 .se-tier-head.live .se-tier-name{color:#4ae0aa}
 .se-rows{margin:-4px 0 2px}
-.se-row{--tc:#7fb4ff;display:flex;align-items:center;gap:10px;padding:9px 2px 9px 10px;
+.se-row{--tc:#7fb4ff;display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;
   border-bottom:1px solid rgba(120,154,188,.08);position:relative}
 .se-row:last-child{border-bottom:none}
 .se-row::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:2px;
@@ -23930,11 +23930,12 @@ _SE_TIX_CSS = """<style>
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-row-main small{display:block;font-size:.62rem;color:#71879d;margin-top:1px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.se-row-side{flex:0 0 auto;display:flex;align-items:center;gap:7px}
+.se-row-side{flex:0 0 auto;display:flex;align-items:center;gap:6px;white-space:nowrap}
 .se-row-side em{font-style:normal;font-size:.5rem;font-weight:900;letter-spacing:.1em;
   color:#7f97ae;border:1px solid rgba(120,154,188,.3);border-radius:4px;padding:1px 4px}
 .se-row-side em.inj{color:#f2748a;border-color:rgba(242,116,138,.55)}
-.se-row-stars{font-size:.72rem;color:var(--tc);min-width:34px;text-align:right}
+.se-row-stars{font-size:.72rem;color:var(--tc);min-width:40px;text-align:right;
+  white-space:nowrap;letter-spacing:-.02em}
 .se-row-gap{flex:0 0 30px;text-align:right;font-size:.78rem;font-weight:800;color:#dfe8f2;
   font-variant-numeric:tabular-nums}
 .se-tix-inj{font-size:.5rem;font-weight:900;letter-spacing:.12em;color:#f2748a;
@@ -24166,6 +24167,103 @@ def _se_row_html(r, now, day=None):
         f'<span class="se-row-gap">{html.escape(gap)}</span></span>'
         f'</div>'
     )
+
+
+def _se_card_summary_html(df, day):
+    """Top-of-Home strip: the day in four numbers, the star mix as one bar,
+    and a warning for any bet frozen before its injury was entered."""
+    if df is None or df.empty:
+        return ""
+    n = len(df)
+    lv = df["_conf"] if "_conf" in df.columns else pd.Series([_se_conf(r) for _, r in df.iterrows()])
+    c3, c2, c1 = int((lv == 3).sum()), int((lv == 2).sum()), int((lv <= 1).sum())
+    kts = [_se_kick_dt(r, day) for _, r in df.iterrows()]
+    kts = [k for k in kts if k is not None]
+    first = min(kts).strftime("%-I:%M") if kts else "TBD"
+    last = max(kts).strftime("%-I:%M") if kts else ""
+    try:
+        risk = float(pd.to_numeric(df.get("suggested_units"), errors="coerce").fillna(1.0).sum())
+    except Exception:
+        risk = float(n)
+    open_n = int((df["_st"] != "done").sum()) if "_st" in df.columns else n
+    seg = lambda k, c: (f'<i style="flex:{k};background:{c};box-shadow:0 0 10px {c}"></i>' if k else "")
+
+    # Injuries in force for this date that touch a bet the freeze did not adjust.
+    warn = []
+    try:
+        adj = _inj_active(day)
+        if adj:
+            for _, r in df.iterrows():
+                if "_st" in df.columns and r.get("_st") == "done":
+                    continue
+                tag = str(r.get("inj_adj") or "").strip()
+                if tag and tag.lower() not in ("nan", "none"):
+                    continue
+                for side in ("home_team", "away_team"):
+                    t = r.get(side)
+                    hit = adj.get(_inj_norm(t))
+                    if hit and abs(float(hit[0])) > 0:
+                        warn.append((str(r.get("selection", "")), str(t), str(hit[1])))
+                        break
+    except Exception:
+        warn = []
+
+    out = (
+        '<style>'
+        '.se-sum{position:relative;margin:4px 0 18px;padding:14px 14px 12px;border-radius:18px;'
+        'background:radial-gradient(120% 140% at 0% 0%,rgba(47,107,255,.22),transparent 55%),'
+        'radial-gradient(120% 140% at 100% 100%,rgba(74,224,170,.14),transparent 55%),'
+        'rgba(10,22,38,.85);border:1px solid rgba(120,154,188,.18);overflow:hidden}'
+        '.se-sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}'
+        '.se-sum-grid div{text-align:center}'
+        '.se-sum-grid b{display:block;font-size:1.25rem;font-weight:900;color:#f2f7fc;'
+        'line-height:1.1;font-variant-numeric:tabular-nums}'
+        '.se-sum-grid b.g{color:#ffd97a;text-shadow:0 0 14px rgba(255,200,90,.55)}'
+        '.se-sum-grid span{display:block;font-size:.52rem;letter-spacing:.14em;font-weight:800;'
+        'color:#7f97ae;margin-top:4px;text-transform:uppercase}'
+        '.se-sum-bar{display:flex;gap:3px;height:6px;margin:13px 2px 6px;border-radius:99px}'
+        '.se-sum-bar i{border-radius:99px}'
+        '.se-sum-leg{display:flex;justify-content:space-between;font-size:.58rem;color:#71879d;'
+        'font-weight:700;padding:0 2px}'
+        '.se-sum-leg em{font-style:normal}'
+        '.se-warn{margin:-8px 0 18px;padding:11px 13px;border-radius:14px;'
+        'background:linear-gradient(100deg,rgba(242,116,138,.16),rgba(242,116,138,.05));'
+        'border:1px solid rgba(242,116,138,.45)}'
+        '.se-warn b{display:block;font-size:.8rem;color:#ffb3c0;font-weight:900}'
+        '.se-warn small{display:block;font-size:.66rem;color:#e7c5cc;margin-top:3px;line-height:1.45}'
+        '.se-warn ul{margin:6px 0 0;padding:0;list-style:none}'
+        '.se-warn li{font-size:.7rem;color:#f6dde2;padding:3px 0;border-top:1px solid rgba(242,116,138,.15)}'
+        '.se-warn li span{color:#c79aa4}'
+        '</style>'
+        '<div class="se-sum">'
+        '<div class="se-sum-grid">'
+        f'<div><b>{open_n if open_n != n else n}</b><span>{"left" if open_n != n else "bets"}</span></div>'
+        f'<div><b class="g">{c3}</b><span>★★★</span></div>'
+        f'<div><b>{html.escape(first)}</b><span>first kick</span></div>'
+        f'<div><b>{risk:g}u</b><span>on the line</span></div>'
+        '</div>'
+        '<div class="se-sum-bar">'
+        + seg(c3, "#ffd97a") + seg(c2, "#4ae0aa") + seg(c1, "#7fb4ff") +
+        '</div>'
+        f'<div class="se-sum-leg"><em>★★★ {c3} · ★★ {c2} · ★ {c1}</em>'
+        f'<em>{html.escape(first)}' + (f' → {html.escape(last)}' if last and last != first else '') + '</em></div>'
+        '</div>'
+    )
+    if warn:
+        items = "".join(
+            f'<li><b style="display:inline;font-size:.72rem;color:#fff">{html.escape(sel)}</b> '
+            f'<span>· {html.escape(team)}: {html.escape(note[:70])}</span></li>'
+            for sel, team, note in warn[:8])
+        more = f'<li><span>+{len(warn) - 8} more</span></li>' if len(warn) > 8 else ""
+        out += (
+            '<div class="se-warn">'
+            f'<b>⚠ {len(warn)} bet{"s" if len(warn) != 1 else ""} frozen without '
+            f'{"its" if len(warn) == 1 else "their"} injury</b>'
+            '<small>Your injury list has news for these teams, but the freeze did not '
+            'apply it. Clear the date in Tracker, rebuild, then Freeze again.</small>'
+            f'<ul>{items}{more}</ul></div>'
+        )
+    return out
 
 
 def _se_ticket_html(r, now, day=None):
@@ -24756,6 +24854,10 @@ def _render_home_page():
                 )
 
         st.markdown(_SE_TIX_CSS, unsafe_allow_html=True)
+        try:
+            st.markdown(_se_card_summary_html(_top, _view_date), unsafe_allow_html=True)
+        except Exception:
+            pass
         st.markdown(f'<div class="se-sec">{_hero_label}</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="se-hero-bet t{_se_conf(_h)}">'
@@ -24824,7 +24926,9 @@ def _render_home_page():
                     f'<span class="se-tier-line"></span><em>{n}</em></div>')
 
         if not _rest_df.empty:
-            st.caption("Right side: stars, then points off the market.")
+            st.markdown('<div style="margin:14px 2px -2px;font-size:.66rem;color:#71879d">'
+                        'Right side: stars, then points off the market.</div>',
+                        unsafe_allow_html=True)
         if not _live.empty:
             st.markdown(_head("\u25cf LIVE NOW", len(_live), "live") + _rows(_live),
                         unsafe_allow_html=True)
