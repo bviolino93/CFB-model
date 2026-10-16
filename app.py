@@ -23909,6 +23909,37 @@ _SE_TIX_CSS = """<style>
 .se-tix-stars{font-size:.78rem;letter-spacing:.04em;color:var(--tc);
   text-shadow:0 0 10px var(--tc);line-height:1}
 .se-tier-head.live .se-tier-name{color:#4ae0aa}
+.se-rows{margin:-4px 0 2px}
+.se-row{--tc:#7fb4ff;display:flex;align-items:center;gap:10px;padding:9px 2px 9px 10px;
+  border-bottom:1px solid rgba(120,154,188,.08);position:relative}
+.se-row:last-child{border-bottom:none}
+.se-row::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:2px;
+  border-radius:2px;background:var(--tc);opacity:.8}
+.se-row.t3{--tc:#ffd97a}.se-row.t2{--tc:#4ae0aa}
+.se-row-time{flex:0 0 40px;font-size:.78rem;font-weight:800;color:#c9d6e4;
+  font-variant-numeric:tabular-nums;display:flex;flex-direction:column;line-height:1.1}
+.se-row.soon .se-row-time{color:#ffd97a}
+.se-row.live .se-row-time{color:#4ae0aa}
+.se-row-time i{font-style:normal;font-size:.55rem;font-weight:900;margin-top:3px;
+  width:16px;text-align:center;border-radius:4px;color:#06170f}
+.se-row-time i.won{background:#4ae0aa}.se-row-time i.lost{background:#d9506a;color:#fff}
+.se-row-time i.push{background:#f2c14e}
+.se-row-logo{flex:0 0 auto;display:flex}
+.se-row-main{flex:1;min-width:0}
+.se-row-main b{display:block;font-size:.86rem;font-weight:800;color:#eef4fb;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-row-main small{display:block;font-size:.62rem;color:#71879d;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-row-side{flex:0 0 auto;display:flex;align-items:center;gap:7px}
+.se-row-side em{font-style:normal;font-size:.5rem;font-weight:900;letter-spacing:.1em;
+  color:#7f97ae;border:1px solid rgba(120,154,188,.3);border-radius:4px;padding:1px 4px}
+.se-row-side em.inj{color:#f2748a;border-color:rgba(242,116,138,.55)}
+.se-row-stars{font-size:.72rem;color:var(--tc);min-width:34px;text-align:right}
+.se-row-gap{flex:0 0 30px;text-align:right;font-size:.78rem;font-weight:800;color:#dfe8f2;
+  font-variant-numeric:tabular-nums}
+.se-tix-inj{font-size:.5rem;font-weight:900;letter-spacing:.12em;color:#f2748a;
+  border:1px solid rgba(242,116,138,.6);border-radius:4px;padding:1px 4px;margin-right:6px;
+  vertical-align:2px;text-shadow:none}
 .se-tix-side b{font-size:.8rem;color:#dfe8f2;font-weight:800;font-variant-numeric:tabular-nums}
 </style>"""
 
@@ -23969,12 +24000,12 @@ def _se_gap_bar_svg(row, w=340, h=78):
         f'<text x="{xf:.1f}" y="{y-15}" text-anchor="middle" font-size="10" font-weight="800" '
         f'fill="#4ae0aa" letter-spacing=".08em">MODEL {fmt(fa)}</text>'
         f'<text x="{(a+b)/2:.1f}" y="{y+30}" text-anchor="middle" font-size="11" '
-        f'font-weight="800" fill="#dbe7f5">{gap:.1f} pts apart</text>'
+        f'font-weight="800" fill="#dbe7f5">{html.escape(_se_gap_text(row))} apart</text>'
         f'</svg>'
     )
 
 
-def _se_day_timeline_svg(df, now, day, w=340, h=86):
+def _se_day_timeline_svg(df, now, day, w=340, h=None):
     """Every bet today on one clock: dots by kickoff, colored by stars,
     with a line for now. Finished games fade."""
     if df is None or df.empty:
@@ -24006,7 +24037,14 @@ def _se_day_timeline_svg(df, now, day, w=340, h=86):
     lo, hi = math.floor(lo), math.ceil(hi)
     ml, mr = 14, 14
     X = lambda v: ml + (w - ml - mr) * (v - lo) / (hi - lo)
-    y = 44
+    _stk = {}
+    for p_ in pts:
+        _k = round(p_[0] * 4)
+        _stk[_k] = _stk.get(_k, 0) + 1
+    _tall = max(_stk.values()) if _stk else 1
+    _dy = 9 if _tall <= 6 else 7
+    y = 30 + _dy * (_tall - 1)
+    h = y + 32
     out = [f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block" '
            f'xmlns="http://www.w3.org/2000/svg" role="img" '
            f'aria-label="{len(pts)} bets across the day by kickoff time">',
@@ -24026,7 +24064,7 @@ def _se_day_timeline_svg(df, now, day, w=340, h=86):
             nh += 24
         if lo <= nh <= hi and str(now.date()) == str(day)[:10]:
             nx = X(nh)
-            out.append(f'<line x1="{nx:.1f}" y1="10" x2="{nx:.1f}" y2="{y+8}" stroke="#f2748a" '
+            out.append(f'<line x1="{nx:.1f}" y1="12" x2="{nx:.1f}" y2="{y+8}" stroke="#f2748a" '
                        f'stroke-width="1.5" stroke-dasharray="2 3"/>'
                        f'<text x="{nx:.1f}" y="9" text-anchor="middle" font-size="8.5" '
                        f'font-weight="900" fill="#f2748a" letter-spacing=".12em">NOW</text>')
@@ -24038,10 +24076,10 @@ def _se_day_timeline_svg(df, now, day, w=340, h=86):
         k = round(hr * 4)
         n = seen.get(k, 0)
         seen[k] = n + 1
-        cx, cy = X(hr), y - 10 * n
+        cx, cy = X(hr), y - _dy * n
         c = _SE_VIZ_COL.get(lv, "#7f97ae")
         op = ".35" if done else "1"
-        r_ = 4 + lv
+        r_ = (4 + lv) if _tall <= 6 else (3 + lv * 0.7)
         out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r_ + 4}" fill="{c}" opacity="{".08" if done else ".18"}"/>'
                    f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r_}" fill="{c}" opacity="{op}">'
                    f'<title>{html.escape(sel)}</title></circle>')
@@ -24096,6 +24134,40 @@ def _se_star_record_html(g):
     )
 
 
+def _se_row_html(r, now, day=None):
+    """One bet as a single slim row: time, crest, pick, stars, gap."""
+    lv = _se_conf(r)
+    kd = _se_kick_dt(r, day)
+    t = kd.strftime("%-I:%M") if kd is not None else "TBD"
+    res = str(r.get("result", "") or "").strip().upper()
+    tag = {"WIN": "W", "WON": "W", "LOSS": "L", "LOST": "L", "PUSH": "P"}.get(res, "")
+    tcls = {"W": "won", "L": "lost", "P": "push"}.get(tag, "")
+    _, st_ = _se_time_to_kick(r, now, day)
+    inj = str(r.get("inj_adj") or "").strip()
+    inj = "" if inj.lower() in ("nan", "none") else inj
+    mt = "O/U" if str(r.get("market_type", "")).upper() == "TOTAL" else ""
+    try:
+        gap = _se_gap_text(r).replace(" pts", "")
+    except Exception:
+        gap = ""
+    return (
+        f'<div class="se-row t{lv} {st_}">'
+        f'<span class="se-row-time">{html.escape(t)}'
+        + (f'<i class="{tcls}">{tag}</i>' if tag else "")
+        + f'</span>'
+        f'<span class="se-row-logo">{_pick_logo_html(r, 22)}</span>'
+        f'<span class="se-row-main"><b>{html.escape(str(r.get("selection", "")))}</b>'
+        f'<small>{html.escape(str(r.get("away_team", "")))} @ '
+        f'{html.escape(str(r.get("home_team", "")))}</small></span>'
+        f'<span class="se-row-side">'
+        + (f'<em class="inj" title="{html.escape(inj)}">INJ</em>' if inj else "")
+        + (f'<em>{mt}</em>' if mt else "")
+        + f'<span class="se-row-stars">{"★" * lv}</span>'
+        f'<span class="se-row-gap">{html.escape(gap)}</span></span>'
+        f'</div>'
+    )
+
+
 def _se_ticket_html(r, now, day=None):
     """One play as a ticket stub: kickoff on the left, pick in the middle,
     market and gap on the right, edge colored by star level."""
@@ -24115,6 +24187,9 @@ def _se_ticket_html(r, now, day=None):
     else:
         tag, cls = _se_time_to_kick(r, now, day)
     mt = "TOTAL" if str(r.get("market_type", "")).upper() == "TOTAL" else "SPREAD"
+    _inj = str(r.get("inj_adj") or "").strip()
+    if _inj.lower() in ("nan", "none"):
+        _inj = ""
     try:
         gap = _se_gap_text(r)
     except Exception:
@@ -24128,7 +24203,9 @@ def _se_ticket_html(r, now, day=None):
         f'<b>{html.escape(str(r.get("selection", "")))}</b>'
         f'<small>{html.escape(str(r.get("away_team", "")))} @ '
         f'{html.escape(str(r.get("home_team", "")))}</small></div></div>'
-        f'<div class="se-tix-side"><span class="se-tix-stars">{"★" * lv}</span>'
+        f'<div class="se-tix-side"><span class="se-tix-stars">'
+        + (f'<span class="se-tix-inj" title="{html.escape(_inj)}">INJ</span>' if _inj else '')
+        + f'{"★" * lv}</span>'
         f'<span class="se-tix-chip">{mt}</span>'
         f'<b>{html.escape(gap)} off</b></div>'
         f'</div>'
@@ -24591,7 +24668,9 @@ def _render_home_page():
 
         _top = _off
         if "_st" not in _top.columns:
-            _top = _top.assign(_st="up", _hr=99.0)
+            _top = _top.assign(_st="up", _hr=99.0, _kt=float("inf"))
+        if "_conf" not in _top.columns:
+            _top = _top.assign(_conf=1)
 
         # --- hero: the next play to kick off (best stars if several start
         # together); if everything has started, the best play of the day. ---
@@ -24698,9 +24777,14 @@ def _render_home_page():
         )
         # The whole day at a glance: every bet on one clock.
         try:
-            _tl = _se_day_timeline_svg(_top, _now, _today)
+            _tl = _se_day_timeline_svg(_top, _now, _view_date)
+            try:
+                _tlname = ("TODAY" if str(_view_date)[:10] == str(_today)[:10]
+                           else pd.to_datetime(str(_view_date)[:10]).strftime("%A").upper())
+            except Exception:
+                _tlname = "TODAY"
             if _tl:
-                st.markdown('<div class="se-sec" style="margin-top:18px">TODAY AT A GLANCE</div>'
+                st.markdown(f'<div class="se-sec" style="margin-top:18px">{_tlname} AT A GLANCE</div>'
                             f'<div class="se-viz">{_tl}</div>', unsafe_allow_html=True)
         except Exception:
             pass
@@ -24709,36 +24793,67 @@ def _render_home_page():
         # kickoff window, then finished plays tucked away at the bottom.
         _rest_df = _top.drop(index=_h.name) if _h.name in _top.index else _top.iloc[1:]
 
-        def _se_section(title, df, cls=""):
-            if df.empty:
-                return
-            st.markdown(
-                f'<div class="se-tier-head {cls}">'
-                f'<span class="se-tier-name">{title}</span>'
-                f'<span class="se-tier-line"></span>'
-                f'<em>{len(df)}</em></div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "".join(_se_ticket_html(r, _now, _today) for _, r in df.iterrows()),
-                unsafe_allow_html=True,
-            )
+        # Calm by default: one slim row per bet, and only the first window
+        # with games still to come is open. Later windows fold up with a
+        # count, so a 31-bet Saturday reads as a short list, not a wall.
+        def _rows(df):
+            return ('<div class="se-rows">'
+                    + "".join(_se_row_html(r, _now, _view_date) for _, r in df.iterrows())
+                    + '</div>')
 
+        # Focused on what is coming up: live games plus the next few hours.
+        # Everything else is one tap away under "See all bets".
+        _live = _rest_df[_rest_df["_st"] == "live"]
         _upr = _rest_df[_rest_df["_st"] == "up"]
-        _se_section("\u25cf LIVE NOW", _rest_df[_rest_df["_st"] == "live"], "live")
-        # Same windows as the Slate's kickoff filter.
-        _se_section("EARLY \u00b7 BEFORE 3:30", _upr[_upr["_hr"] < 15.5])
-        _se_section("MIDDAY \u00b7 3:30\u20137:00", _upr[(_upr["_hr"] >= 15.5) & (_upr["_hr"] < 19)])
-        _se_section("NIGHT \u00b7 7:00+", _upr[(_upr["_hr"] >= 19) & (_upr["_hr"] < 99)])
-        _se_section("TIME TBD", _upr[_upr["_hr"] >= 99])
         _done = _rest_df[_rest_df["_st"] == "done"]
+        _near = _upr.iloc[0:0]
+        if not _upr.empty:
+            _now_ts = _now.timestamp()
+            _near = _upr[_upr["_kt"] <= _now_ts + 3 * 3600]
+            if _near.empty:
+                # Nothing in the next three hours (or a future date): show the
+                # next kickoff slot instead, anything within 90 min of it.
+                _first = float(_upr["_kt"].iloc[0])
+                _near = _upr[_upr["_kt"] <= _first + 90 * 60]
+            _near = _near.head(8)
+        _later = _upr.drop(index=_near.index)
+
+        def _head(title, n, cls=""):
+            return (f'<div class="se-tier-head {cls}">'
+                    f'<span class="se-tier-name">{title}</span>'
+                    f'<span class="se-tier-line"></span><em>{n}</em></div>')
+
+        if not _rest_df.empty:
+            st.caption("Right side: stars, then points off the market.")
+        if not _live.empty:
+            st.markdown(_head("\u25cf LIVE NOW", len(_live), "live") + _rows(_live),
+                        unsafe_allow_html=True)
+        if not _near.empty:
+            st.markdown(_head("COMING UP", len(_near)) + _rows(_near),
+                        unsafe_allow_html=True)
+
+        if not _later.empty:
+            _n3 = int((_later["_conf"] == 3).sum()) if "_conf" in _later.columns else 0
+            with st.expander(
+                f"See all bets \u00b7 {len(_later)} more later"
+                + (f" \u00b7 {_n3} \u2605\u2605\u2605" if _n3 else ""),
+                expanded=False,
+            ):
+                _parts = []
+                for _wn, _wd in (
+                    ("EARLY \u00b7 BEFORE 3:30", _later[_later["_hr"] < 15.5]),
+                    ("MIDDAY \u00b7 3:30\u20137:00",
+                     _later[(_later["_hr"] >= 15.5) & (_later["_hr"] < 19)]),
+                    ("NIGHT \u00b7 7:00+", _later[(_later["_hr"] >= 19) & (_later["_hr"] < 99)]),
+                    ("TIME TBD", _later[_later["_hr"] >= 99]),
+                ):
+                    if not _wd.empty:
+                        _parts.append(_head(_wn, len(_wd)) + _rows(_wd))
+                st.markdown("".join(_parts), unsafe_allow_html=True)
+
         if not _done.empty:
-            with st.expander(f"Earlier today \u00b7 {len(_done)} finished",
-                             expanded=False):
-                st.markdown(
-                    "".join(_se_ticket_html(r, _now, _today) for _, r in _done.iterrows()),
-                    unsafe_allow_html=True,
-                )
+            with st.expander(f"Earlier \u00b7 {len(_done)} finished", expanded=False):
+                st.markdown(_rows(_done), unsafe_allow_html=True)
 
 
     # --- record ------------------------------------------------------------
