@@ -23849,6 +23849,9 @@ def _se_frozen_result(row):
 
 _SE_TIX_CSS = """<style>
 /* Star tiers: gold = High, teal = Medium, blue = Low */
+.se-viz{padding:10px 8px 4px;border-radius:14px;background:rgba(12,26,44,.5);
+  border:1px solid rgba(120,154,188,.12)}
+.se-hero-curve{margin-top:10px}
 .se-hero-bet{position:relative;overflow:hidden}
 .se-hero-bet > *:not(.se-hero-glow){position:relative;z-index:1}
 .se-hero-glow{position:absolute;inset:-40% -20% auto auto;width:70%;height:120%;
@@ -23907,8 +23910,182 @@ _SE_TIX_CSS = """<style>
   justify-content:center;gap:4px;padding:10px 12px 10px 4px}
 .se-tix-chip{font-size:.5rem;letter-spacing:.16em;font-weight:900;color:var(--tc);
   padding:2px 6px;border-radius:5px;border:1px solid currentColor;opacity:.85}
+.se-tix-stars{font-size:.78rem;letter-spacing:.04em;color:var(--tc);
+  text-shadow:0 0 10px var(--tc);line-height:1}
+.se-tier-head.live .se-tier-name{color:#4ae0aa}
 .se-tix-side b{font-size:.8rem;color:#dfe8f2;font-weight:800;font-variant-numeric:tabular-nums}
 </style>"""
+
+
+_SE_VIZ_COL = {3: "#ffd97a", 2: "#4ae0aa", 1: "#7fb4ff", 0: "#7f97ae"}
+
+
+def _se_gap_bar_svg(row, w=340, h=78):
+    """Market and model on one number line, with the gap between them."""
+    is_tot = str(row.get("market_type", "")).upper() == "TOTAL"
+    mk = float(row.get("market_total") if is_tot else row.get("market_home_spread"))
+    fa = float(row.get("fair_total") if is_tot else row.get("fair_home_spread"))
+    if not (math.isfinite(mk) and math.isfinite(fa)):
+        return ""
+    if not is_tot and str(row.get("pick_side", "")).strip().upper() == "AWAY":
+        mk, fa = -mk, -fa
+    lo, hi = min(mk, fa), max(mk, fa)
+    span = max(hi - lo, 4.0)
+    pad = span * 0.35
+    lo, hi = (lo + hi) / 2 - span / 2 - pad, (lo + hi) / 2 + span / 2 + pad
+    ml, mr = 16, 16
+    X = lambda v: ml + (w - ml - mr) * (v - lo) / (hi - lo)
+    y = 40
+    xm, xf = X(mk), X(fa)
+    fmt = (lambda v: f"{v:.1f}") if is_tot else (lambda v: f"{v:+.1f}")
+    gap = abs(fa - mk)
+    a, b = min(xm, xf), max(xm, xf)
+    # Ticks every 1 point (every 5 labelled faintly) give the bar a scale.
+    ticks = []
+    import math as _m
+    v = _m.ceil(lo)
+    while v <= hi:
+        tx = X(v)
+        big = (v % 5 == 0)
+        ticks.append(f'<line x1="{tx:.1f}" y1="{y+9}" x2="{tx:.1f}" y2="{y+(14 if big else 12)}" '
+                     f'stroke="#7f97ae" stroke-opacity="{.55 if big else .25}" stroke-width="1"/>')
+        v += 1
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block" '
+        f'xmlns="http://www.w3.org/2000/svg" role="img" '
+        f'aria-label="Market {fmt(mk)}, model {fmt(fa)}, {gap:.1f} points apart">'
+        f'<defs><linearGradient id="seGap" x1="0" x2="1">'
+        f'<stop offset="0%" stop-color="{"#ffd97a" if xm < xf else "#4ae0aa"}"/>'
+        f'<stop offset="100%" stop-color="{"#4ae0aa" if xm < xf else "#ffd97a"}"/>'
+        f'</linearGradient>'
+        f'<filter id="seGlow" x="-50%" y="-50%" width="200%" height="200%">'
+        f'<feGaussianBlur stdDeviation="3"/></filter></defs>'
+        f'<line x1="{ml}" y1="{y}" x2="{w-mr}" y2="{y}" stroke="#7f97ae" '
+        f'stroke-opacity=".22" stroke-width="4" stroke-linecap="round"/>'
+        + "".join(ticks) +
+        f'<rect x="{a:.1f}" y="{y-3}" width="{b-a:.1f}" height="6" rx="3" fill="url(#seGap)" '
+        f'filter="url(#seGlow)" opacity=".7"/>'
+        f'<rect x="{a:.1f}" y="{y-3}" width="{b-a:.1f}" height="6" rx="3" fill="url(#seGap)"/>'
+        f'<circle cx="{xm:.1f}" cy="{y}" r="7" fill="#0b1b2d" stroke="#ffd97a" stroke-width="3"/>'
+        f'<circle cx="{xf:.1f}" cy="{y}" r="7" fill="#0b1b2d" stroke="#4ae0aa" stroke-width="3"/>'
+        f'<text x="{xm:.1f}" y="{y-15}" text-anchor="middle" font-size="10" font-weight="800" '
+        f'fill="#ffd97a" letter-spacing=".08em">MKT {fmt(mk)}</text>'
+        f'<text x="{xf:.1f}" y="{y-15}" text-anchor="middle" font-size="10" font-weight="800" '
+        f'fill="#4ae0aa" letter-spacing=".08em">MODEL {fmt(fa)}</text>'
+        f'<text x="{(a+b)/2:.1f}" y="{y+30}" text-anchor="middle" font-size="11" '
+        f'font-weight="800" fill="#dbe7f5">{gap:.1f} pts apart</text>'
+        f'</svg>'
+    )
+
+
+def _se_day_timeline_svg(df, now, day, w=340, h=86):
+    """Every bet today on one clock: dots by kickoff, colored by stars,
+    with a line for now. Finished games fade."""
+    if df is None or df.empty:
+        return ""
+    pts = []
+    for _, r in df.iterrows():
+        kd = _se_kick_dt(r, day)
+        if kd is None:
+            continue
+        hr = kd.hour + kd.minute / 60.0
+        if hr < 6:
+            hr += 24          # after-midnight kickoffs sit at the right end
+        done = bool(str(r.get("result", "") or "").strip())
+        pts.append((hr, _se_conf(r), done, str(r.get("selection", ""))))
+    if not pts:
+        return ""
+    lo = min(11.0, math.floor(min(p[0] for p in pts)))
+    hi = max(24.0, math.ceil(max(p[0] for p in pts)) + 0.5)
+    ml, mr = 14, 14
+    X = lambda v: ml + (w - ml - mr) * (v - lo) / (hi - lo)
+    y = 44
+    out = [f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block" '
+           f'xmlns="http://www.w3.org/2000/svg" role="img" '
+           f'aria-label="{len(pts)} bets across the day by kickoff time">',
+           f'<line x1="{ml}" y1="{y}" x2="{w-mr}" y2="{y}" stroke="#7f97ae" '
+           f'stroke-opacity=".25" stroke-width="2" stroke-linecap="round"/>']
+    for t in range(int(math.ceil(lo)), int(hi) + 1, 3):
+        tx = X(t)
+        lab = {0: "12a", 12: "12p"}.get(t % 24, f"{(t % 12) or 12}{'p' if 12 <= t < 24 else 'a'}")
+        out.append(f'<line x1="{tx:.1f}" y1="{y+5}" x2="{tx:.1f}" y2="{y+10}" '
+                   f'stroke="#7f97ae" stroke-opacity=".45"/>'
+                   f'<text x="{tx:.1f}" y="{y+24}" text-anchor="middle" font-size="9" '
+                   f'font-weight="700" fill="#63798f">{lab}</text>')
+    try:
+        nh = now.hour + now.minute / 60.0
+        if nh < 6:
+            nh += 24
+        if lo <= nh <= hi and str(now.date()) == str(day)[:10]:
+            nx = X(nh)
+            out.append(f'<line x1="{nx:.1f}" y1="10" x2="{nx:.1f}" y2="{y+8}" stroke="#f2748a" '
+                       f'stroke-width="1.5" stroke-dasharray="2 3"/>'
+                       f'<text x="{nx:.1f}" y="9" text-anchor="middle" font-size="8.5" '
+                       f'font-weight="900" fill="#f2748a" letter-spacing=".12em">NOW</text>')
+    except Exception:
+        pass
+    # Stack dots that share a kickoff so none hide behind another.
+    seen = {}
+    for hr, lv, done, sel in sorted(pts, key=lambda p: (p[0], -p[1])):
+        k = round(hr * 4)
+        n = seen.get(k, 0)
+        seen[k] = n + 1
+        cx, cy = X(hr), y - 10 * n
+        c = _SE_VIZ_COL.get(lv, "#7f97ae")
+        op = ".35" if done else "1"
+        r_ = 4 + lv
+        out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r_ + 4}" fill="{c}" opacity="{".08" if done else ".18"}"/>'
+                   f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r_}" fill="{c}" opacity="{op}">'
+                   f'<title>{html.escape(sel)}</title></circle>')
+    out.append('</svg>')
+    return "".join(out)
+
+
+def _se_star_record_html(g):
+    """Graded record split by star level, as bars against break-even."""
+    if g is None or g.empty:
+        return ""
+    rows = []
+    x = g.assign(_lv=[_se_conf(r) for _, r in g.iterrows()])
+    res = x["result"].astype(str).str.upper()
+    units = pd.to_numeric(x.get("units_result"), errors="coerce").fillna(0.0)
+    for lv, nm in ((3, "High"), (2, "Medium"), (1, "Low")):
+        m = x["_lv"] == lv
+        w_, l_ = int(((res == "WIN") & m).sum()), int(((res == "LOSS") & m).sum())
+        if w_ + l_ == 0:
+            continue
+        pct = w_ / (w_ + l_)
+        u = float(units[m].sum())
+        c = _SE_VIZ_COL[lv]
+        rows.append(
+            f'<div class="se-sr-row">'
+            f'<span class="se-sr-stars" style="color:{c}">{"★" * lv}</span>'
+            f'<div class="se-sr-bar"><i style="width:{pct*100:.1f}%;background:{c};'
+            f'box-shadow:0 0 12px {c}"></i><em></em></div>'
+            f'<b>{pct*100:.0f}%</b>'
+            f'<span class="se-sr-rec">{w_}-{l_} · '
+            f'<span class="{"pos" if u >= 0 else "neg"}">{u:+.1f}u</span></span>'
+            f'</div>')
+    if not rows:
+        return ""
+    return (
+        '<style>'
+        '.se-sr{padding:12px 14px;border-radius:14px;background:rgba(12,26,44,.6);'
+        'border:1px solid rgba(120,154,188,.13)}'
+        '.se-sr-row{display:flex;align-items:center;gap:10px;padding:6px 0}'
+        '.se-sr-stars{flex:0 0 44px;font-size:.8rem;letter-spacing:.02em}'
+        '.se-sr-bar{flex:1;position:relative;height:8px;border-radius:99px;'
+        'background:rgba(120,154,188,.14)}'
+        '.se-sr-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px}'
+        '.se-sr-bar em{position:absolute;left:52.4%;top:-4px;bottom:-4px;width:2px;'
+        'background:#f2c14e;border-radius:2px}'
+        '.se-sr-row b{flex:0 0 36px;text-align:right;font-size:.82rem;color:#eef4fb}'
+        '.se-sr-rec{flex:0 0 92px;text-align:right;font-size:.66rem;color:#8ea4ba;'
+        'font-variant-numeric:tabular-nums}'
+        '.se-sr-rec .pos{color:#4ae0aa}.se-sr-rec .neg{color:#f2748a}'
+                '</style>'
+        '<div class="se-sr">' + "".join(rows) + '</div>'
+    )
 
 
 def _se_ticket_html(r, now, day=None):
@@ -23943,8 +24120,9 @@ def _se_ticket_html(r, now, day=None):
         f'<b>{html.escape(str(r.get("selection", "")))}</b>'
         f'<small>{html.escape(str(r.get("away_team", "")))} @ '
         f'{html.escape(str(r.get("home_team", "")))}</small></div></div>'
-        f'<div class="se-tix-side"><span class="se-tix-chip">{mt}</span>'
-        f'<b>{html.escape(gap)}</b></div>'
+        f'<div class="se-tix-side"><span class="se-tix-stars">{"★" * lv}</span>'
+        f'<span class="se-tix-chip">{mt}</span>'
+        f'<b>{html.escape(gap)} off</b></div>'
         f'</div>'
     )
 
@@ -24378,37 +24556,49 @@ def _render_home_page():
     else:
         # Front page shows the five strongest only; the Slate has the full set.
         try:
-            # Stars first, then the size of the gap. EV is the same for every
-            # bet at shrink 0, so it cannot rank anything.
-            # Stars first, then kickoff: the best plays lead, and within a
-            # star level you read down the day in the order games start.
+            # Kickoff first, then stars. On game day the clock is what limits
+            # you, and the stars are not yet proven by the tracker, so they
+            # are a badge on each ticket rather than the sort. Each play also
+            # gets a state: upcoming, live, or done (graded or long over).
             _off = _se_add_conf(_off)
             _kts = [_se_kick_dt(r, _today) for _, r in _off.iterrows()]
+
+            def _se_state(r, kd):
+                if str(r.get("result", "") or "").strip():
+                    return "done"
+                if kd is None:
+                    return "up"
+                m = (kd - _now).total_seconds() / 60.0
+                return "up" if m > 0 else ("live" if m > -210 else "done")
+
             _off = _off.assign(
                 _gp=[_se_row_gap(r) for _, r in _off.iterrows()],
                 _kt=[k.timestamp() if k is not None else float("inf") for k in _kts],
-            ).sort_values(["_conf", "_kt", "_gp"], ascending=[False, True, False])
+                _st=[_se_state(r, k) for (_, r), k in zip(_off.iterrows(), _kts)],
+                _hr=[k.hour + k.minute / 60.0 if k is not None else 99.0 for k in _kts],
+            ).sort_values(["_kt", "_conf", "_gp"], ascending=[True, False, False])
         except Exception:
             pass
         _total = len(_off)
 
         _top = _off
+        if "_st" not in _top.columns:
+            _top = _top.assign(_st="up", _hr=99.0)
 
-        # --- hero: the single best play, with its outcome distribution ----
-        _h = _top.iloc[0]
+        # --- hero: the next play to kick off (best stars if several start
+        # together); if everything has started, the best play of the day. ---
+        _up = _top[_top["_st"] == "up"]
+        if not _up.empty:
+            _hero_label = "NEXT UP"
+            _h = _up.iloc[0]
+        else:
+            _hero_label = "BEST PLAY TODAY"
+            _h = _top.sort_values(["_conf"], ascending=False, kind="stable").iloc[0]
+        # The disagreement itself, not a win-chance curve: at shrink 0 the
+        # app's own estimate is 50/50, and a curve shaded around the model's
+        # number claimed more than that.
         try:
-            _is_tot = str(_h.get("market_type", "")).upper() == "TOTAL"
-            if _is_tot:
-                _mu = float(_h.get("fair_total"))
-                _mk = float(_h.get("market_total"))
-                _sd = BASE_TOTAL_SD
-            else:
-                _mu = -float(_h.get("fair_home_spread"))
-                _mk = -float(_h.get("market_home_spread"))
-                _sd = BASE_MARGIN_SD
-            _hero_svg = _se_margin_curve_svg(_mu, _sd, _mk,
-                                             str(_h.get("home_team", "")),
-                                             str(_h.get("away_team", "")))
+            _hero_svg = _se_gap_bar_svg(_h)
         except Exception:
             _hero_svg = ""
 
@@ -24435,129 +24625,6 @@ def _render_home_page():
         except Exception:
             _score_html = ""
 
-        # Countdown alert when the best play is close to kickoff.
-        # --- today's board, geographically (top of page) ------------------
-        _board = st.session_state.get("cfb_v36_latest_card")
-        if not isinstance(_board, pd.DataFrame) or _board.empty:
-            _board = _se_load_board(_today)      # survives restarts
-        if isinstance(_board, pd.DataFrame) and not _board.empty:
-            _coords = _se_venue_coords()
-            _gv = {str(g.get("id")): str(g.get("venueId") or g.get("venue_id") or "")
-                   for g in _tg}
-            # The tracker always carries the real pick name ("Over 56.5"),
-            # unlike older board snapshots. Prefer it for official bets.
-            _seltxt = {}
-            try:
-                for _, _tr in _off.iterrows():
-                    _sv = str(_tr.get("selection", "") or "").strip()
-                    if _sv:
-                        _seltxt[str(_tr.get("game_id"))] = _sv
-            except Exception:
-                pass
-
-            _gmeta = {}
-            for g in _tg:
-                _k = kickoff_et(g)
-                _gmeta[str(g.get("id"))] = {
-                    "matchup": f'{g.get("awayTeam","")} @ {g.get("homeTeam","")}',
-                    "kick": _k.strftime("%-I:%M %p") if _k is not None else "TBD",
-                }
-            # Grey context dots come from the last built board; green dots come
-            # from the TRACKER so every official bet today is shown, not just
-            # the window that happens to be loaded.
-            _betgames = set()
-            for _, _t in _off.iterrows():
-                try:
-                    _ev = float(_t.get("expected_value"))
-                except Exception:
-                    _ev = 0.0
-                _gid = str(_t.get("game_id"))
-                _betgames.add(_gid)
-                _vid = _gv.get(_gid, "")
-                if _vid and _vid in _coords:
-                    _la, _lo = _coords[_vid]
-                    _gm = _gmeta.get(_gid, {})
-                    _pts.append({
-                        "lat": _la, "lon": _lo, "ev": _ev, "bet": True,
-                        "matchup": _gm.get("matchup", ""),
-                        "kick": _se_kick_label(_t),
-                        "pick": str(_t.get("selection", "") or "Bet"),
-                        "evtxt": f"{_se_conf_label(_se_conf(_t))} \u00b7 {_se_gap_text(_t)} off",
-                        "verdict": str(_t.get("verdict", "") or "BET"),
-                    })
-
-            for _, _b in _board.iterrows():
-                try:
-                    _ev = float(_b.get("expected_value"))
-                except Exception:
-                    continue
-                _isbet = str(_b.get("verdict", "")) in ("BET", "BEST BET")
-                try:
-                    _sc.append({"mkt": float(_b.get("market_display")),
-                                "ev": _ev, "bet": _isbet})
-                except Exception:
-                    pass
-                _gid = str(_b.get("game_id"))
-                if _gid in _betgames:
-                    continue                      # already plotted from tracker
-                _vid = _gv.get(_gid, "")
-                if _vid and _vid in _coords:
-                    _la, _lo = _coords[_vid]
-                    _gm = _gmeta.get(_gid, {})
-                    _pts.append({
-                        "lat": _la, "lon": _lo, "ev": _ev, "bet": False,
-                        "matchup": _gm.get("matchup", ""),
-                        "kick": _gm.get("kick", ""),
-                        "pick": _se_pick_label(_b, False),
-                        "evtxt": f"{_se_gap_text(_b)} off",
-                        "verdict": str(_b.get("verdict", "") or "PASS"),
-                    })
-
-        if _pts:
-            import pydeck as pdk
-            _mdf = pd.DataFrame(_pts)
-            _mdf["radius"] = [
-                (26000 + min(42000, abs(p["ev"]) * 400000)) if p["bet"] else 11000
-                for p in _pts
-            ]
-            _mdf["fill"] = [
-                [74, 224, 170, 220] if p["bet"] else [125, 150, 175, 120]
-                for p in _pts
-            ]
-
-            st.markdown('<div class="se-sec">TODAY\u2019S BOARD</div>',
-                        unsafe_allow_html=True)
-            st.pydeck_chart(pdk.Deck(
-                # Carto basemap — renders without a Mapbox token, unlike the
-                # mapbox:// styles which silently show no tiles at all.
-                map_style="dark",
-                initial_view_state=pdk.ViewState(
-                    latitude=float(_mdf["lat"].mean()),
-                    longitude=float(_mdf["lon"].mean()),
-                    zoom=3.2, pitch=0,
-                ),
-                layers=[pdk.Layer(
-                    "ScatterplotLayer", data=_mdf,
-                    get_position="[lon, lat]", get_fill_color="fill",
-                    get_radius="radius", pickable=True, auto_highlight=True,
-                )],
-                tooltip={
-                    "html": "<b>{pick}</b><br/>{matchup}<br/>"
-                            "{evtxt} &middot; {kick}<br/>"
-                            "<span style='color:#7fb4ff'>{verdict}</span>",
-                    "style": {"backgroundColor": "#0b1b2d", "color": "#e8eef6",
-                              "fontSize": "12px",
-                              "border": "1px solid rgba(120,154,188,.3)",
-                              "borderRadius": "8px"},
-                },
-            ), height=330)
-            _nb = sum(1 for p in _pts if p["bet"])
-            st.caption(
-                f"Green marks {_nb} {'bet' if _nb == 1 else 'bets'} today, "
-                f"sized by expected "
-                f"value. Grey dots are other games on the board. Tap for detail."
-            )
-
         # Soonest upcoming bet across the whole board, not just the hero.
         _soon, _soon_m = None, None
         for _, _rr in _off.iterrows():
@@ -24568,6 +24635,13 @@ def _render_home_page():
             if 0 < _m <= 90 and (_soon_m is None or _m < _soon_m):
                 _soon, _soon_m = _rr, _m
 
+        # The Next up card already counts down to this game; only alert
+        # when the soonest bet is a different one.
+        try:
+            if _soon is not None and _soon.name == _h.name:
+                _soon = None
+        except Exception:
+            pass
         if _soon is not None:
             _txt = f"{int(_soon_m)} min" if _soon_m >= 1 else "under a minute"
             st.markdown(
@@ -24595,7 +24669,7 @@ def _render_home_page():
                 )
 
         st.markdown(_SE_TIX_CSS, unsafe_allow_html=True)
-        st.markdown('<div class="se-sec">BEST PLAY TODAY</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="se-sec">{_hero_label}</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div class="se-hero-bet t{_se_conf(_h)}">'
             f'<div class="se-hero-glow"></div>'
@@ -24614,43 +24688,49 @@ def _render_home_page():
             + f'</div>',
             unsafe_allow_html=True,
         )
-        if _hero_svg:
-            _hm = html.escape(str(_h.get("home_team", "the home team")))
-            st.caption(
-                f"The curve is {_hm}'s final margin, so its sign is from the "
-                f"home side \u2014 the pick above is stated from the side being "
-                f"bet. Gold is the market number, green the model's, and the "
-                f"shaded area is where this bet covers."
+        # The whole day at a glance: every bet on one clock.
+        try:
+            _tl = _se_day_timeline_svg(_top, _now, _today)
+            if _tl:
+                st.markdown('<div class="se-sec" style="margin-top:18px">TODAY AT A GLANCE</div>'
+                            f'<div class="se-viz">{_tl}</div>', unsafe_allow_html=True)
+        except Exception:
+            pass
+
+        # The rest as a timeline: live games, then what is still to come by
+        # kickoff window, then finished plays tucked away at the bottom.
+        _rest_df = _top.drop(index=_h.name) if _h.name in _top.index else _top.iloc[1:]
+
+        def _se_section(title, df, cls=""):
+            if df.empty:
+                return
+            st.markdown(
+                f'<div class="se-tier-head {cls}">'
+                f'<span class="se-tier-name">{title}</span>'
+                f'<span class="se-tier-line"></span>'
+                f'<em>{len(df)}</em></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "".join(_se_ticket_html(r, _now, _today) for _, r in df.iterrows()),
+                unsafe_allow_html=True,
             )
 
-        # The rest, by star level, each level in kickoff order. Spreads and
-        # totals share one list; a chip on each ticket says which it is.
-        _rest_df = _top.iloc[1:].copy()
-        if "_conf" not in _rest_df.columns:
-            _rest_df["_conf"] = 1
-        for _lv, _nm in ((3, "HIGH"), (2, "MEDIUM"), (1, "LOW")):
-            _g = _rest_df[_rest_df["_conf"] == _lv]
-            if _g.empty:
-                continue
-            st.markdown(
-                f'<div class="se-tier-head t{_lv}">'
-                f'<span class="se-tier-stars">{"★" * _lv}</span>'
-                f'<span class="se-tier-name">{_nm}</span>'
-                f'<span class="se-tier-line"></span>'
-                f'<em>{len(_g)}</em></div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "".join(_se_ticket_html(r, _now, _today) for _, r in _g.head(6).iterrows()),
-                unsafe_allow_html=True,
-            )
-            if len(_g) > 6:
-                with st.expander(f"Show {len(_g) - 6} more", expanded=False):
-                    st.markdown(
-                        "".join(_se_ticket_html(r, _now, _today)
-                                for _, r in _g.iloc[6:].iterrows()),
-                        unsafe_allow_html=True,
-                    )
+        _upr = _rest_df[_rest_df["_st"] == "up"]
+        _se_section("\u25cf LIVE NOW", _rest_df[_rest_df["_st"] == "live"], "live")
+        # Same windows as the Slate's kickoff filter.
+        _se_section("EARLY \u00b7 BEFORE 3:30", _upr[_upr["_hr"] < 15.5])
+        _se_section("MIDDAY \u00b7 3:30\u20137:00", _upr[(_upr["_hr"] >= 15.5) & (_upr["_hr"] < 19)])
+        _se_section("NIGHT \u00b7 7:00+", _upr[(_upr["_hr"] >= 19) & (_upr["_hr"] < 99)])
+        _se_section("TIME TBD", _upr[_upr["_hr"] >= 99])
+        _done = _rest_df[_rest_df["_st"] == "done"]
+        if not _done.empty:
+            with st.expander(f"Earlier today \u00b7 {len(_done)} finished",
+                             expanded=False):
+                st.markdown(
+                    "".join(_se_ticket_html(r, _now, _today) for _, r in _done.iterrows()),
+                    unsafe_allow_html=True,
+                )
 
 
     # --- record ------------------------------------------------------------
@@ -24700,10 +24780,11 @@ def _render_home_page():
             'the right side of the spread <b>51.1%</b> of the time. You need '
             '<b>52.4%</b> to break even at -110.</p>'
             '<p><b>What that means.</b> Public power ratings do not beat the closing '
-            'line, because the market already prices them in. So this app shrinks the '
-            "model's disagreement with the market to a quarter of what it claims, and "
-            'only calls a bet official when something still clears the bar '
-            'afterwards.</p>'
+            'line, because the market already prices them in. Measured against real '
+            "results, the model's disagreements have not predicted anything yet, so "
+            'the app prices every bet at the market\'s odds (about 50%) and ranks '
+            'picks by stars instead. The tracker\'s record by star level is the test '
+            'of whether the stars mean anything.</p>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -24854,6 +24935,16 @@ def _render_record_analysis(_t, _s, _clv):
             f'<b>{_label}</b><em>{_sub}</em></div>',
             unsafe_allow_html=True,
         )
+
+    try:
+        _sr = _se_star_record_html(_g)
+        if _sr:
+            st.markdown('<div class="se-sec" style="margin-top:16px">DO THE STARS WORK?</div>'
+                        + _sr, unsafe_allow_html=True)
+            st.caption("Win rate by star level against the 52.4% you need at -110. "
+                       "If the stars mean something, the gold row pulls ahead over time.")
+    except Exception:
+        pass
 
     with st.expander("What this record tells us", expanded=False):
         _ci = _se_winrate_ci_svg(_s["wins"], _s["losses"])
