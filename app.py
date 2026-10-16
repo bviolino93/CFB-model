@@ -23995,8 +23995,19 @@ def _se_day_timeline_svg(df, now, day, w=340, h=86):
         pts.append((hr, _se_conf(r), done, str(r.get("selection", ""))))
     if not pts:
         return ""
-    lo = min(11.0, math.floor(min(p[0] for p in pts)))
-    hi = max(24.0, math.ceil(max(p[0] for p in pts)) + 0.5)
+    # Zoom to the bets: a night-only card used to sit in one clump at the
+    # right of an 11am-midnight axis. Pad each side and keep at least 4 hours.
+    _a, _b = min(p[0] for p in pts), max(p[0] for p in pts)
+    try:
+        _nh = now.hour + now.minute / 60.0
+        if str(now.date()) == str(day)[:10] and _a - 3 <= _nh <= _b:
+            _a = min(_a, _nh)
+    except Exception:
+        pass
+    lo, hi = math.floor(_a - 1), math.ceil(_b + 1)
+    while hi - lo < 4:
+        lo, hi = lo - 0.5, hi + 0.5
+    lo, hi = math.floor(lo), math.ceil(hi)
     ml, mr = 14, 14
     X = lambda v: ml + (w - ml - mr) * (v - lo) / (hi - lo)
     y = 44
@@ -24005,7 +24016,8 @@ def _se_day_timeline_svg(df, now, day, w=340, h=86):
            f'aria-label="{len(pts)} bets across the day by kickoff time">',
            f'<line x1="{ml}" y1="{y}" x2="{w-mr}" y2="{y}" stroke="#7f97ae" '
            f'stroke-opacity=".25" stroke-width="2" stroke-linecap="round"/>']
-    for t in range(int(math.ceil(lo)), int(hi) + 1, 3):
+    _step = 1 if hi - lo <= 7 else (2 if hi - lo <= 12 else 3)
+    for t in range(int(math.ceil(lo)), int(hi) + 1, _step):
         tx = X(t)
         lab = {0: "12a", 12: "12p"}.get(t % 24, f"{(t % 12) or 12}{'p' if 12 <= t < 24 else 'a'}")
         out.append(f'<line x1="{tx:.1f}" y1="{y+5}" x2="{tx:.1f}" y2="{y+10}" '
