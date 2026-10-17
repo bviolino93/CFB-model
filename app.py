@@ -23948,6 +23948,20 @@ _SE_TIX_CSS = """<style>
 .se-row-side em{font-style:normal;font-size:.5rem;font-weight:900;letter-spacing:.1em;
   color:#7f97ae;border:1px solid rgba(120,154,188,.3);border-radius:4px;padding:1px 4px}
 .se-row-side em.inj{color:#f2748a;border-color:rgba(242,116,138,.55)}
+.se-rowd{border-bottom:1px solid rgba(120,154,188,.08)}
+.se-rowd:last-child{border-bottom:none}
+.se-rowd > summary{list-style:none;cursor:pointer}
+.se-rowd > summary::-webkit-details-marker{display:none}
+.se-rowd > summary .se-row{border-bottom:none}
+.se-rowd > summary .se-row-side em.inj::after{content:" ▾"}
+.se-rowd[open] > summary .se-row-side em.inj{background:rgba(242,116,138,.18)}
+.se-inj-pan{margin:0 4px 10px 12px;padding:9px 11px;border-radius:10px;
+  background:rgba(242,116,138,.08);border:1px solid rgba(242,116,138,.3)}
+.se-inj-pan b{display:block;font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;
+  color:#f2748a;font-weight:900}
+.se-inj-pan ul{margin:6px 0 4px;padding:0 0 0 16px}
+.se-inj-pan li{font-size:.74rem;color:#f3dfe3;line-height:1.45}
+.se-inj-pan small{font-size:.6rem;color:#a98a92}
 .se-row-stars{font-size:.72rem;color:var(--tc);min-width:40px;text-align:right;
   white-space:nowrap;letter-spacing:-.02em}
 .se-row-gap{flex:0 0 30px;text-align:right;font-size:.78rem;font-weight:800;color:#dfe8f2;
@@ -24299,7 +24313,7 @@ def _se_row_html(r, now, day=None):
         gap = _se_gap_text(r).replace(" pts", "")
     except Exception:
         gap = ""
-    return (
+    _row = (
         f'<div class="se-row t{lv} {st_}">'
         f'<span class="se-row-time">{html.escape(t)}'
         + (f'<i class="{tcls}">{tag}</i>' if tag else "")
@@ -24314,6 +24328,17 @@ def _se_row_html(r, now, day=None):
         + f'<span class="se-row-stars">{"★" * lv}</span>'
         f'<span class="se-row-gap">{html.escape(gap)}</span></span>'
         f'</div>'
+    )
+    if not inj:
+        return _row
+    # Phones have no hover, so a tooltip never shows. A native disclosure
+    # works on tap with no JavaScript: tap the row, the injury opens below.
+    items = "".join(f'<li>{html.escape(x.strip())}</li>' for x in inj.split("; ") if x.strip())
+    return (
+        f'<details class="se-rowd"><summary>{_row}</summary>'
+        f'<div class="se-inj-pan"><b>Injury adjustment applied</b><ul>{items}</ul>'
+        f'<small>− = team made worse by that many points; + = better.</small></div>'
+        f'</details>'
     )
 
 
