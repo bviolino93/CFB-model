@@ -23909,6 +23909,34 @@ _SE_TIX_CSS = """<style>
 .se-tix-stars{font-size:.78rem;letter-spacing:.04em;color:var(--tc);
   text-shadow:0 0 10px var(--tc);line-height:1}
 .se-tier-head.live .se-tier-name{color:#4ae0aa}
+.se-ml{margin:18px 0 6px;padding:13px 14px;border-radius:16px;
+  background:radial-gradient(120% 140% at 100% 0%,rgba(255,217,122,.14),transparent 55%),rgba(12,26,44,.7);
+  border:1px solid rgba(255,217,122,.28)}
+.se-ml-k{font-size:.58rem;letter-spacing:.16em;font-weight:900;color:#ffd97a}
+.se-ml-k span{color:#71879d;letter-spacing:.08em;margin-left:6px;font-weight:700}
+.se-ml-main{display:flex;align-items:baseline;gap:8px}
+.se-ml-main b{font-size:.92rem;color:#f2f7fc;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.se-ml-main em{font-style:normal;font-size:.86rem;font-weight:900;color:#ffd97a;
+  font-variant-numeric:tabular-nums}
+.se-ml small{display:block;font-size:.64rem;color:#7f97ae;margin-top:1px}
+.se-ml-row{display:flex;gap:10px;padding:10px 0;border-top:1px solid rgba(255,217,122,.1)}
+.se-ml-row:first-of-type{border-top:none}
+.se-ml-n{flex:0 0 20px;height:20px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;font-size:.62rem;font-weight:900;color:#ffd97a;
+  background:rgba(255,217,122,.1);border:1px solid rgba(255,217,122,.3);margin-top:2px}
+.se-ml-body{flex:1;min-width:0}
+.se-ml-gap{margin-left:auto;font-size:.7rem;font-weight:900;color:#4ae0aa}
+.se-ml-bar{position:relative;height:6px;border-radius:99px;margin:7px 0 4px;
+  background:rgba(120,154,188,.15);overflow:hidden}
+.se-ml-bar i{position:absolute;left:0;top:0;bottom:0;background:#ffd97a;border-radius:99px 0 0 99px}
+.se-ml-bar u{position:absolute;top:0;bottom:0;background:#4ae0aa;box-shadow:0 0 10px #4ae0aa}
+.se-ml-leg{display:flex;justify-content:space-between;font-size:.56rem;color:#71879d;font-weight:700}
+.se-ml-bars{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.se-ml-bars div{display:flex;align-items:center;gap:8px}
+.se-ml-bars span{flex:0 0 46px;font-size:.6rem;color:#8ea4ba;font-weight:800;letter-spacing:.06em}
+.se-ml-bars i{flex:1;height:6px;border-radius:99px;background:rgba(120,154,188,.15);position:relative}
+.se-ml-bars u{position:absolute;left:0;top:0;bottom:0;border-radius:99px;text-decoration:none}
+.se-ml-bars b{flex:0 0 34px;text-align:right;font-size:.74rem;color:#dfe8f2}
 .se-lv{margin:-4px 0 6px 12px;padding:8px 10px 9px;border-radius:12px;
   background:rgba(74,224,170,.06);border:1px solid rgba(74,224,170,.18)}
 .se-lv-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
@@ -24295,6 +24323,130 @@ def _se_live_strip_html(row, live):
         f'<b style="color:{col}">{pct:.0f}%</b><small>to cover</small></div>'
         f'</div>'
     )
+
+
+ML_TOP_TAB = "ml_top"
+ML_TOP_COLS = ["date", "pick", "odds", "model_wp", "market_wp", "matchup", "kickoff"]
+
+
+def _se_pick_top_ml(rows):
+    """The moneyline where the model's win chance most exceeds the market's.
+    Odds limited to -300..+300 so it is never a huge favorite or a lottery
+    ticket. Not tracked: the app's measured edge on moneylines is zero."""
+    rows = [r for r in rows or [] if r.get("model_wp") is not None
+            and r["model_wp"] - r["market_wp"] > 0.03]
+    rows.sort(key=lambda r: -(r["model_wp"] - r["market_wp"]))
+    out, seen = [], set()
+    for r in rows:
+        if r.get("matchup") in seen:
+            continue
+        seen.add(r.get("matchup"))
+        out.append(r)
+        if len(out) == 5:
+            break
+    return out or None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _se_ml_top_rows(_bust=0):
+    ws = _v401_sheet(tab=ML_TOP_TAB)
+    if ws is None:
+        raise RuntimeError("no sheet")
+    return ws.get_all_records()
+
+
+def _se_load_ml_top(day):
+    d = (st.session_state.get("se_ml_top") or {}).get(str(day))
+    if d:
+        return d
+    out = []
+    try:
+        for r in _se_ml_top_rows():
+            if str(r.get("date"))[:10] == str(day)[:10] and str(r.get("pick") or "").strip():
+                out.append({"pick": r["pick"], "odds": int(float(r["odds"])),
+                            "model_wp": float(r["model_wp"]), "market_wp": float(r["market_wp"]),
+                            "matchup": r.get("matchup", ""), "kickoff": r.get("kickoff", "")})
+    except Exception:
+        pass
+    out.sort(key=lambda r: -(r["model_wp"] - r["market_wp"]))
+    return out or None
+
+
+def _se_save_ml_top(day, d):
+    if not _se_is_owner():
+        return False
+    ws = _v401_sheet(tab=ML_TOP_TAB)
+    if ws is None:
+        return False
+    try:
+        old = [r for r in ws.get_all_records() if str(r.get("date"))[:10] != str(day)[:10]]
+        old = old[-300:]
+        new = [{"date": str(day)[:10], **{k: x.get(k, "") for k in ML_TOP_COLS[1:]}} for x in d]
+        body = [ML_TOP_COLS] + [[r.get(c, "") for c in ML_TOP_COLS] for r in old + new]
+        ws.clear()
+        ws.update(body, value_input_option="RAW")
+        _se_ml_top_rows.clear()
+        return True
+    except Exception:
+        return False
+
+
+def _se_ml_card_html(d):
+    """Top moneylines: model vs market win chance, biggest gap first."""
+    if not d:
+        return ""
+    rows = []
+    for i, x in enumerate(d, start=1):
+        o = int(x["odds"])
+        mw, kw = x["model_wp"] * 100, x["market_wp"] * 100
+        rows.append(
+            '<div class="se-ml-row">'
+            f'<span class="se-ml-n">{i}</span>'
+            '<div class="se-ml-body">'
+            f'<div class="se-ml-main"><b>{html.escape(str(x["pick"]))}</b><em>{o:+d}</em>'
+            f'<span class="se-ml-gap">+{mw - kw:.0f}%</span></div>'
+            f'<small>{html.escape(str(x.get("matchup", "")))}'
+            + (f' \u00b7 {html.escape(str(x.get("kickoff", "")))}' if x.get("kickoff") else "") +
+            '</small>'
+            '<div class="se-ml-bar">'
+            f'<i style="width:{kw:.0f}%"></i><u style="left:{kw:.0f}%;width:{max(mw - kw, 0):.0f}%"></u>'
+            '</div>'
+            f'<div class="se-ml-leg"><span>market {kw:.0f}%</span><span>model {mw:.0f}%</span></div>'
+            '</div></div>'
+        )
+    return ('<div class="se-ml"><div class="se-ml-k">TOP MONEYLINES <span>not tracked</span></div>'
+            + "".join(rows) + '</div>')
+
+
+def _se_share_text(df, day, ml=None, min_stars=1):
+    """Plain text of the card for texting: grouped by kickoff, stars shown."""
+    try:
+        dl = pd.to_datetime(str(day)[:10]).strftime("%a %-m/%-d")
+    except Exception:
+        dl = str(day)
+    lines = [f"Saturday Edge · {dl}"]
+    x = df.copy()
+    if "_conf" not in x.columns:
+        x["_conf"] = [_se_conf(r) for _, r in x.iterrows()]
+    x = x[x["_conf"] >= min_stars]
+    if "_kt" in x.columns:
+        x = x.sort_values(["_kt", "_conf"], ascending=[True, False])
+    last = None
+    for _, r in x.iterrows():
+        kd = _se_kick_dt(r, day)
+        t = kd.strftime("%-I:%M %p") if kd is not None else "TBD"
+        if t != last:
+            lines.append("")
+            lines.append(t)
+            last = t
+        sel = str(r.get("selection", ""))
+        if str(r.get("market_type", "")).upper() == "TOTAL":
+            sel += f" ({r.get('away_team', '')}/{r.get('home_team', '')})"
+        lines.append(f"{'★' * int(r.get('_conf') or 0):<3} {sel}")
+    if ml:
+        lines += ["", "Moneylines:"] + [f"  {m['pick']} {int(m['odds']):+d}" for m in ml]
+    lines += ["", f"{len(x)} plays · 1u each"]
+    return "\n".join(lines)
 
 
 def _se_row_html(r, now, day=None):
@@ -25160,6 +25312,30 @@ def _render_home_page():
             with st.expander(f"Earlier \u00b7 {len(_done)} finished", expanded=False):
                 st.markdown(_rows(_done), unsafe_allow_html=True)
 
+        _mlt = _se_load_ml_top(_view_date)
+        if _mlt:
+            st.markdown(_se_ml_card_html(_mlt), unsafe_allow_html=True)
+            st.caption("The five moneylines where the model's win chance most beats "
+                       "the price (one per game, odds -300 to +300). For fun, not "
+                       "added to your record.")
+
+        with st.expander("\U0001F4F2 Text the picks", expanded=False):
+            _which = st.radio("Which plays", ["All", "\u2605\u2605 and up", "\u2605\u2605\u2605 only"],
+                              horizontal=True, key="se_share_which",
+                              label_visibility="collapsed")
+            _ms = {"All": 1, "\u2605\u2605 and up": 2}.get(_which, 3)
+            _inc_ml = st.checkbox("Include the top moneylines", value=bool(_mlt),
+                                  key="se_share_ml", disabled=not _mlt)
+            _txt = _se_share_text(_top, _view_date, _mlt if _inc_ml else None, _ms)
+            st.code(_txt, language=None)
+            st.caption("Tap the copy icon on the box, or send it straight to Messages.")
+            try:
+                from urllib.parse import quote as _q
+                st.link_button("Open in Messages", "sms:&body=" + _q(_txt),
+                               use_container_width=True)
+            except Exception:
+                pass
+
 
     # --- record ------------------------------------------------------------
     try:
@@ -25676,6 +25852,7 @@ if run_mode == "Full Slate":
 
         slate_rows = []
         _ml_flags = []
+        _ml_all = []   # every moneyline, for the "top moneyline" pick
 
         # Fit/load the historical residual correction once per slate run,
         # not once for every matchup.
@@ -25874,6 +26051,18 @@ if run_mode == "Full Slate":
                 _mi = implied_prob(_mo)
                 if _mi is None:
                     continue
+                try:
+                    if (-300 <= int(_mo) <= 300
+                            and abs(float(market.get("home_spread") or 0)) <= V50_MAX_SPREAD
+                            and not gp.get("fcs_fallback_used", False)):
+                        _ml_all.append({
+                            "matchup": f"{gp['away']} @ {gp['home']}",
+                            "pick": _mn, "odds": int(_mo),
+                            "model_wp": float(_mp), "market_wp": float(_mi),
+                            "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
+                        })
+                except Exception:
+                    pass
                 _mps = _mi + V50_SHRINK * (_mp - _mi)
                 _mev = _se_ev_from_prob(_mps, _mo)
                 if _mev is None or _mev < V50_MIN_EV:
@@ -26180,6 +26369,15 @@ if run_mode == "Full Slate":
         # historical moneyline feed is audited.
         st.session_state.setdefault("se_ml_flags", {})
         st.session_state["se_ml_flags"][str(selected_date)] = list(_ml_flags)
+        try:
+            _mt = _se_pick_top_ml(_ml_all)
+            if _mt:
+                st.session_state.setdefault("se_ml_top", {})[str(selected_date)] = _mt
+                _mk = f"se_ml_top_saved_{selected_date}_" + "|".join(x["pick"] for x in _mt)
+                if not st.session_state.get(_mk) and _se_save_ml_top(selected_date, _mt):
+                    st.session_state[_mk] = True
+        except Exception:
+            pass
 
         if _ml_flags:
             _mlf = sorted(_ml_flags, key=lambda r: -r["ev"])
