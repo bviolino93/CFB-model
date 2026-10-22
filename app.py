@@ -27303,6 +27303,73 @@ if True:
             "a small edge only moves the win probability a little."
         )
 
+    # ---- Model's best leans (UNOFFICIAL) ---------------------------------
+    # V50_SHRINK = 0 makes the calibrated board read 50% on every spread and
+    # total, so it can never say which side the model actually likes. This
+    # section ranks markets by the model's RAW, unshrunk probability. It does
+    # not touch verdicts, the Slate, or the official record.
+    _leans = []
+    try:
+        _raw_pairs = [
+            ("Spread",
+             (f"{p['home']} {float(home_spread):+.1f}", hc, home_spread_odds),
+             (f"{p['away']} {float(away_spread):+.1f}", ac, away_spread_odds)),
+            ("Total",
+             (f"Over {float(market_total):g}", op, over_odds),
+             (f"Under {float(market_total):g}", up, under_odds)),
+        ]
+        if ml_pulled:
+            _raw_home_wp = 1.0 - NormalDist(
+                mu=_fund_home_margin, sigma=max(_fund_margin_sd, 1e-6)
+            ).cdf(0)
+            _raw_pairs.append(
+                ("Moneyline",
+                 (f"{p['home']} ML", _raw_home_wp, home_ml),
+                 (f"{p['away']} ML", 1.0 - _raw_home_wp, away_ml))
+            )
+        for _fam, _a, _b in _raw_pairs:
+            _sides = []
+            for (_nm, _pr, _od) in (_a, _b):
+                _imp = implied_prob(_od)
+                _ev = _se_ev_from_prob(_pr, _od)
+                if _imp is None or _ev is None:
+                    continue
+                _sides.append((_fam, _nm, _od, float(_pr),
+                               float(_pr) - _imp, float(_ev), fair_ml(_pr)))
+            if _sides:
+                # Only the side the model prefers in each market.
+                _leans.append(max(_sides, key=lambda s: s[5]))
+    except Exception:
+        _leans = []
+    _leans.sort(key=lambda s: -s[5])
+
+    if _leans:
+        st.markdown('<div class="section-kicker">MODEL’S BEST LEANS — UNOFFICIAL</div>',
+                    unsafe_allow_html=True)
+        _top = _leans[0]
+        if _top[5] > 0:
+            st.success(
+                f"**Top lean: {_top[1]} ({int(_top[2]):+d}).** Raw model "
+                f"{_top[3]*100:.1f}% • {_top[5]*100:+.1f}% EV • fair {int(_top[6]):+d}."
+            )
+        else:
+            st.info("The model's raw numbers don't beat the price on any market here.")
+        for (_fam, _nm, _od, _pr, _e, _ev, _fr) in _leans:
+            render_market_row("", f"{_fam}: {_nm}", _od, prob=_pr, edge=_e, ev=_ev, fair=_fr)
+        _oor_note = ""
+        try:
+            if abs(float(home_spread)) > V50_MAX_SPREAD:
+                _oor_note = (f" The spread is beyond {V50_MAX_SPREAD:.0f} points, "
+                             "where the ratings are least reliable.")
+        except Exception:
+            pass
+        st.caption(
+            "Ranked by the model's raw, uncalibrated opinion, best side of each "
+            "market only. Backtests show these leans have not beaten the closing "
+            "line, so treat them as the model's view, not an edge. Not tracked."
+            + _oor_note
+        )
+
     st.markdown('<div class="section-kicker">HOW THE MODEL PRICES THIS GAME</div>', unsafe_allow_html=True)
     st.caption("Every market on this game, best expected value first.")
     st.markdown('<div class="market-board">', unsafe_allow_html=True)
