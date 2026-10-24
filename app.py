@@ -16724,6 +16724,7 @@ V401_TRACKER_COLUMNS = [
     "filter_match",            # passed the lab's best filter (blank = no lab)
     "inj_adj",                 # your injury adjustment that touched this play
     "bc_reason",               # the bettor's checklist verdict, in words
+    "bc_floor",                # worst number still worth betting
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -17248,6 +17249,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "closing_captured_at": None,
             "inj_adj": str(r.get("inj_adj") or "") if pd.notna(r.get("inj_adj", np.nan)) else "",
             "bc_reason": str(r.get("bc_reason") or "") if pd.notna(r.get("bc_reason", np.nan)) else "",
+            "bc_floor": fnum("bc_floor"),
             # Save the card's own filter_match, not the lab's rule flag: an
             # unproven lab sets the flag False, which capped every frozen
             # bet at two stars while the live card showed three.
@@ -18986,6 +18988,7 @@ def _bc_check(r):
     f = (b * p - q) / b if b > 0 else 0.0
     cap = BC_MAX_UNITS if trust == 1.0 else BC_MAX_UNITS_UNMEASURED
     units = min(cap, math.floor(max(0.0, f) * BC_KELLY * 100 * 2) / 2)
+    floor = None
     if fails:
         verdict, reason, units = "PASS", fails[0], 0.0
     elif ev < BC_MIN_EV or units < 0.5:
@@ -18997,13 +19000,15 @@ def _bc_check(r):
         why = [t for s_, t in checks if s_ == "good" and not t.startswith("Honest")]
         reason = (f"Bet {units:g}u: {p:.0%} to win at {o:+.0f} ({ev:+.1%} expected)."
                   + (f" {why[0]}" if why else ""))
-        # A book outside the feed: say the worst number still worth betting.
-        if not priced_at_book:
-            floor = _bc_floor(honest, line, mt, side, b)
-            if floor is not None:
-                where = f" at {book}" if book else ""
-                reason += f" Still a bet{where} down to {_bc_fmt(floor, mt)}; pass past that."
+        # The worst number still worth betting, for a book outside the feed.
+        floor = _bc_floor(honest, line, mt, side, b)
+        if floor is not None and not priced_at_book:
+            where = f" at {book}" if book else ""
+            reason += f" Still a bet{where} down to {_bc_fmt(floor, mt)}; pass past that."
+        if floor is None:
+            floor = line
     return {"bc_verdict": verdict, "bc_reason": reason, "bc_units": float(units),
+            "bc_line": float(line), "bc_floor": float(floor) if floor is not None else np.nan,
             "bc_p": float(p), "bc_ev": float(ev),
             "bc_checks": json.dumps([{"s": s_, "t": t} for s_, t in checks])}
 
@@ -19070,6 +19075,34 @@ def _bc_apply(official):
     return out[out["bc_verdict"].eq("BET")].copy(), out[out["bc_verdict"].ne("BET")].copy()
 
 
+def _bc_simple_text(r):
+    """One line: pick, units, and the worst number still worth betting."""
+    try:
+        u = float(r.get("bc_units", r.get("suggested_units")))
+    except Exception:
+        u = float("nan")
+    if not math.isfinite(u) or u <= 0:
+        return ""
+    mt = str(r.get("market_type") or "SPREAD").upper()
+    side = str(r.get("pick_side") or "").upper()
+    fl = _v3_num(r.get("bc_floor"))
+    book = _bc_my_book() or "your book"
+    txt = f"{u:g}u"
+    if np.isfinite(fl):
+        num = (f"{'Over' if side == 'OVER' else 'Under'} {fl:g}" if mt == "TOTAL" else f"{fl:+g}")
+        txt += f" \u00b7 OK at {book} down to {num}"
+    return txt
+
+
+def _bc_simple_list(official):
+    rows = []
+    for _, r in official.iterrows():
+        t = _bc_simple_text(r)
+        rows.append(f'<div class="se-bc-line"><b>{html.escape(str(r.get("selection", "")))}</b>'
+                    f'<span>{html.escape(t)}</span></div>')
+    return '<div class="se-bc-list">' + "".join(rows) + "</div>" if rows else ""
+
+
 BC_ICON = {"good": "✔", "ok": "•", "info": "ℹ", "warn": "⚠", "fail": "✖"}
 
 
@@ -19096,6 +19129,9 @@ def _bc_html(r, compact=False):
 BC_CSS = """<style>
 .se-bc-reason{margin-top:8px;font-size:.86rem;font-weight:700;color:#dbe7f5}
 .se-bc-checks{margin-top:6px;font-size:.78rem;line-height:1.45;color:#9fb3c8}
+.se-bc-list{margin:6px 0 12px}
+.se-bc-line{display:flex;justify-content:space-between;gap:10px;padding:10px 2px;border-bottom:1px solid rgba(255,255,255,.08);font-size:1rem}
+.se-bc-line span{color:#9fb3c8;text-align:right}
 .se-bc-good{color:#5fd39a}.se-bc-warn{color:#f2c14e}.se-bc-fail{color:#ff7a7a}
 </style>"""
 
@@ -19540,157 +19576,159 @@ def _render_v36_live_card(card, selected_date):
             <div class="ge-official-head">
               <div class="ge-check">✓</div>
               <div><div class="ge-section-title">Bets</div>
-              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 sized by the bettor's checklist.</div></div>
+              <div class="ge-section-sub">Bet these at the size shown, only if your book has the same number or better.</div></div>
               <div class="ge-count">{len(official)} {'PLAY' if len(official)==1 else 'PLAYS'}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        for i, (_, r) in enumerate(official.iterrows(), start=1):
-            _cf = int(r.get("_conf") or 1)
-            verdict = _se_conf_label(_cf)
-            market_type = str(r.get("market_type") or "SPREAD").upper()
-            cls = "best" if _cf == 3 else "bet"
+        st.markdown(BC_CSS + _bc_simple_list(official), unsafe_allow_html=True)
+        with st.expander("Why each bet", expanded=False):
+            for i, (_, r) in enumerate(official.iterrows(), start=1):
+                _cf = int(r.get("_conf") or 1)
+                verdict = _se_conf_label(_cf)
+                market_type = str(r.get("market_type") or "SPREAD").upper()
+                cls = "best" if _cf == 3 else "bet"
 
-            # Line shopping: best number available across books.
-            _shop = ""
-            try:
-                _prov = json.loads(r.get("provider_rows_json") or "[]")
-                _bv, _bk, _n, _wv = best_available_line(
-                    _prov, market_type, r.get("pick_side")
-                )
-                if _bv is not None and _n > 1:
-                    _gain = abs(float(_bv) - float(_wv))
-                    _extra = (
-                        f" · {_gain:.1f} pts better than the worst price"
-                        if _gain >= 0.5 else ""
-                    )
-                    _shop = (
-                        f'<div class="ge-shop">Best number: <b>{_bv:+.1f}</b> at '
-                        f'{html.escape(str(_bk))} <span>({_n} books{_extra})</span></div>'
-                    )
-            except Exception:
+                # Line shopping: best number available across books.
                 _shop = ""
-
-            # Warning strip: market movement against this pick, same-game
-            # correlation, and anything you flagged by hand. All advisory —
-            # none of it changes the model's numbers or the frozen card.
-            _inj = ""
-            try:
-                _warns = []
-                _neutral = []
-
-                # 1. Market movement since open. ALWAYS shown, so a blank
-                # card can never be mistaken for a broken check.
                 try:
-                    _prov_mv = json.loads(r.get("provider_rows_json") or "[]")
-                    _mv, _mv_open, _mv_now, _mv_n = line_move_against(
-                        _prov_mv, market_type, r.get("pick_side")
+                    _prov = json.loads(r.get("provider_rows_json") or "[]")
+                    _bv, _bk, _n, _wv = best_available_line(
+                        _prov, market_type, r.get("pick_side")
                     )
-                    _mv_gate = (LINE_MOVE_FLAG_TOTAL if market_type == "TOTAL"
-                                else LINE_MOVE_FLAG_SPREAD)
-                    if _mv is None:
+                    if _bv is not None and _n > 1:
+                        _gain = abs(float(_bv) - float(_wv))
+                        _extra = (
+                            f" · {_gain:.1f} pts better than the worst price"
+                            if _gain >= 0.5 else ""
+                        )
+                        _shop = (
+                            f'<div class="ge-shop">Best number: <b>{_bv:+.1f}</b> at '
+                            f'{html.escape(str(_bk))} <span>({_n} books{_extra})</span></div>'
+                        )
+                except Exception:
+                    _shop = ""
+
+                # Warning strip: market movement against this pick, same-game
+                # correlation, and anything you flagged by hand. All advisory —
+                # none of it changes the model's numbers or the frozen card.
+                _inj = ""
+                try:
+                    _warns = []
+                    _neutral = []
+
+                    # 1. Market movement since open. ALWAYS shown, so a blank
+                    # card can never be mistaken for a broken check.
+                    try:
+                        _prov_mv = json.loads(r.get("provider_rows_json") or "[]")
+                        _mv, _mv_open, _mv_now, _mv_n = line_move_against(
+                            _prov_mv, market_type, r.get("pick_side")
+                        )
+                        _mv_gate = (LINE_MOVE_FLAG_TOTAL if market_type == "TOTAL"
+                                    else LINE_MOVE_FLAG_SPREAD)
+                        if _mv is None:
+                            _neutral.append(
+                                f"Line move: no opening number reported "
+                                f"({len(_prov_mv)} books on file)"
+                            )
+                        elif _mv >= _mv_gate:
+                            _warns.append(
+                                f"<b>MARKET MOVED {_mv:.1f} PTS AGAINST</b> "
+                                f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
+                                f"{_mv_n} books) \u2014 the market may know "
+                                f"something the model doesn't"
+                            )
+                        else:
+                            _dir = "against" if _mv >= 0 else "in favour"
+                            _neutral.append(
+                                f"Line move: {abs(_mv):.1f} pts {_dir} "
+                                f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
+                                f"{_mv_n} books)"
+                            )
+                    except Exception as _mv_err:
                         _neutral.append(
-                            f"Line move: no opening number reported "
-                            f"({len(_prov_mv)} books on file)"
+                            f"Line move: check failed "
+                            f"({html.escape(str(_mv_err)[:60])})"
                         )
-                    elif _mv >= _mv_gate:
+
+                    # 2. Your own adjustment, if it touched this pick.
+                    _adj_note = str(r.get("adj_note") or "").strip()
+                    if _adj_note:
+                        if _adj_note.startswith("KILLED"):
+                            _warns.append(f"<b>{html.escape(_adj_note)}</b>")
+                        else:
+                            _warns.append(html.escape(_adj_note))
+
+                    # 2b. Your saved injuries, if they moved this play.
+                    _inj_note = str(r.get("inj_adj") or "").strip()
+                    if _inj_note and _inj_note.lower() != "nan":
+                        _warns.append(f"<b>Injury applied:</b> {html.escape(_inj_note)}")
+
+                    # 3. Kickoff conditions, when notable.
+                    _wx_note = str(r.get("weather_note") or "").strip()
+                    if _wx_note:
+                        if _wx_note.startswith("OVER suppressed"):
+                            _warns.append(f"<b>{html.escape(_wx_note)}</b>")
+                        else:
+                            _neutral.append(f"Kickoff: {html.escape(_wx_note)}")
+
+                    # 4. Is this game carrying more than one official play?
+                    _gid_n = _game_counts.get(str(r.get("game_id")), 0)
+                    if _gid_n > 1:
                         _warns.append(
-                            f"<b>MARKET MOVED {_mv:.1f} PTS AGAINST</b> "
-                            f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
-                            f"{_mv_n} books) \u2014 the market may know "
-                            f"something the model doesn't"
-                        )
-                    else:
-                        _dir = "against" if _mv >= 0 else "in favour"
-                        _neutral.append(
-                            f"Line move: {abs(_mv):.1f} pts {_dir} "
-                            f"(open {_mv_open:+.1f} \u2192 now {_mv_now:+.1f}, "
-                            f"{_mv_n} books)"
-                        )
-                except Exception as _mv_err:
-                    _neutral.append(
-                        f"Line move: check failed "
-                        f"({html.escape(str(_mv_err)[:60])})"
-                    )
-
-                # 2. Your own adjustment, if it touched this pick.
-                _adj_note = str(r.get("adj_note") or "").strip()
-                if _adj_note:
-                    if _adj_note.startswith("KILLED"):
-                        _warns.append(f"<b>{html.escape(_adj_note)}</b>")
-                    else:
-                        _warns.append(html.escape(_adj_note))
-
-                # 2b. Your saved injuries, if they moved this play.
-                _inj_note = str(r.get("inj_adj") or "").strip()
-                if _inj_note and _inj_note.lower() != "nan":
-                    _warns.append(f"<b>Injury applied:</b> {html.escape(_inj_note)}")
-
-                # 3. Kickoff conditions, when notable.
-                _wx_note = str(r.get("weather_note") or "").strip()
-                if _wx_note:
-                    if _wx_note.startswith("OVER suppressed"):
-                        _warns.append(f"<b>{html.escape(_wx_note)}</b>")
-                    else:
-                        _neutral.append(f"Kickoff: {html.escape(_wx_note)}")
-
-                # 4. Is this game carrying more than one official play?
-                _gid_n = _game_counts.get(str(r.get("game_id")), 0)
-                if _gid_n > 1:
-                    _warns.append(
-                        f"<b>{_gid_n} PLAYS ON THIS GAME</b> \u2014 correlated, "
-                        f"not independent"
-                    )
-
-                # 5. Anything you flagged by hand.
-                for _side in (str(r.get("away_team", "") or ""),
-                              str(r.get("home_team", "") or "")):
-                    _note = _manual_flags.get(_side.strip().lower())
-                    if _note:
-                        _warns.append(
-                            f"<b>FLAGGED</b> {html.escape(_side)}: "
-                            f"{html.escape(_note)}"
+                            f"<b>{_gid_n} PLAYS ON THIS GAME</b> \u2014 correlated, "
+                            f"not independent"
                         )
 
-                if _warns or _neutral:
-                    _inj = "".join(
-                        f'<div class="ge-inj warn">{w}</div>' for w in _warns
-                    ) + "".join(
-                        f'<div class="ge-inj">{n}</div>' for n in _neutral
-                    )
-            except Exception as _strip_err:
-                _inj = (f'<div class="ge-inj">Strip failed: '
-                        f'{html.escape(str(_strip_err)[:80])}</div>')
+                    # 5. Anything you flagged by hand.
+                    for _side in (str(r.get("away_team", "") or ""),
+                                  str(r.get("home_team", "") or "")):
+                        _note = _manual_flags.get(_side.strip().lower())
+                        if _note:
+                            _warns.append(
+                                f"<b>FLAGGED</b> {html.escape(_side)}: "
+                                f"{html.escape(_note)}"
+                            )
 
-            st.markdown(
-                f"""
-                <div class="ge-official-card {cls}">
-                  <div class="ge-card-top">
-                    <div class="ge-rank">{i}</div>
-                    <span class="ge-market">{html.escape(market_type)}</span>
-                    <span class="ge-verdict {cls}">{html.escape(verdict)}</span>
-                  </div>
-                  <div class="ge431-pickline">
-                    {_ge440_pick_logo(r, 42)}
-                    <div class="ge431-pickcopy">
-                      <div class="ge-pick">{html.escape(str(r.get("selection","")))}</div>
-                      <div class="ge-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                    if _warns or _neutral:
+                        _inj = "".join(
+                            f'<div class="ge-inj warn">{w}</div>' for w in _warns
+                        ) + "".join(
+                            f'<div class="ge-inj">{n}</div>' for n in _neutral
+                        )
+                except Exception as _strip_err:
+                    _inj = (f'<div class="ge-inj">Strip failed: '
+                            f'{html.escape(str(_strip_err)[:80])}</div>')
+
+                st.markdown(
+                    f"""
+                    <div class="ge-official-card {cls}">
+                      <div class="ge-card-top">
+                        <div class="ge-rank">{i}</div>
+                        <span class="ge-market">{html.escape(market_type)}</span>
+                        <span class="ge-verdict {cls}">{html.escape(verdict)}</span>
+                      </div>
+                      <div class="ge431-pickline">
+                        {_ge440_pick_logo(r, 42)}
+                        <div class="ge431-pickcopy">
+                          <div class="ge-pick">{html.escape(str(r.get("selection","")))}</div>
+                          <div class="ge-game">{html.escape(str(r.get("away_team","")))} @ {html.escape(str(r.get("home_team","")))}</div>
+                        </div>
+                      </div>
+                      <div class="ge-metric-grid">
+                        <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
+                        <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
+                        <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
+                      </div>
+                      {_shop}
+                      {_inj}
+                      {_bc_html(r)}
                     </div>
-                  </div>
-                  <div class="ge-metric-grid">
-                    <div><span>Market</span><b>{_v410_line_text(r, "market_display")}</b></div>
-                    <div><span>Fair</span><b>{_v410_line_text(r, "fair_display")}</b></div>
-                    <div><span>Edge</span><b>{_v390_edge_text(r.get("point_edge"))}</b></div>
-                  </div>
-                  {_shop}
-                  {_inj}
-                  {_bc_html(r)}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
 
     if not leans.empty:
         st.markdown(
@@ -27628,7 +27666,7 @@ def _render_home_page():
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
-            f'{_se_hero_meta(_h, _now, _today)}{_bc_html(_h, compact=True)}</div>'
+            f'{_se_hero_meta(_h, _now, _today)}<div class="se-bc-reason">{html.escape(_bc_simple_text(_h))}</div></div>'
             f'<div class="se-hero-ev"><b>{_se_stars(_se_conf(_h))}</b>'
             f'<span>{html.escape(SE_CONF_NAME[_se_conf(_h)])}</span></div>'
             f'</div>'
