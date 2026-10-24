@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.7.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.7.1"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -83,6 +83,12 @@ BASE_TOTAL_SD = 16.0
 # calibration run on v4.7 measures the average (model total - closing total);
 # then set this to minus that average so the total has no built-in lean.
 TOTAL_LEVEL_OFFSET = 0.0
+
+# How much of each team's SP+ offense/defense difference from league average
+# reaches the projected total. 1.0 = straight additive; 0.5 = the original
+# averaged form. Measured in the Totals lab (squeeze 0.45 at 0.5 vs 0.24 at
+# 1.0): SP+ components over-reach on totals, so 0.5 stays.
+TOTAL_MATCHUP_WEIGHT = 0.5
 
 # v0.3.2 calibration guardrails
 # These are deliberately conservative and should be re-estimated after a larger
@@ -1503,18 +1509,21 @@ def _total_from_sp(a, h, lg):
     (defense = points allowed). Each team's expected points are its offense
     plus the opponent defense, less the league average once.
 
-    v4.7 fix: this used to AVERAGE offense with opponent defense, which
-    halved every real matchup difference and squeezed all projections
-    toward the league-average total — low lines looked like Overs and only
-    very high lines could show an Under.
+    v4.7 tried the full additive form (weight 1.0). The Totals lab rerun on
+    2026-10-24 measured it badly over-reaching on these ratings: squeeze
+    0.24 (big calls only a quarter come true) against 0.45 for the old
+    averaged form, whose weight is 0.5. So the weight is back to 0.5; what
+    v4.7 keeps is the centring on league means, which together with the
+    removed score floor and centred efficiency term takes out the
+    one-directional Over push.
     """
     ao, ad = a["sp"]["offense"], a["sp"]["defense"]
     ho, hd = h["sp"]["offense"], h["sp"]["defense"]
     mo, md = lg["sp"]["offense"], lg["sp"]["defense"]
     if None not in (ao, ad, ho, hd, mo, md):
         avg_pts = (mo + md) / 2.0
-        away_pts = ao + hd - avg_pts
-        home_pts = ho + ad - avg_pts
+        away_pts = avg_pts + TOTAL_MATCHUP_WEIGHT * ((ao - mo) + (hd - md))
+        home_pts = avg_pts + TOTAL_MATCHUP_WEIGHT * ((ho - mo) + (ad - md))
         return away_pts + home_pts
     if None not in (ao, ad, ho, hd):
         # No league means available: fall back to the old blend.
