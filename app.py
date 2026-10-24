@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.1"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18374,7 +18374,7 @@ V50_MIN_EV = 0.03   # retained for the Games tab's pricing detail only
 # Breakeven at -110 is 52.4%. Nothing in the backtest clears it at any
 # threshold. Treat output as paper picks until the tracker shows positive
 # CLV over a meaningful sample.
-V50_MIN_GAP_PTS = 4.0
+V50_MIN_GAP_PTS = 3.0
 # Retuned after EV was corrected to derive from the shrunk win probability
 # (it was previously scaled separately and ran ~40% too high). On a full
 # Saturday this lands near ten official bets. It is a volume target, not an
