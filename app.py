@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.7.3"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.7.4"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18100,6 +18100,14 @@ def _render_tracker_exports(df, _an):
 # whole card high. Needs enough games for the median to mean something.
 TOTAL_CENTER_MIN_GAMES = 6
 
+# Same idea for the slope. If the model's totals vary less than the market's
+# (the Totals lab measures 5.9 pts vs 7.3), then model-minus-market drifts
+# down as the market total rises, and the card leans Over on low totals and
+# Under on high ones for no reason but scale. With enough games on the slate,
+# the model is regressed on the market and only the part of the model the
+# market's own number cannot explain is used as the disagreement.
+TOTAL_TILT_MIN_GAMES = 10
+
 
 def _se_fm_true(v):
     """True only for a real filter match. A flipped side should lose a match
@@ -18115,15 +18123,22 @@ def _se_center_totals(out):
     mkt = pd.to_numeric(out["market_total"], errors="coerce")
     ok = fair.notna() & mkt.notna()
     out["total_level_shift"] = 0.0
+    out["total_tilt"] = 1.0
     if int(ok.sum()) < TOTAL_CENTER_MIN_GAMES:
         return out
-    shift = float((fair[ok] - mkt[ok]).median())
-    if abs(shift) < 1e-9:
-        return out
+    f_ok, m_ok = fair[ok].astype(float), mkt[ok].astype(float)
+    shift = float((f_ok - m_ok).median())
+    slope = 1.0
+    if int(ok.sum()) >= TOTAL_TILT_MIN_GAMES and float(m_ok.var()) > 1.0:
+        slope = float(np.cov(m_ok, f_ok)[0, 1] / m_ok.var())
+        slope = max(0.3, min(1.5, slope))
+    # fitted = what the model "should" say given only the market's number.
+    intercept = float((f_ok - slope * m_ok).median())
     out["total_level_shift"] = shift
+    out["total_tilt"] = slope
     for idx in out.index[ok]:
-        nt = float(fair[idx]) - shift
         m = float(mkt[idx])
+        nt = m + (float(fair[idx]) - (intercept + slope * m))
         side = "OVER" if nt > m else "UNDER"
         if side != str(out.at[idx, "pick_side"]).upper():
             if "tot2_rule_ok" in out.columns:
@@ -26653,10 +26668,13 @@ if run_mode == "Full Slate":
         try:
             _shift = float(total_card["total_level_shift"].iloc[0]) \
                 if not total_card.empty and "total_level_shift" in total_card.columns else 0.0
-            if abs(_shift) >= 0.05:
+            _tilt = float(total_card["total_tilt"].iloc[0]) \
+                if not total_card.empty and "total_tilt" in total_card.columns else 1.0
+            if abs(_shift) >= 0.05 or abs(_tilt - 1.0) >= 0.01:
                 st.caption(
                     f"Totals re-centred: the model ran {_shift:+.1f} pts vs the "
-                    "market on this slate (median), so that was removed before "
+                    f"market on this slate (median) and moved {_tilt:.2f} pts per "
+                    "market point (1.00 = in step). Both were removed before "
                     "picking Overs and Unders.")
         except Exception:
             pass
