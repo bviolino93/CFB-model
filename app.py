@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.5"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.9.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -20654,11 +20654,12 @@ def _tot2_tier(g):
     return "Both major" if (h and a) else ("One major" if (h or a) else "Neither major")
 
 
-def _tot2_season_rows(year, prior, scope):
+def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
     """All graded rows for one season, plus that season's final ratings
-    (which become next season's prior)."""
-    games = _tot2_completed(get_backtest_games(int(year)))
-    lines = get_backtest_lines(int(year)) or []
+    (which become next season's prior). fresh=True skips the day-long cache,
+    for the season in progress; with_old=False skips the old-model column,
+    which the weekly retrain does not need."""
+    games, lines = _ar_season_feed(year, fresh)
     by_game = {}
     for lr in lines:
         gid = lr.get("id")
@@ -20676,7 +20677,8 @@ def _tot2_season_rows(year, prior, scope):
             gp_prev[t] = gp_prev.get(t, 0) + 1
 
     try:
-        old_data = _bt_prior_only_data(get_backtest_model_data(int(year)))
+        old_data = (_bt_prior_only_data(get_backtest_model_data(int(year)))
+                    if with_old else None)
     except Exception:
         old_data = None
 
@@ -20735,9 +20737,10 @@ def _tot2_season_rows(year, prior, scope):
     return rows, final
 
 
-def _tot2_build(scope="All FBS", progress=None):
+def _tot2_build(scope="All FBS", progress=None, last=None, fresh_season=None,
+                with_old=True):
     first = TOT2_FIRST_SEASON
-    last = max(TOT2_TEST_SEASONS)
+    last = int(last or max(TOT2_TEST_SEASONS))
     # Burn-in: the season before the first graded one only supplies a prior.
     burn = _tot2_completed(get_backtest_games(first - 1))
     prior = _tot2_carry(_tot2_fit_ratings(
@@ -20746,7 +20749,8 @@ def _tot2_build(scope="All FBS", progress=None):
     for yr in range(first, last + 1):
         if progress:
             progress(f"Season {yr}")
-        rows, final = _tot2_season_rows(yr, prior, scope)
+        rows, final = _tot2_season_rows(yr, prior, scope,
+                                        fresh=(yr == fresh_season), with_old=with_old)
         all_rows.extend(rows)
         prior = _tot2_carry(final)
     df = pd.DataFrame(all_rows)
@@ -21225,6 +21229,9 @@ def _render_totals_lab():
     new, old, mkt = mods.get("new", {}), mods.get("old", {}), mods.get("market", {})
     st.caption(f"Last run {str(saved.get('saved_at', ''))[:16].replace('T', ' ')} "
                f"· {rep.get('scope', '')} · {rep.get('n', 0):,} test games")
+    if (saved.get("coefs") or {}).get("trained_through"):
+        st.caption(f"Weights refreshed by the Sunday retrain, through "
+                   f"{saved['coefs']['trained_through']}.")
 
     # 1. Can it reach the extremes?
     st.markdown("**1. Can it reach big and small totals?**")
@@ -21378,10 +21385,10 @@ def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent
     return f
 
 
-def _spr2_season_rows(year, prior, scope):
-    games = _tot2_completed(get_backtest_games(int(year)))
+def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
+    games, lines = _ar_season_feed(year, fresh)
     by_game = {}
-    for lr in get_backtest_lines(int(year)) or []:
+    for lr in lines:
         gid = lr.get("id")
         try:
             key = int(gid)
@@ -21392,7 +21399,8 @@ def _spr2_season_rows(year, prior, scope):
     prev_adv = pre.get("prev_adv") or {}
     talent = pre.get("talent") or {}
     try:
-        old_data = _bt_prior_only_data(get_backtest_model_data(int(year)))
+        old_data = (_bt_prior_only_data(get_backtest_model_data(int(year)))
+                    if with_old else None)
     except Exception:
         old_data = None
 
@@ -21433,15 +21441,17 @@ def _spr2_season_rows(year, prior, scope):
     return rows, _tot2_fit_ratings(games, prior)
 
 
-def _spr2_build(scope="All FBS", progress=None):
+def _spr2_build(scope="All FBS", progress=None, last=None, fresh_season=None,
+                with_old=True):
     burn = _tot2_completed(get_backtest_games(TOT2_FIRST_SEASON - 1))
     prior = _tot2_carry(_tot2_fit_ratings(
         burn, {"off": {}, "dfn": {}, "mu": 28.0, "hfa": 1.5}))
     out = []
-    for yr in range(TOT2_FIRST_SEASON, max(TOT2_TEST_SEASONS) + 1):
+    for yr in range(TOT2_FIRST_SEASON, int(last or max(TOT2_TEST_SEASONS)) + 1):
         if progress:
             progress(f"Season {yr}")
-        rows, final = _spr2_season_rows(yr, prior, scope)
+        rows, final = _spr2_season_rows(yr, prior, scope,
+                                        fresh=(yr == fresh_season), with_old=with_old)
         out.extend(rows)
         prior = _tot2_carry(final)
     return pd.DataFrame(out)
@@ -21754,6 +21764,9 @@ def _render_spread_lab():
     mods = rep.get("models", {})
     st.caption(f"Last run {str(saved.get('saved_at', ''))[:16].replace('T', ' ')} "
                f"· {rep.get('scope', '')} · {rep.get('n', 0):,} test games")
+    if (saved.get("coefs") or {}).get("trained_through"):
+        st.caption(f"Weights refreshed by the Sunday retrain, through "
+                   f"{saved['coefs']['trained_through']}.")
 
     def _rec(v):
         if not v or not (v[0] + v[1]):
@@ -21832,6 +21845,317 @@ def _render_spread_lab():
                 else:
                     st.error("Could not save to Sheets.")
 
+
+
+# ===== Weekly auto-retrain (v4.9) =========================================
+# Every Sunday morning, refit both labs' weights on every completed game --
+# past seasons plus this season so far -- and keep the new weights only if
+# they beat the saved ones on the most recent weeks. The saved lab report
+# (its filter and the proven / not-proven verdict) is left alone: this only
+# refreshes the weights the live card prices with. Bet freezing and grading
+# never read any of this.
+#
+# Streamlit Cloud has no scheduler, so the run starts on the first visit
+# after Sunday 6 AM ET (the Sunday workflow in .github/workflows opens the
+# page to make that happen) and runs in a background thread so the page is
+# never held up.
+#
+# The holdout is the last AR_HOLDOUT_WEEKS weeks played. The candidate is
+# fit on everything before them; the saved weights may already have seen
+# some of those weeks, which can only tilt the test toward keeping them.
+
+AR_TAB = "auto_retrain"
+AR_HOLDOUT_WEEKS = 4
+AR_MIN_HOLDOUT = 100              # fewer test games than this: keep the saved weights
+AR_RUN_HOUR_ET = 6                # Sunday 6 AM ET, after Saturday's late games are final
+AR_STALE_HOURS = 3                # a run "in progress" this long has died; start again
+AR_NOTE_DAYS = 8                  # how long Home shows the last run's note
+
+AR_LABELS = {
+    "exp_total": "scoring ratings",
+    "exp_plays": "tempo",
+    "exp_total_x_plays": "scoring × tempo",
+    "cur_total_ppa": "this season's EPA",
+    "cur_total_success": "this season's success rate",
+    "cur_total_expl": "this season's explosive plays",
+    "cur_total_ppo": "this season's points per trip",
+    "prior_total_ppa": "last season's EPA",
+    "prior_total_ppo": "last season's points per trip",
+    "exp_margin": "scoring ratings",
+    "elo_diff": "Elo",
+    "talent_diff": "roster talent",
+    "cur_ppa_match": "this season's EPA matchup",
+    "cur_success_match": "this season's success-rate matchup",
+    "cur_ppo_match": "this season's points-per-trip matchup",
+    "cur_expl_match": "this season's explosiveness matchup",
+    "prior_ppa_match": "last season's EPA matchup",
+    "prior_ppo_match": "last season's points-per-trip matchup",
+    "hfa_flag": "home field",
+    "week_num": "week of season",
+    "neutral": "neutral site",
+}
+
+# One fresh download of the current season per run, shared by both labs.
+_AR_FEED = {}
+
+
+def _ar_season_feed(year, fresh=False):
+    """Completed games and lines for a season. fresh=True bypasses the
+    day-long cache, so last Saturday's finals and closing lines are in."""
+    y = int(year)
+    if not fresh:
+        return (_tot2_completed(get_backtest_games(y)),
+                get_backtest_lines(y) or [])
+    if y not in _AR_FEED:
+        games = get_finals_games(y)
+        try:
+            lines = fetch_lines(API_KEY, year=y) or []
+        except Exception:
+            lines = get_backtest_lines(y) or []
+        _AR_FEED[y] = (_tot2_completed(games), lines)
+    return _AR_FEED[y]
+
+
+def _ar_due(now):
+    """The most recent Sunday 6 AM ET at or before now."""
+    sun = (now - pd.Timedelta(days=(now.dayofweek - 6) % 7)).normalize() \
+        + pd.Timedelta(hours=AR_RUN_HOUR_ET)
+    return sun if sun <= now else sun - pd.Timedelta(days=7)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _ar_load():
+    ws = _v401_sheet(tab=AR_TAB)
+    if ws is None:
+        return None
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return None
+
+
+def _ar_save(state):
+    ws = _v401_sheet(tab=AR_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps(state)]], "A1", value_input_option="RAW")
+        try:
+            _ar_load.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _ar_predict(coefs, frame):
+    f = frame.copy()
+    for k in coefs["features"]:
+        if k not in f.columns:
+            f[k] = np.nan
+    return _spr2_predict(coefs, f)
+
+
+def _ar_shifts(old, new):
+    """The two inputs whose weight moved most, in points per standard step."""
+    ob = dict(zip(old.get("features", []), old.get("beta", [])))
+    nb = dict(zip(new.get("features", []), new.get("beta", [])))
+    moves = sorted(((nb.get(k, 0.0) - ob.get(k, 0.0), k) for k in set(ob) | set(nb)),
+                   key=lambda m: -abs(m[0]))
+    return [{"feature": k, "label": AR_LABELS.get(k, k), "delta": round(float(d), 2)}
+            for d, k in moves[:2] if abs(d) >= 0.1]
+
+
+def _ar_retrain_lab(lab, season, last_seen=None):
+    if lab == "totals":
+        loader, saver, build, ycol, col, mcol = (_tot2_load, _tot2_save, _tot2_build,
+                                                 "actual_total", "pred", "market_total")
+        fit = _tot2_final_fit
+        rec = lambda d: _tot2_record(d, _tot2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
+    else:
+        loader, saver, build, ycol, col, mcol = (_spr2_load, _spr2_save, _spr2_build,
+                                                 "actual_margin", "pred", "market_margin")
+        fit = lambda d: _spr2_fit(d[d["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+        rec = lambda d: _spr2_record(d, _spr2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
+
+    try:
+        loader.clear()
+    except Exception:
+        pass
+    saved = loader()
+    if not saved or not saved.get("coefs") or not saved.get("report"):
+        return {"result": "skipped", "msg": "lab has not been run and saved yet"}
+    scope = saved["report"].get("scope") or "All FBS"
+
+    df = build(scope, last=season, fresh_season=season, with_old=False)
+    if df.empty:
+        return {"result": "skipped", "msg": "no games found"}
+    df = df.dropna(subset=[ycol])
+    seen = int((df["season"] == season).sum())
+    if last_seen is not None and seen <= int(last_seen):
+        return {"result": "no_new", "games_seen": seen}
+
+    order = df["season"].astype(int) * 100 + df["week"].astype(int)
+    hold_keys = sorted(order.unique())[-AR_HOLDOUT_WEEKS:]
+    hold = df[order.isin(hold_keys)].copy()
+    train = df[order < min(hold_keys)]
+    out = {"games_seen": seen, "holdout_n": int(len(hold)),
+           "holdout": f"{int(hold_keys[0]) // 100} wk {int(hold_keys[0]) % 100}"
+                      f" – wk {int(hold_keys[-1]) % 100}"}
+    if len(hold) < AR_MIN_HOLDOUT:
+        return {**out, "result": "kept", "msg": "too few recent games to test"}
+
+    cand = fit(train)
+    if cand is None:
+        return {**out, "result": "skipped", "msg": "not enough data to fit"}
+    y = hold[ycol].to_numpy(dtype=float)
+    hold[col] = _ar_predict(cand, hold)
+    mae_new = float(np.mean(np.abs(y - hold[col].to_numpy(dtype=float))))
+    out["new_record"] = list(rec(hold))
+    hold[col] = _ar_predict(saved["coefs"], hold)
+    mae_old = float(np.mean(np.abs(y - hold[col].to_numpy(dtype=float))))
+    out["old_record"] = list(rec(hold))
+    out.update(mae_new=round(mae_new, 3), mae_old=round(mae_old, 3))
+
+    if mae_new >= mae_old:
+        return {**out, "result": "kept"}
+    final = fit(df)
+    if final is None:
+        return {**out, "result": "skipped", "msg": "not enough data to fit"}
+    final["trained_through"] = f"{season} wk {int(order.max()) % 100}"
+    final["auto"] = True
+    if not saver(saved["report"], final, adopted=saved.get("adopted", True)):
+        return {**out, "result": "error", "msg": "could not save to Sheets"}
+    return {**out, "result": "updated", "shifts": _ar_shifts(saved["coefs"], final)}
+
+
+def _ar_run(due_iso):
+    now = lambda: pd.Timestamp.now(tz="America/New_York").isoformat()
+    prev = _ar_load() or {}
+    state = {"due": due_iso, "status": "running", "started_at": now(),
+             "labs": prev.get("labs") or {}}
+    _ar_save(state)
+    _AR_FEED.clear()
+    season = _tot2_season_of(pd.Timestamp(due_iso).strftime("%Y-%m-%d"))
+    labs = {}
+    for lab in ("totals", "spread"):
+        last_seen = ((prev.get("labs") or {}).get(lab) or {}).get("games_seen") \
+            if prev.get("season") == season else None
+        try:
+            labs[lab] = _ar_retrain_lab(lab, season, last_seen)
+        except Exception as e:
+            labs[lab] = {"result": "error", "msg": str(e)[:160]}
+        # Carry the count forward when nothing ran, so next week compares
+        # against the last games actually tested.
+        if "games_seen" not in labs[lab] and last_seen is not None:
+            labs[lab]["games_seen"] = last_seen
+    _AR_FEED.clear()
+    _ar_save({"due": due_iso, "status": "done", "season": season,
+              "started_at": state["started_at"], "finished_at": now(), "labs": labs})
+
+
+@st.cache_resource(show_spinner=False)
+def _ar_proc():
+    """One flag per server process, so two visitors never start two runs."""
+    import threading
+    return {"lock": threading.Lock(), "running": False}
+
+
+def _ar_thread(due_iso):
+    proc = _ar_proc()
+    try:
+        _ar_run(due_iso)
+    except Exception:
+        pass
+    finally:
+        proc["running"] = False
+
+
+def _ar_maybe_start():
+    """Start this week's retrain in the background if it has not run yet."""
+    try:
+        if _v401_sheet(tab=AR_TAB) is None:
+            return
+        now = pd.Timestamp.now(tz="America/New_York")
+        due = _ar_due(now)
+        state = _ar_load()
+        if state is None:
+            return
+        if state.get("due") and pd.Timestamp(state["due"]) >= due:
+            if state.get("status") != "running":
+                return
+            started = pd.Timestamp(state.get("started_at") or state["due"])
+            if now - started < pd.Timedelta(hours=AR_STALE_HOURS):
+                return
+        import threading
+        proc = _ar_proc()
+        with proc["lock"]:
+            if proc["running"]:
+                return
+            proc["running"] = True
+        threading.Thread(target=_ar_thread, args=(due.isoformat(),),
+                         daemon=True, name="se-auto-retrain").start()
+    except Exception:
+        pass
+
+
+def _ar_lab_line(name, r):
+    res = (r or {}).get("result")
+    if res == "updated":
+        txt = (f"**{name} updated.** Avg miss on the last {AR_HOLDOUT_WEEKS} weeks "
+               f"({r['holdout_n']} games): {r['mae_old']:.2f} → {r['mae_new']:.2f} pts.")
+        sh = r.get("shifts") or []
+        if sh:
+            txt += " Leans " + ", ".join(
+                f"{'more' if s['delta'] > 0 else 'less'} on {s['label']}" for s in sh) + "."
+        return txt
+    if res == "kept":
+        if r.get("mae_new") is not None:
+            return (f"**{name} kept.** New weights missed by {r['mae_new']:.2f} pts vs "
+                    f"{r['mae_old']:.2f} for the current ones on the last "
+                    f"{AR_HOLDOUT_WEEKS} weeks ({r['holdout_n']} games).")
+        return f"**{name} kept** — {r.get('msg', 'no change')}."
+    if res == "no_new":
+        return f"**{name}:** no new games since the last retrain."
+    if res == "skipped":
+        return f"**{name}:** skipped — {r.get('msg', '')}."
+    if res == "error":
+        return f"**{name}:** retrain failed — {r.get('msg', '')}"
+    return None
+
+
+def _ar_home_note():
+    """Short "what changed" note for Home after the Sunday retrain."""
+    try:
+        state = _ar_load() or {}
+    except Exception:
+        return
+    if not state.get("due"):
+        return
+    now = pd.Timestamp.now(tz="America/New_York")
+    if state.get("status") == "running":
+        st.caption("Sunday retrain running in the background…")
+        return
+    try:
+        done = pd.Timestamp(state.get("finished_at") or state["due"])
+    except Exception:
+        return
+    if now - done > pd.Timedelta(days=AR_NOTE_DAYS):
+        return
+    labs = state.get("labs") or {}
+    lines = [l for l in (_ar_lab_line("Totals", labs.get("totals")),
+                         _ar_lab_line("Spreads", labs.get("spread"))) if l]
+    if not lines:
+        return
+    with st.expander(f"Model retrain · {done:%a %-m/%-d}", expanded=False):
+        for l in lines:
+            st.markdown(l)
+        st.caption("Each Sunday both labs refit on every finished game. New weights "
+                   "are kept only if they beat the current ones on the last "
+                   f"{AR_HOLDOUT_WEEKS} weeks, which they never saw. Filters, stars, "
+                   "frozen bets and grading are unchanged.")
 
 
 # ===== Injury overrides (v5.4) ============================================
@@ -25609,6 +25933,8 @@ def _render_home_page():
             unsafe_allow_html=True,
         )
 
+    _ar_home_note()
+
     def _render_ml_flags(_for_date):
         """
         Moneyline flags for a date, if that date's slate has been built this
@@ -26201,6 +26527,10 @@ def _render_record_analysis(_t, _s, _clv):
         except Exception:
             pass
 
+
+# Sunday auto-retrain: starts in the background on the first visit after
+# Sunday 6 AM ET. Here so every helper it needs is already defined.
+_ar_maybe_start()
 
 if main_view == "Home":
     _render_home_page()
