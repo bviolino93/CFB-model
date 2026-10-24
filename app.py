@@ -18735,7 +18735,7 @@ BC_MAX_UNITS = 3.0
 BC_MAX_UNITS_UNMEASURED = 2.0   # cap while the model's trust is still a guess
 BC_RECORD_MIN = 300         # picks before a track record can veto a bet
 BC_RECORD_FAIL = 0.48
-BC_BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
+BC_BOOKS = ["734 Games", "DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
             "BetRivers", "Bet365", "Fanatics", "William Hill (New Jersey)"]
 BC_NOT_LISTED = "Not in this list"
 
@@ -18905,6 +18905,7 @@ def _bc_check(r):
     # 2. Price: your book's number, else the market's.
     book = _bc_my_book()
     line = line_mkt
+    priced_at_book = False
     if book:
         bl = _bc_book_line(prov, mt, side, book)
         if bl is None:
@@ -18912,6 +18913,7 @@ def _bc_check(r):
                                    f"Priced at the market's {_bc_fmt(line_mkt, mt)}."))
         else:
             line = bl
+            priced_at_book = True
             better = (bl - line_mkt) * (-1 if (mt == "TOTAL" and side == "OVER") else 1)
             if abs(better) < 0.25:
                 checks.append(("ok", f"{book} matches the market at {_bc_fmt(bl, mt)}."))
@@ -18995,9 +18997,32 @@ def _bc_check(r):
         why = [t for s_, t in checks if s_ == "good" and not t.startswith("Honest")]
         reason = (f"Bet {units:g}u: {p:.0%} to win at {o:+.0f} ({ev:+.1%} expected)."
                   + (f" {why[0]}" if why else ""))
+        # A book outside the feed: say the worst number still worth betting.
+        if not priced_at_book:
+            floor = _bc_floor(honest, line, mt, side, b)
+            if floor is not None:
+                where = f" at {book}" if book else ""
+                reason += f" Still a bet{where} down to {_bc_fmt(floor, mt)}; pass past that."
     return {"bc_verdict": verdict, "bc_reason": reason, "bc_units": float(units),
             "bc_p": float(p), "bc_ev": float(ev),
             "bc_checks": json.dumps([{"s": s_, "t": t} for s_, t in checks])}
+
+
+def _bc_floor(honest, line, mt, side, b):
+    """The worst line, in half points from the one priced, that still clears
+    the bar. None if only the priced line does."""
+    worse = 1.0 if (mt == "TOTAL" and side == "OVER") else -1.0
+    best = None
+    for step in range(1, 13):
+        ln = line + worse * 0.5 * step
+        if mt == "TOTAL":
+            p, push = _bc_probs(honest, ln, "TOTAL", 1 if side == "OVER" else -1)
+        else:
+            p, push = _bc_probs(honest, ln, "SPREAD")
+        if p * b - max(0.0, 1.0 - p - push) < BC_MIN_EV:
+            break
+        best = ln
+    return best
 
 
 BC_KEYS = {"SPREAD": (3, 7, 10, 14), "TOTAL": (41, 44, 47, 51, 55)}
