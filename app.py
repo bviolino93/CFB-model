@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.2"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.3"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -17139,11 +17139,14 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "conference_game": r.get("conference_game"),
             "closing_captured_at": None,
             "inj_adj": str(r.get("inj_adj") or "") if pd.notna(r.get("inj_adj", np.nan)) else "",
+            # Save the card's own filter_match, not the lab's rule flag: an
+            # unproven lab sets the flag False, which capped every frozen
+            # bet at two stars while the live card showed three.
             "filter_match": (
-                bool(r.get("spr2_rule_ok")) if market_type == "SPREAD"
-                and pd.notna(r.get("spr2_rule_ok", np.nan))
-                else bool(r.get("tot2_rule_ok")) if market_type == "TOTAL"
-                and pd.notna(r.get("tot2_rule_ok", np.nan))
+                bool(_se_fm_true(r.get("filter_match")))
+                if r.get("filter_match") is not None
+                and pd.notna(r.get("filter_match", np.nan))
+                and str(r.get("filter_match")).strip() != ""
                 else ""
             ),
         })
