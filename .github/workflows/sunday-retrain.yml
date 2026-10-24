@@ -1,0 +1,67 @@
+name: Sunday model retrain
+
+# Why this exists
+# ---------------
+# The app retrains the Totals and Spread lab weights on the first visit
+# after Sunday 6 AM ET. Streamlit Cloud has no scheduler, and a plain curl
+# only fetches the page shell without running the app, so this opens the
+# page in a real (headless) browser, which starts the retrain in the
+# background. If this never runs, the retrain still happens the next time
+# anyone opens the app.
+#
+# The app's address is below (it is public, so it lives here rather than in
+# a secret). An APP_URL repository secret, if set, overrides it.
+#
+# Times are UTC. 11:30 UTC is 7:30 AM EDT / 6:30 AM EST, after the 6 AM ET
+# start in both; the second run is a backup if the first found the app asleep.
+
+on:
+  schedule:
+    - cron: '30 11 * * 0'
+    - cron: '30 15 * * 0'
+  workflow_dispatch:
+
+env:
+  DEFAULT_APP_URL: https://saturday-edge.streamlit.app
+
+concurrency:
+  group: sunday-retrain
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install a headless browser
+        run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+
+      - name: Open the app so the retrain starts
+        env:
+          APP_URL: ${{ secrets.APP_URL || env.DEFAULT_APP_URL }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from playwright.sync_api import sync_playwright
+          url = os.environ["APP_URL"]
+          with sync_playwright() as p:
+              b = p.chromium.launch()
+              page = b.new_page()
+              page.goto(url, timeout=120000)
+              # A sleeping Streamlit app shows a wake-up button first.
+              for _ in range(3):
+                  btn = page.get_by_role("button", name="Yes, get this app back up!")
+                  if btn.count():
+                      print("App was asleep; waking it.")
+                      btn.first.click()
+                      time.sleep(90)
+                      page.goto(url, timeout=120000)
+                  else:
+                      break
+              # Let the script run far enough to kick off the background job.
+              time.sleep(120)
+              print("Page title:", page.title())
+              b.close()
+          PY
