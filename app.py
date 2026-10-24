@@ -22150,6 +22150,216 @@ def _render_injury_panel(slate_date, games=None):
 
 
 
+# ===== Opening-line test: does the model see what the market learns by kickoff? =====
+# With one sportsbook there is no line shopping, but there is timing. If the
+# model's disagreement with the OPENING number tends to come true in the
+# CLOSING number, the market is moving toward the model during the week, and
+# the edge is in betting early. This test measures exactly that, using the
+# point-in-time lab builds (ratings from games before each week only) and
+# the opening/closing numbers CFBD carries for every game.
+OLT_THRESHOLDS = (2.0, 3.0, 4.0, 5.0, 6.0, 8.0)
+OLT_BREAKEVEN = 110.0 / 210.0
+
+
+def _olt_lines(seasons):
+    """game_id -> consensus (median across books) open and close numbers,
+    as home margin (positive = home favoured) and total."""
+    out = {}
+    for yr in seasons:
+        for lr in get_backtest_lines(int(yr)) or []:
+            gid = lr.get("id")
+            try:
+                key = int(gid)
+            except Exception:
+                key = gid
+            rows = normalize_game_lines([lr], game_id=gid)
+            if not rows:
+                continue
+            d = pd.DataFrame(rows)
+
+            def med(col):
+                s = pd.to_numeric(d.get(col), errors="coerce").dropna()
+                return float(s.median()) if len(s) else np.nan
+
+            hs, hso = med("home_spread"), med("home_spread_open")
+            out[key] = {
+                "margin_close": -hs if np.isfinite(hs) else np.nan,
+                "margin_open": -hso if np.isfinite(hso) else np.nan,
+                "total_close": med("total"),
+                "total_open": med("total_open"),
+            }
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _olt_frames(scope):
+    """Walk-forward lab predictions for both markets, joined to open/close."""
+    tot = _tot2_walk_forward(_tot2_build(scope))
+    spr = _spr2_walk_forward(_spr2_build(scope))
+    seasons = sorted(set(tot.get("season", pd.Series(dtype=int)).dropna().astype(int))
+                     | set(spr.get("season", pd.Series(dtype=int)).dropna().astype(int)))
+    lines = _olt_lines(seasons)
+
+    def join(df):
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        keys = [int(g) if pd.notna(g) else g for g in df["game_id"]]
+        for col in ("margin_open", "margin_close", "total_open", "total_close"):
+            df[col] = [lines.get(k, {}).get(col, np.nan) for k in keys]
+        return df
+
+    return join(tot), join(spr)
+
+
+def _olt_grade(side, actual, line):
+    d = side * (actual - line)
+    return np.where(d > 0, 1, np.where(d < 0, -1, 0))
+
+
+def _olt_analyze(df, model_col, open_col, close_col, actual_col):
+    x = df[[model_col, open_col, close_col, actual_col, "week", "season"]].apply(
+        pd.to_numeric, errors="coerce")
+    n_all = len(x)
+    x = x.dropna(subset=[model_col, open_col, close_col, actual_col])
+    if len(x) < 100:
+        return None
+    gap = (x[model_col] - x[open_col]).to_numpy()
+    move = (x[close_col] - x[open_col]).to_numpy()
+    actual = x[actual_col].to_numpy()
+    opn, cls = x[open_col].to_numpy(), x[close_col].to_numpy()
+    wk = x["week"].to_numpy()
+    season = x["season"].to_numpy()
+
+    moved = (np.abs(move) > 1e-9) & (np.abs(gap) > 1e-9)
+    toward = int((np.sign(move[moved]) == np.sign(gap[moved])).sum())
+    fit = ols_t(move, gap)
+
+    def record(mask):
+        side = np.sign(gap[mask])
+        go = _olt_grade(side, actual[mask], opn[mask])
+        gc = _olt_grade(side, actual[mask], cls[mask])
+        clv = side * (cls[mask] - opn[mask])
+        return {
+            "n": int(mask.sum()),
+            "open_w": int((go > 0).sum()), "open_l": int((go < 0).sum()),
+            "close_w": int((gc > 0).sum()), "close_l": int((gc < 0).sum()),
+            "clv": float(np.mean(clv)) if mask.any() else np.nan,
+        }
+
+    by_gap = {t: record(np.abs(gap) >= t) for t in OLT_THRESHOLDS}
+    base = np.abs(gap) >= 4.0
+    by_phase = {"Weeks 1-4": record(base & (wk <= 4)),
+                "Weeks 5+": record(base & (wk >= 5))}
+    by_season = {int(s): record(base & (season == s)) for s in sorted(set(season))}
+    return {
+        "n_all": n_all, "n": int(len(x)),
+        "moved": int(moved.sum()), "toward": toward,
+        "slope": fit[0] if fit else None, "t": fit[1] if fit else None,
+        "by_gap": by_gap, "by_phase": by_phase, "by_season": by_season,
+    }
+
+
+def _olt_rate(w, l):
+    n = w + l
+    if not n:
+        return "—"
+    z = (w / n - 0.5) / math.sqrt(0.25 / n)
+    return f"{w}-{l} ({w / n:.1%}, z {z:+.1f})"
+
+
+def _olt_render_market(label, r):
+    st.markdown(f"#### {label}")
+    if not r:
+        st.caption("Not enough games with both an opening and a closing number.")
+        return
+    share = r["toward"] / r["moved"] if r["moved"] else float("nan")
+    st.write(
+        f"{r['n']:,} of {r['n_all']:,} test games have both numbers; the line "
+        f"moved in {r['moved']:,}. When it moved, it moved **toward the model "
+        f"{share:.1%}** of the time (50% = no information)."
+    )
+    if r["t"] is not None:
+        st.caption(
+            f"Line move per point of model disagreement at open: {r['slope']:+.3f} "
+            f"(t = {r['t']:+.2f}). Above +2 means the market reliably drifts "
+            "toward the model during the week."
+        )
+    rows = []
+    for t, g in r["by_gap"].items():
+        rows.append({
+            "Model vs open": f"{t:g}+ pts",
+            "Bet at open": _olt_rate(g["open_w"], g["open_l"]),
+            "Same picks at close": _olt_rate(g["close_w"], g["close_l"]),
+            "Avg line gained (pts)": f"{g['clv']:+.2f}" if np.isfinite(g["clv"]) else "—",
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    rows = []
+    for k, g in list(r["by_phase"].items()) + [(str(s), g) for s, g in r["by_season"].items()]:
+        rows.append({"4+ pts off": k,
+                     "Bet at open": _olt_rate(g["open_w"], g["open_l"]),
+                     "Avg line gained (pts)": f"{g['clv']:+.2f}" if np.isfinite(g["clv"]) else "—"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+def _render_opening_line_test():
+    st.markdown("### Opening-line test")
+    st.write(
+        "With one book you cannot shop for the best number, but you can choose "
+        "when to bet. This checks whether the model's disagreement with the "
+        "OPENING line shows up in the CLOSING line and in results. If the line "
+        "keeps moving toward the model, betting early is where the edge is."
+    )
+    st.caption(
+        "Uses the Totals and Spread lab models, rebuilt week by week from "
+        "games already played, tested on "
+        f"{TOT2_TEST_SEASONS[0]}–{TOT2_TEST_SEASONS[-1]}. Opening and "
+        "closing numbers are the median across the books CFBD carries. "
+        f"Break-even at -110 is {OLT_BREAKEVEN:.1%}."
+    )
+    _scope = st.selectbox("Game universe", ["All FBS", "Major FBS", "All college games"],
+                          index=0, key="olt_scope")
+    if not st.button("Run opening-line test", type="primary", key="olt_run"):
+        return
+    with st.status("Rebuilding both labs week by week (several minutes the first time)…") as _s:
+        try:
+            tot, spr = _olt_frames(_scope)
+            _s.update(label="Done", state="complete")
+        except Exception as e:
+            st.error(f"Opening-line test failed: {str(e)[:200]}")
+            return
+
+    rs = _olt_analyze(spr, "new_margin", "margin_open", "margin_close", "actual_margin") \
+        if not spr.empty else None
+    rt = _olt_analyze(tot, "new_total", "total_open", "total_close", "actual_total") \
+        if not tot.empty else None
+    _olt_render_market("Spreads", rs)
+    _olt_render_market("Totals", rt)
+
+    verdicts = []
+    for lab, r in (("Spreads", rs), ("Totals", rt)):
+        if not r or r["t"] is None:
+            continue
+        g = r["by_gap"][4.0]
+        n = g["open_w"] + g["open_l"]
+        rate = g["open_w"] / n if n else 0.0
+        if r["t"] >= 2 and rate > OLT_BREAKEVEN:
+            verdicts.append(f"**{lab}:** the line moves toward the model and 4+ point "
+                            f"bets at the open hit {rate:.1%}. Betting early looks worth testing live.")
+        elif r["t"] >= 2:
+            verdicts.append(f"**{lab}:** the line does move toward the model, but not by "
+                            "enough to clear the vig at the open. The model is seeing "
+                            "real information, just not enough of it yet.")
+        else:
+            verdicts.append(f"**{lab}:** no reliable drift toward the model, so betting "
+                            "earlier would not help.")
+    if verdicts:
+        st.markdown("\n\n".join(verdicts))
+    st.caption("One test across many thresholds and seasons will show a few good-looking "
+               "rows by luck. Trust it only if the drift t-stat clears +2 and the "
+               "season rows agree with each other.")
+
+
 def _render_calibration():
     st.markdown("### Calibration")
     st.write(
@@ -22487,6 +22697,9 @@ def _render_more_page():
 
     with st.expander("Calibration", expanded=False):
         _render_calibration()
+
+    with st.expander("Opening-line test", expanded=False):
+        _render_opening_line_test()
 
     with st.expander("Totals lab", expanded=False):
         _render_totals_lab()
