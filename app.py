@@ -21091,10 +21091,11 @@ def _render_totals_lab():
             st.markdown(
                 f"**Live card:** {'ON' if on else 'off'} \u2014 totals priced by the "
                 f"new model; top bets when: {_tot2_rule_text(use['rule'])}. "
-                + ("Passed the unseen-season test." if proven else
+                + ("Passed the unseen-season test. Those are \u2605\u2605\u2605; "
+                   "other totals 4+ off stay bets at \u2605\u2605 or \u2605." if proven else
                    "Best record overall, but NOT proven \u2014 it did not pass the "
-                   "unseen-season test, so expect live results below this record.")
-                + " Those are \u2605\u2605\u2605; other totals 4+ off stay bets at \u2605\u2605 or \u2605.")
+                   "unseen-season test, so it adds no bets and no stars. Totals "
+                   "4+ off stay bets at \u2605\u2605 or \u2605."))
             if _se_is_owner():
                 if st.button("Turn off on live card" if on else "Use on live card",
                              key="tot2_adopt"):
@@ -21591,10 +21592,10 @@ def _render_spread_lab():
         st.markdown(
             f"**Live card:** {'ON' if on else 'off'} — spreads priced by the new "
             f"model; top bets when: {_spr2_rule_text(use['rule'])}. "
-            + ("Passed the unseen-season test." if best.get("validated") else
-               "Best record overall, but NOT proven — expect live results "
-               "below this record.")
-            + " Those are \u2605\u2605\u2605; other spreads 4+ off stay bets at \u2605\u2605 or \u2605.")
+            + ("Passed the unseen-season test. Those are \u2605\u2605\u2605; "
+               "other spreads 4+ off stay bets at \u2605\u2605 or \u2605." if best.get("validated") else
+               "Best record overall, but NOT proven, so it adds no bets and no "
+               "stars. Spreads 4+ off stay bets at \u2605\u2605 or \u2605."))
         if _se_is_owner():
             if st.button("Turn off on live card" if on else "Use on live card",
                          key="spr2_adopt"):
