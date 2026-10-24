@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.9.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.10.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -1221,6 +1221,9 @@ def load_model_data(api_key, year):
     returning = _team_map(_safe_fetch(fetch_returning, api_key, year))
     teams = _school_map(_safe_fetch(fetch_fbs_teams, api_key, year))
     venues = _venue_map(_safe_fetch(fetch_venues, api_key))
+    new_fbs, _ = _new_fbs_teams(api_key, year)
+    new_fbs_games = (_fbs_games_played(_safe_fetch(fetch_games, api_key, year), new_fbs)
+                     if new_fbs else {})
 
     # Pre-compute distribution stats used to place unlike metrics on common scales.
     srs_vals = [_num(x.get("rating")) for x in cur_srs.values()]
@@ -1261,6 +1264,8 @@ def load_model_data(api_key, year):
         "returning": returning,
         "teams": teams,
         "venues": venues,
+        "new_fbs": new_fbs,
+        "new_fbs_games": new_fbs_games,
         "stats": {
             "srs_mu": srs_mu, "srs_sd": srs_sd,
             "talent_mu": talent_mu, "talent_sd": talent_sd,
@@ -1281,6 +1286,69 @@ def load_rating_maps(api_key, year):
 FCS_FALLBACK_POWER = -20.0
 FCS_CONFIDENCE_CAP = 62
 FCS_OFFICIAL_BET_CAP = "LEAN"
+
+# ===== v4.10 teams new to FBS =====
+# A team in its first FBS season (Sacramento State in 2026) is on CFBD's FBS
+# list, so the FCS guard above never fires, but every prior-season input is
+# FBS-only and so blank for it. Blanks were filled as "average": SP+ 0.0 in
+# the old model, the training median in the labs, i.e. an even matchup with
+# whoever it played. The labs' carried rating was built on wins over FCS
+# teams. Together that made the model back the new team nearly every week.
+# Now a new team starts at the bottom tenth of last year's FBS, and its games
+# cannot be bets (or earn stars) until it has played a few FBS opponents.
+NEW_FBS_PCTL = 0.10
+NEW_FBS_MIN_FBS_GAMES = 4
+
+
+def _fbs_school_set(api_key, year):
+    return set(_school_map(_safe_fetch(fetch_fbs_teams, api_key, int(year))))
+
+
+def _new_fbs_teams(api_key, year):
+    """(teams FBS this season but not last, last season's FBS set)."""
+    cur = _fbs_school_set(api_key, year)
+    prev = _fbs_school_set(api_key, int(year) - 1)
+    if not cur or not prev:
+        return set(), prev
+    return cur - prev, prev
+
+
+def _fbs_games_played(games, teams):
+    """Completed FBS-vs-FBS games so far, for the given teams."""
+    out = {t: 0 for t in teams}
+    for g in games or []:
+        if g.get("completed") is not True:
+            continue
+        if (str(g.get("homeClassification") or "").lower() != "fbs"
+                or str(g.get("awayClassification") or "").lower() != "fbs"):
+            continue
+        for side in ("homeTeam", "awayTeam"):
+            t = str(g.get(side) or "")
+            if t in out:
+                out[t] += 1
+    return out
+
+
+def _new_fbs_sp_floor(data):
+    """Bottom-tenth FBS SP+ rating/offense and top-tenth defense (allowed),
+    from this season's SP+ once populated, last season's otherwise.
+    Memoised on the data dict."""
+    cached = data.get("_new_fbs_sp_floor")
+    if cached is not None:
+        return cached
+    fbs = set((data.get("teams") or {}).keys())
+    cur, prev = data.get("sp_current") or {}, data.get("sp_previous") or {}
+    src = cur if len(cur) >= 50 else prev
+    rows = [_sp_fields(r) for t, r in src.items() if not fbs or t in fbs]
+    out = {}
+    for k, q in (("rating", NEW_FBS_PCTL), ("offense", NEW_FBS_PCTL),
+                 ("defense", 1.0 - NEW_FBS_PCTL)):
+        vals = [r[k] for r in rows if r.get(k) is not None]
+        out[k] = float(np.quantile(vals, q)) if len(vals) >= 50 else None
+    if out["rating"] is None:
+        out["rating"] = FCS_FALLBACK_POWER
+    data["_new_fbs_sp_floor"] = out
+    return out
 
 def _team_snapshot(team, data, week):
     cw = _current_weight_for_week(week)
@@ -1323,11 +1391,20 @@ def _team_snapshot(team, data, week):
     is_fbs = team in (data.get("teams") or {})
     has_sp = sp["rating"] is not None
     fcs_fallback = (not is_fbs) and (not has_sp)
+    new_fbs = is_fbs and team in (data.get("new_fbs") or ())
+    new_fbs_thin = new_fbs and (
+        (data.get("new_fbs_games") or {}).get(team, 0) < NEW_FBS_MIN_FBS_GAMES)
 
     if fcs_fallback:
         # Critical fix: previously this became 0.0, effectively "average FBS".
         sp["rating"] = FCS_FALLBACK_POWER
         source = "FCS fallback"
+    elif new_fbs and not has_sp:
+        floor = _new_fbs_sp_floor(data)
+        for k in ("rating", "offense", "defense"):
+            if sp.get(k) is None and floor.get(k) is not None:
+                sp[k] = floor[k]
+        source = "New to FBS: bottom-tenth FBS start"
     else:
         source = "Current-year SP+" if team in data["sp_current"] else (
             "Prior-year SP+ fallback" if team in data["sp_previous"] else "Average fallback"
@@ -1356,6 +1433,8 @@ def _team_snapshot(team, data, week):
         "completeness": completeness,
         "is_fbs": is_fbs,
         "fcs_fallback": fcs_fallback,
+        "new_fbs": new_fbs,
+        "new_fbs_thin": new_fbs_thin,
     }
 
 def _team_base_power(team, data, week):
@@ -1656,7 +1735,11 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
     margin_sd, total_sd, confidence, completeness = _uncertainty(week, ar, hr)
     confidence = max(60, confidence - int(environment.get("confidence_penalty", 0)))
 
-    fcs_fallback_used = bool(ar.get("fcs_fallback") or hr.get("fcs_fallback"))
+    new_fbs_thin = bool(ar.get("new_fbs_thin") or hr.get("new_fbs_thin"))
+    # A first-year FBS team with few FBS games is as thin as an FCS fallback,
+    # so it rides the same guard: confidence cap, no BET, no moneyline, off
+    # the card.
+    fcs_fallback_used = bool(ar.get("fcs_fallback") or hr.get("fcs_fallback")) or new_fbs_thin
     if fcs_fallback_used:
         confidence = min(confidence, FCS_CONFIDENCE_CAP)
         margin_sd = min(18.0, margin_sd + 1.0)
@@ -1694,6 +1777,7 @@ def project_game(game, data_or_current, previous_map=None, hfa=DEFAULT_HFA):
         "confidence": confidence,
         "data_completeness": completeness,
         "fcs_fallback_used": fcs_fallback_used,
+        "new_fbs_thin": new_fbs_thin,
         "away_is_fbs": ar.get("is_fbs"),
         "home_is_fbs": hr.get("is_fbs"),
         "components": components,
@@ -2084,7 +2168,7 @@ def _render_top_slate_bet(row, rank):
         odds_txt = ""
 
     if bool(row.get("fcs_fallback_used", False)) and mtype == "MONEYLINE":
-        note = "FCS fallback • moneyline blocked"
+        note = "Thin team data • moneyline blocked"
     else:
         try:
             _o = float(row.get("odds"))
@@ -20544,6 +20628,65 @@ TOT2_FEATURES = [
 ]
 
 
+def _new_fbs_prior(prior, year):
+    """Carried ratings for teams new to FBS in `year` were earned against FCS
+    schedules. Start them no better than the bottom tenth of last season's
+    FBS teams (offense) and no better than the top tenth allowed (defense)."""
+    new, prev = _new_fbs_teams(API_KEY, year)
+    if not new:
+        return prior
+    offs = [v for t, v in prior.get("off", {}).items() if t in prev]
+    dfns = [v for t, v in prior.get("dfn", {}).items() if t in prev]
+    if len(offs) < 50 or len(dfns) < 50:
+        return prior
+    lo_off = float(np.quantile(offs, NEW_FBS_PCTL))
+    hi_dfn = float(np.quantile(dfns, 1.0 - NEW_FBS_PCTL))
+    out = {**prior, "off": dict(prior.get("off", {})), "dfn": dict(prior.get("dfn", {}))}
+    for t in new:
+        out["off"][t] = min(out["off"].get(t, lo_off), lo_off)
+        out["dfn"][t] = max(out["dfn"].get(t, hi_dfn), hi_dfn)
+    return out
+
+
+def _new_fbs_prev_adv(prev_adv, year):
+    """Last season's advanced stats are FBS-only, so a new FBS team has none
+    and the lab filled it with the median: an even matchup. Give it the row
+    of the team at the bottom tenth of last season's FBS by net PPA."""
+    new, _ = _new_fbs_teams(API_KEY, year)
+    missing = [t for t in new if t not in (prev_adv or {})]
+    if not missing or not prev_adv:
+        return prev_adv
+    net = []
+    for t, r in prev_adv.items():
+        f = _v3_adv_fields(r)
+        v = f["off_ppa"] - f["def_ppa"]
+        if np.isfinite(v):
+            net.append((v, t))
+    if len(net) < 50:
+        return prev_adv
+    net.sort()
+    proxy = prev_adv[net[int(NEW_FBS_PCTL * len(net))][1]]
+    out = dict(prev_adv)
+    for t in missing:
+        out[t] = proxy
+    return out
+
+
+def _new_fbs_talent(talent, year):
+    """Same idea for a missing talent score."""
+    new, _ = _new_fbs_teams(API_KEY, year)
+    missing = [t for t in new if not np.isfinite(_v3_num((talent.get(t) or {}).get("talent")))]
+    vals = [_v3_num((r or {}).get("talent")) for r in (talent or {}).values()]
+    vals = [v for v in vals if np.isfinite(v)]
+    if not missing or len(vals) < 50:
+        return talent
+    lo = float(np.quantile(vals, NEW_FBS_PCTL))
+    out = dict(talent)
+    for t in missing:
+        out[t] = {"team": t, "talent": lo}
+    return out
+
+
 def _tot2_completed(games):
     out = []
     for g in games or []:
@@ -20670,6 +20813,7 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
         by_game[key] = normalize_game_lines([lr], game_id=gid)
     pre = _v3_preseason_data(int(year))
     prev_adv = pre.get("prev_adv") or {}
+    prev_adv_ctx = _new_fbs_prev_adv(prev_adv, year)
     prev_games = _tot2_completed(get_backtest_games(int(year) - 1))
     gp_prev = {}
     for g in prev_games:
@@ -20723,8 +20867,8 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
             ha = _v3_adv_fields((cur_adv or {}).get(home))
             aa = _v3_adv_fields((cur_adv or {}).get(away))
             row.update(_v3_total_context(ha, aa, "cur"))
-            hp = _v3_adv_fields(prev_adv.get(home))
-            ap = _v3_adv_fields(prev_adv.get(away))
+            hp = _v3_adv_fields(prev_adv_ctx.get(home))
+            ap = _v3_adv_fields(prev_adv_ctx.get(away))
             row.update(_v3_total_context(hp, ap, "prior"))
             row["old_total"] = np.nan
             if old_data is not None:
@@ -20749,6 +20893,7 @@ def _tot2_build(scope="All FBS", progress=None, last=None, fresh_season=None,
     for yr in range(first, last + 1):
         if progress:
             progress(f"Season {yr}")
+        prior = _new_fbs_prior(prior, yr)
         rows, final = _tot2_season_rows(yr, prior, scope,
                                         fresh=(yr == fresh_season), with_old=with_old)
         all_rows.extend(rows)
@@ -21003,7 +21148,8 @@ def _tot2_live_state(season, week):
     prior = {"off": {}, "dfn": {}, "mu": 28.0, "hfa": 1.5}
     for yr in (season - 2, season - 1):
         prior = _tot2_carry(_tot2_fit_ratings(
-            _tot2_completed(get_backtest_games(int(yr))), prior))
+            _tot2_completed(get_backtest_games(int(yr))), _new_fbs_prior(prior, yr)))
+    prior = _new_fbs_prior(prior, season)
     cur = [g for g in _tot2_completed(get_finals_games(int(season)))
            if int(g.get("week") or 1) < int(week)]
     r = _tot2_fit_ratings(cur, prior)
@@ -21017,7 +21163,8 @@ def _tot2_live_state(season, week):
     cur_adv = _v3_advanced_through(int(season), int(week) - 1) if int(week) > 1 else {}
     prev_adv = (_v3_preseason_data(int(season)) or {}).get("prev_adv") or {}
     return {"r": r, "gp_cur": gp_cur, "gp_prev": gp_prev,
-            "cur_adv": cur_adv or {}, "prev_adv": prev_adv}
+            "cur_adv": cur_adv or {}, "prev_adv": prev_adv,
+            "prev_adv_ctx": _new_fbs_prev_adv(prev_adv, season)}
 
 
 def _tot2_gid(x):
@@ -21057,8 +21204,9 @@ def _tot2_live_total(row, coefs):
         f["exp_total_x_plays"] = f["exp_total"] * f["exp_plays"]
         f.update(_v3_total_context(_v3_adv_fields(stt["cur_adv"].get(home)),
                                    _v3_adv_fields(stt["cur_adv"].get(away)), "cur"))
-        f.update(_v3_total_context(_v3_adv_fields(stt["prev_adv"].get(home)),
-                                   _v3_adv_fields(stt["prev_adv"].get(away)), "prior"))
+        _pctx = stt.get("prev_adv_ctx") or stt["prev_adv"]
+        f.update(_v3_total_context(_v3_adv_fields(_pctx.get(home)),
+                                   _v3_adv_fields(_pctx.get(away)), "prior"))
         z = []
         for k in coefs["features"]:
             v = _v3_num(f.get(k))
@@ -21396,8 +21544,8 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
             key = gid
         by_game[key] = normalize_game_lines([lr], game_id=gid)
     pre = _v3_preseason_data(int(year)) or {}
-    prev_adv = pre.get("prev_adv") or {}
-    talent = pre.get("talent") or {}
+    prev_adv = _new_fbs_prev_adv(pre.get("prev_adv") or {}, year)
+    talent = _new_fbs_talent(pre.get("talent") or {}, year)
     try:
         old_data = (_bt_prior_only_data(get_backtest_model_data(int(year)))
                     if with_old else None)
@@ -21450,6 +21598,7 @@ def _spr2_build(scope="All FBS", progress=None, last=None, fresh_season=None,
     for yr in range(TOT2_FIRST_SEASON, int(last or max(TOT2_TEST_SEASONS)) + 1):
         if progress:
             progress(f"Season {yr}")
+        prior = _new_fbs_prior(prior, yr)
         rows, final = _spr2_season_rows(yr, prior, scope,
                                         fresh=(yr == fresh_season), with_old=with_old)
         out.extend(rows)
@@ -21682,11 +21831,13 @@ def _spr2_apply_to_spreads(card, ad):
                 continue
             week = int(g.get("week") or 1)
             stt = _tot2_live_state(season, week)
-            talent = ((_v3_preseason_data(season) or {}).get("talent")) or {}
+            talent = _new_fbs_talent(
+                ((_v3_preseason_data(season) or {}).get("talent")) or {}, season)
             home, away = str(r.get("home_team")), str(r.get("away_team"))
             neutral = bool(g.get("neutralSite"))
             f = _spr2_features(stt["r"], home, away, neutral, week,
-                               stt["cur_adv"], stt["prev_adv"], g, talent)
+                               stt["cur_adv"], stt.get("prev_adv_ctx") or stt["prev_adv"],
+                               g, talent)
             nm = float(_spr2_predict(ad["coefs"], pd.DataFrame([f]))[0])
             mh = _v3_num(r.get("market_home_spread_display"))
             if not np.isfinite(mh):
