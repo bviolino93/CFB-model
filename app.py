@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.10.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.11.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -20763,6 +20763,122 @@ def _tot2_expected(r, home, away, neutral):
     return hp + ap
 
 
+# --- Recent form (v4.11) -----------------------------------------------------
+# The season ratings weigh a Week 2 game the same as last Saturday, so a team
+# whose offense fell off (a starting QB hurt, say) keeps its early-season
+# number for weeks. Form re-fits the ratings with the last few weeks counted
+# most, shrunk toward the season rating, and the feature is the gap between
+# the two: how much better or worse a matchup looks on recent games alone.
+# Still opponent-adjusted, and league scoring and home field stay fixed at
+# the season values, so form only moves teams relative to each other.
+#
+# The labs only use form when it lowers the average miss out of sample (see
+# _form_gate); otherwise it is left out and the model is unchanged.
+
+FORM_HALF_LIFE_WEEKS = 1.5        # last week counts 1, three weeks ago ~0.25
+FORM_WINDOW_WEEKS = 5             # older games do not move form at all
+FORM_PRIOR_GAMES = 2.0            # two games of evidence to move off the season rating
+FORM_MIN_SEASONS_BETTER = 3       # of the 4 test seasons
+FORM_MIN_T = 1.645                # the gain must beat luck at 95%, one-sided
+TOT2_FORM_FEATURES = ["form_total"]
+SPR2_FORM_FEATURES = ["form_margin"]
+
+
+def _form_ratings(before, r, week):
+    """Season ratings `r`, re-fit on recent games with recency weights."""
+    win = [g for g in before
+           if int(g.get("week") or 1) >= int(week) - FORM_WINDOW_WEEKS]
+    if not win:
+        return r
+    teams = sorted({str(g["homeTeam"]) for g in win} | {str(g["awayTeam"]) for g in win})
+    ix = {t: i for i, t in enumerate(teams)}
+    T = len(teams)
+    n = 2 * len(win)
+    X = np.zeros((n, 2 * T))
+    y = np.zeros(n)
+    wt = np.zeros(n)
+    mu, hfa = float(r["mu"]), float(r["hfa"])
+    for k, g in enumerate(win):
+        h, a = ix[str(g["homeTeam"])], ix[str(g["awayTeam"])]
+        home = 0.0 if bool(g.get("neutralSite")) else 1.0
+        w = 0.5 ** ((int(week) - 1 - int(g.get("week") or 1)) / FORM_HALF_LIFE_WEEKS)
+        X[2 * k, h] = 1; X[2 * k, T + a] = 1
+        y[2 * k] = float(g["homePoints"]) - mu - hfa * home
+        X[2 * k + 1, a] = 1; X[2 * k + 1, T + h] = 1
+        y[2 * k + 1] = float(g["awayPoints"]) - mu
+        wt[2 * k] = wt[2 * k + 1] = w
+    b0 = np.zeros(2 * T)
+    for t, i in ix.items():
+        b0[i] = float(r["off"].get(t, 0.0))
+        b0[T + i] = float(r["dfn"].get(t, 0.0))
+    A = X.T @ (X * wt[:, None]) + FORM_PRIOR_GAMES * np.eye(2 * T)
+    b = np.linalg.solve(A, X.T @ (wt * y) + FORM_PRIOR_GAMES * b0)
+    off, dfn = dict(r["off"]), dict(r["dfn"])
+    for t, i in ix.items():
+        off[t] = float(b[i])
+        dfn[t] = float(b[T + i])
+    return {"off": off, "dfn": dfn, "mu": mu, "hfa": hfa}
+
+
+def _form_gate(df, pred_fn, ycol, base, extra):
+    """Walk-forward with and without the form features, on the same games.
+    Form is used only if it lowers the average miss by more than luck
+    explains (paired, game by game, 95% one-sided) AND does so in at least
+    FORM_MIN_SEASONS_BETTER of the test seasons. A feature that is pure noise
+    still shaves a hair off the miss half the time, so "lower" alone is not
+    enough."""
+    out = {"used": False, "features": list(base), "seasons": {}}
+    if any(f not in df.columns for f in extra):
+        out["msg"] = "no form data"
+        return out
+    errs = {"base": [], "form": []}
+    better = 0
+    for s in TOT2_TEST_SEASONS:
+        tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
+        te = df[df["season"] == s].dropna(subset=[ycol])
+        if tr.empty or te.empty:
+            continue
+        pb = pred_fn(tr, te, list(base))
+        pf = pred_fn(tr, te, list(base) + list(extra))
+        if pb is None or pf is None:
+            continue
+        y = te[ycol].to_numpy(dtype=float)
+        eb, ef = np.abs(y - np.asarray(pb, dtype=float)), np.abs(y - np.asarray(pf, dtype=float))
+        errs["base"].append(eb)
+        errs["form"].append(ef)
+        out["seasons"][str(s)] = [round(float(eb.mean()), 3), round(float(ef.mean()), 3)]
+        better += int(ef.mean() < eb.mean())
+    if not errs["base"]:
+        out["msg"] = "not enough history"
+        return out
+    eb, ef = np.concatenate(errs["base"]), np.concatenate(errs["form"])
+    mb, mf = float(eb.mean()), float(ef.mean())
+    gain = eb - ef
+    sd = float(gain.std(ddof=1)) if len(gain) > 1 else 0.0
+    t = float(gain.mean() / (sd / math.sqrt(len(gain)))) if sd > 0 else 0.0
+    out.update(mae_base=round(mb, 3), mae_form=round(mf, 3), better=better,
+               tested=len(errs["base"]), t=round(t, 2))
+    if (t >= FORM_MIN_T
+            and better >= min(FORM_MIN_SEASONS_BETTER, len(errs["base"]))):
+        out["used"] = True
+        out["features"] = list(base) + list(extra)
+    return out
+
+
+def _form_gate_text(g):
+    """One line for the lab pages."""
+    if not g:
+        return None
+    if g.get("mae_base") is None:
+        return f"Recent form: not tested ({g.get('msg', 'no data')})."
+    verdict = "**used**" if g.get("used") else "**left out**"
+    return (f"Recent form (last few games, opponent-adjusted): {verdict}. Avg miss "
+            f"{g['mae_base']:.2f} pts without it, {g['mae_form']:.2f} with it; better in "
+            f"{g.get('better', 0)} of {g.get('tested', 0)} unseen seasons, "
+            f"signal t {g.get('t', 0):+.2f} (needs +{FORM_MIN_T:g} and "
+            f"{FORM_MIN_SEASONS_BETTER}+ seasons).")
+
+
 def _tot2_per_game(adv, gp, key):
     v = _v3_num((adv or {}).get(key))
     if not np.isfinite(v) or gp <= 0:
@@ -20831,6 +20947,7 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
     for w in weeks:
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        rf = _form_ratings(before, r, w)
         cur_adv = _v3_advanced_through(int(year), w - 1) if w > 1 else {}
         gp_cur = {}
         for g in before:
@@ -20859,6 +20976,8 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
                 "actual_total": float(g["homePoints"]) + float(g["awayPoints"]),
                 "market_total": mt,
                 "exp_total": _tot2_expected(r, home, away, neutral),
+                "form_total": (_tot2_expected(rf, home, away, neutral)
+                               - _tot2_expected(r, home, away, neutral)),
                 "exp_plays": _tot2_pace(cur_adv or {}, prev_adv, gp_cur, gp_prev, home, away),
                 "week_num": float(w),
                 "neutral": 1.0 if neutral else 0.0,
@@ -20925,14 +21044,19 @@ def _tot2_fit_predict(train, test, feats):
     return pred, use
 
 
-def _tot2_walk_forward(df):
+def _tot2_wf_pred(train, test, feats):
+    return _tot2_fit_predict(train, test, feats)[0]
+
+
+def _tot2_walk_forward(df, feats=None):
+    feats = feats or TOT2_FEATURES
     out = []
     for s in TOT2_TEST_SEASONS:
         tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
         te = df[df["season"] == s].copy()
         if tr.empty or te.empty:
             continue
-        pred, _ = _tot2_fit_predict(tr, te, TOT2_FEATURES)
+        pred, _ = _tot2_fit_predict(tr, te, feats)
         if pred is None:
             continue
         te["new_total"] = pred
@@ -21153,6 +21277,7 @@ def _tot2_live_state(season, week):
     cur = [g for g in _tot2_completed(get_finals_games(int(season)))
            if int(g.get("week") or 1) < int(week)]
     r = _tot2_fit_ratings(cur, prior)
+    rf = _form_ratings(cur, r, week)
     gp_cur, gp_prev = {}, {}
     for g in cur:
         for t in (str(g["homeTeam"]), str(g["awayTeam"])):
@@ -21162,7 +21287,7 @@ def _tot2_live_state(season, week):
             gp_prev[t] = gp_prev.get(t, 0) + 1
     cur_adv = _v3_advanced_through(int(season), int(week) - 1) if int(week) > 1 else {}
     prev_adv = (_v3_preseason_data(int(season)) or {}).get("prev_adv") or {}
-    return {"r": r, "gp_cur": gp_cur, "gp_prev": gp_prev,
+    return {"r": r, "rf": rf, "gp_cur": gp_cur, "gp_prev": gp_prev,
             "cur_adv": cur_adv or {}, "prev_adv": prev_adv,
             "prev_adv_ctx": _new_fbs_prev_adv(prev_adv, season)}
 
@@ -21202,6 +21327,8 @@ def _tot2_live_total(row, coefs):
             "week_num": float(week), "neutral": 1.0 if neutral else 0.0,
         }
         f["exp_total_x_plays"] = f["exp_total"] * f["exp_plays"]
+        f["form_total"] = (_tot2_expected(stt.get("rf") or stt["r"], home, away, neutral)
+                           - f["exp_total"])
         f.update(_v3_total_context(_v3_adv_fields(stt["cur_adv"].get(home)),
                                    _v3_adv_fields(stt["cur_adv"].get(away)), "cur"))
         _pctx = stt.get("prev_adv_ctx") or stt["prev_adv"]
@@ -21303,10 +21430,10 @@ def _tot2_load():
         return None
 
 
-def _tot2_final_fit(df):
+def _tot2_final_fit(df, feats=None):
     """Weights fit on every graded season, saved for live use once adopted."""
     tr = df[df["season"] >= TOT2_FIRST_SEASON].dropna(subset=["actual_total"])
-    use = [f for f in TOT2_FEATURES if f in tr.columns
+    use = [f for f in (feats or TOT2_FEATURES) if f in tr.columns
            and pd.to_numeric(tr[f], errors="coerce").notna().mean() >= 0.5]
     if len(use) < 2:
         return None
@@ -21353,13 +21480,16 @@ def _render_totals_lab():
                         st.error("No games with a closing total were found.")
                         return
                     _s.update(label="Testing against the closing line…")
-                    wf = _tot2_walk_forward(df)
+                    gate = _form_gate(df, _tot2_wf_pred, "actual_total",
+                                      TOT2_FEATURES, TOT2_FORM_FEATURES)
+                    wf = _tot2_walk_forward(df, gate["features"])
                     if wf.empty:
                         st.error("Not enough history to test.")
                         return
                     rep = _tot2_report(wf)
                     rep["scope"] = _scope
-                    coefs = _tot2_final_fit(df)
+                    rep["form"] = gate
+                    coefs = _tot2_final_fit(df, gate["features"])
                     if not _tot2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -21380,6 +21510,9 @@ def _render_totals_lab():
     if (saved.get("coefs") or {}).get("trained_through"):
         st.caption(f"Weights refreshed by the Sunday retrain, through "
                    f"{saved['coefs']['trained_through']}.")
+    _ft = _form_gate_text(rep.get("form"))
+    if _ft:
+        st.caption(_ft)
 
     # 1. Can it reach the extremes?
     st.markdown("**1. Can it reach big and small totals?**")
@@ -21517,9 +21650,12 @@ def _spr2_expected_margin(r, home, away, neutral):
     return hp - ap
 
 
-def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent):
+def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent,
+                   rf=None):
     f = {
         "exp_margin": _spr2_expected_margin(r, home, away, neutral),
+        "form_margin": (_spr2_expected_margin(rf, home, away, neutral)
+                        - _spr2_expected_margin(r, home, away, neutral)) if rf else 0.0,
         "elo_diff": _v3_num(game.get("homePregameElo")) - _v3_num(game.get("awayPregameElo")),
         "talent_diff": (_v3_num((talent.get(home) or {}).get("talent"))
                         - _v3_num((talent.get(away) or {}).get("talent"))),
@@ -21556,6 +21692,7 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
     for w in sorted({int(g.get("week") or 1) for g in games}):
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        rf = _form_ratings(before, r, w)
         cur_adv = (_v3_advanced_through(int(year), w - 1) if w > 1 else {}) or {}
         for g in games:
             if int(g.get("week") or 1) != w or not _bt_game_scope(g, scope):
@@ -21578,7 +21715,7 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
                 "market_margin": -hs,
             }
             row.update(_spr2_features(r, home, away, neutral, w, cur_adv,
-                                      prev_adv, g, talent))
+                                      prev_adv, g, talent, rf))
             row["old_margin"] = np.nan
             if old_data is not None:
                 try:
@@ -21634,14 +21771,20 @@ def _spr2_predict(c, frame):
     return c["ymean"] + X.to_numpy() @ np.array(c["beta"])
 
 
-def _spr2_walk_forward(df):
+def _spr2_wf_pred(train, test, feats):
+    c = _spr2_fit(train, feats)
+    return None if c is None else _spr2_predict(c, test)
+
+
+def _spr2_walk_forward(df, feats=None):
+    feats = feats or SPR2_FEATURES
     out = []
     for s in TOT2_TEST_SEASONS:
         tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
         te = df[df["season"] == s].copy()
         if tr.empty or te.empty:
             continue
-        c = _spr2_fit(tr, SPR2_FEATURES)
+        c = _spr2_fit(tr, feats)
         if c is None:
             continue
         te["new_margin"] = _spr2_predict(c, te)
@@ -21837,7 +21980,7 @@ def _spr2_apply_to_spreads(card, ad):
             neutral = bool(g.get("neutralSite"))
             f = _spr2_features(stt["r"], home, away, neutral, week,
                                stt["cur_adv"], stt.get("prev_adv_ctx") or stt["prev_adv"],
-                               g, talent)
+                               g, talent, stt.get("rf"))
             nm = float(_spr2_predict(ad["coefs"], pd.DataFrame([f]))[0])
             mh = _v3_num(r.get("market_home_spread_display"))
             if not np.isfinite(mh):
@@ -21893,13 +22036,16 @@ def _render_spread_lab():
                         st.error("No games with a closing spread were found.")
                         return
                     _s.update(label="Testing against the closing spread…")
-                    wf = _spr2_walk_forward(df)
+                    gate = _form_gate(df, _spr2_wf_pred, "actual_margin",
+                                      SPR2_FEATURES, SPR2_FORM_FEATURES)
+                    wf = _spr2_walk_forward(df, gate["features"])
                     if wf.empty:
                         st.error("Not enough history to test.")
                         return
                     rep = _spr2_report(wf)
                     rep["scope"] = _scope
-                    coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+                    rep["form"] = gate
+                    coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], gate["features"])
                     if not _spr2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -21918,6 +22064,9 @@ def _render_spread_lab():
     if (saved.get("coefs") or {}).get("trained_through"):
         st.caption(f"Weights refreshed by the Sunday retrain, through "
                    f"{saved['coefs']['trained_through']}.")
+    _ft = _form_gate_text(rep.get("form"))
+    if _ft:
+        st.caption(_ft)
 
     def _rec(v):
         if not v or not (v[0] + v[1]):
@@ -22044,6 +22193,8 @@ AR_LABELS = {
     "hfa_flag": "home field",
     "week_num": "week of season",
     "neutral": "neutral site",
+    "form_total": "recent form",
+    "form_margin": "recent form",
 }
 
 # One fresh download of the current season per run, shared by both labs.
@@ -22124,11 +22275,14 @@ def _ar_retrain_lab(lab, season, last_seen=None):
         loader, saver, build, ycol, col, mcol = (_tot2_load, _tot2_save, _tot2_build,
                                                  "actual_total", "pred", "market_total")
         fit = _tot2_final_fit
+        base, extra, pred_fn = TOT2_FEATURES, TOT2_FORM_FEATURES, _tot2_wf_pred
         rec = lambda d: _tot2_record(d, _tot2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
     else:
         loader, saver, build, ycol, col, mcol = (_spr2_load, _spr2_save, _spr2_build,
                                                  "actual_margin", "pred", "market_margin")
-        fit = lambda d: _spr2_fit(d[d["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+        fit = lambda d, feats=None: _spr2_fit(d[d["season"] >= TOT2_FIRST_SEASON],
+                                              feats or SPR2_FEATURES)
+        base, extra, pred_fn = SPR2_FEATURES, SPR2_FORM_FEATURES, _spr2_wf_pred
         rec = lambda d: _spr2_record(d, _spr2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
 
     try:
@@ -22158,10 +22312,29 @@ def _ar_retrain_lab(lab, season, last_seen=None):
     if len(hold) < AR_MIN_HOLDOUT:
         return {**out, "result": "kept", "msg": "too few recent games to test"}
 
-    cand = fit(train)
+    y = hold[ycol].to_numpy(dtype=float)
+    mae_of = lambda c: float(np.mean(np.abs(y - np.asarray(_ar_predict(c, hold), dtype=float))))
+
+    # Recent form joins the candidate only if it lowers the miss on the
+    # unseen test seasons (the lab's gate, on games before the holdout) AND
+    # on the holdout weeks themselves. Otherwise the candidate is the plain
+    # model, exactly as before.
+    gate = _form_gate(train, pred_fn, ycol, base, extra)
+    cand = fit(train, base)
     if cand is None:
         return {**out, "result": "skipped", "msg": "not enough data to fit"}
-    y = hold[ycol].to_numpy(dtype=float)
+    feats = list(base)
+    form = {"used": False, "gate": {k: gate.get(k) for k in
+                                    ("used", "mae_base", "mae_form", "better", "tested", "t", "msg")}}
+    if gate["used"]:
+        cand_f = fit(train, gate["features"])
+        if cand_f is not None:
+            mb, mf = mae_of(cand), mae_of(cand_f)
+            form.update(hold_base=round(mb, 3), hold_form=round(mf, 3))
+            if mf < mb:
+                cand, feats = cand_f, gate["features"]
+                form["used"] = True
+    out["form"] = form
     hold[col] = _ar_predict(cand, hold)
     mae_new = float(np.mean(np.abs(y - hold[col].to_numpy(dtype=float))))
     out["new_record"] = list(rec(hold))
@@ -22172,7 +22345,7 @@ def _ar_retrain_lab(lab, season, last_seen=None):
 
     if mae_new >= mae_old:
         return {**out, "result": "kept"}
-    final = fit(df)
+    final = fit(df, feats)
     if final is None:
         return {**out, "result": "skipped", "msg": "not enough data to fit"}
     final["trained_through"] = f"{season} wk {int(order.max()) % 100}"
@@ -22254,6 +22427,11 @@ def _ar_maybe_start():
 
 def _ar_lab_line(name, r):
     res = (r or {}).get("result")
+    fm = (r or {}).get("form") or {}
+    form_txt = ""
+    if fm:
+        form_txt = (" Recent form is in." if fm.get("used")
+                    else " Recent form left out (it didn't lower the miss on unseen games).")
     if res == "updated":
         txt = (f"**{name} updated.** Avg miss on the last {AR_HOLDOUT_WEEKS} weeks "
                f"({r['holdout_n']} games): {r['mae_old']:.2f} → {r['mae_new']:.2f} pts.")
@@ -22261,12 +22439,12 @@ def _ar_lab_line(name, r):
         if sh:
             txt += " Leans " + ", ".join(
                 f"{'more' if s['delta'] > 0 else 'less'} on {s['label']}" for s in sh) + "."
-        return txt
+        return txt + form_txt
     if res == "kept":
         if r.get("mae_new") is not None:
             return (f"**{name} kept.** New weights missed by {r['mae_new']:.2f} pts vs "
                     f"{r['mae_old']:.2f} for the current ones on the last "
-                    f"{AR_HOLDOUT_WEEKS} weeks ({r['holdout_n']} games).")
+                    f"{AR_HOLDOUT_WEEKS} weeks ({r['holdout_n']} games)." + form_txt)
         return f"**{name} kept** — {r.get('msg', 'no change')}."
     if res == "no_new":
         return f"**{name}:** no new games since the last retrain."
