@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.7.2"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.7.3"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18101,6 +18101,12 @@ def _render_tracker_exports(df, _an):
 TOTAL_CENTER_MIN_GAMES = 6
 
 
+def _se_fm_true(v):
+    """True only for a real filter match. A flipped side should lose a match
+    it had, not gain a two-star cap it never had."""
+    return v is not None and str(v).strip().upper() in ("TRUE", "1", "1.0")
+
+
 def _se_center_totals(out):
     if out is None or out.empty or "fair_total" not in out.columns:
         return out
@@ -18120,9 +18126,10 @@ def _se_center_totals(out):
         m = float(mkt[idx])
         side = "OVER" if nt > m else "UNDER"
         if side != str(out.at[idx, "pick_side"]).upper():
-            for c in ("tot2_rule_ok", "filter_match"):
-                if c in out.columns:
-                    out.at[idx, c] = False
+            if "tot2_rule_ok" in out.columns:
+                out.at[idx, "tot2_rule_ok"] = False
+            if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
+                out.at[idx, "filter_match"] = False
         p_over = 1.0 - NormalDist(mu=nt, sigma=BASE_TOTAL_SD).cdf(m)
         out.at[idx, "fair_total"] = nt
         out.at[idx, "fair_display"] = nt
@@ -20944,7 +20951,9 @@ def _tot2_apply_to_totals(out, ad):
         out.at[idx, "selection"] = f"{side.title()} {mkt:g}"
         out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
         out.at[idx, "tot2_rule_ok"] = ok
-        out.at[idx, "filter_match"] = ok
+        # Blank (not False) when the filter is unproven: False caps a bet at
+        # two stars, and an unproven filter should neither add nor cap.
+        out.at[idx, "filter_match"] = ok if ad.get("proven") else None
         out.at[idx, "model_version"] = f"{MODEL_VERSION}-tot2"
     return out
 
@@ -21534,7 +21543,7 @@ def _spr2_apply_to_spreads(card, ad):
                 out.at[idx, "reliability"] = _se_reliability_from(
                     r.get("model_confidence"), r.get("data_completeness")) or "LOW"
             out.at[idx, "spr2_rule_ok"] = ok
-            out.at[idx, "filter_match"] = ok
+            out.at[idx, "filter_match"] = ok if ad.get("proven") else None
         except Exception:
             continue
     return out
@@ -21897,7 +21906,8 @@ def _inj_apply(card, adj):
                 side = "HOME" if edge > 0 else "AWAY"
                 if side != str(r.get("pick_side")) and "spr2_rule_ok" in out.columns:
                     out.at[idx, "spr2_rule_ok"] = False
-                    out.at[idx, "filter_match"] = False
+                    if _se_fm_true(out.at[idx, "filter_match"]):
+                        out.at[idx, "filter_match"] = False
                 team = r.get("home_team") if side == "HOME" else r.get("away_team")
                 line = mh if side == "HOME" else -mh
                 out.at[idx, "fair_home_spread"] = fh
@@ -21913,7 +21923,8 @@ def _inj_apply(card, adj):
                 side = "OVER" if ft > mkt else "UNDER"
                 if side != str(r.get("pick_side")).upper() and "tot2_rule_ok" in out.columns:
                     out.at[idx, "tot2_rule_ok"] = False
-                    out.at[idx, "filter_match"] = False
+                    if _se_fm_true(out.at[idx, "filter_match"]):
+                        out.at[idx, "filter_match"] = False
                 out.at[idx, "fair_display"] = ft
                 out.at[idx, "fair_total"] = ft
                 out.at[idx, "point_edge"] = abs(ft - mkt)
