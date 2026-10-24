@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.7.1"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.7.2"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18089,6 +18089,50 @@ def _render_tracker_exports(df, _an):
     )
 
 
+# Totals are judged RELATIVE to the market, slate by slate. Every
+# calibration run says the model's overall scoring level carries no
+# information the closing line lacks, and any small level error in the
+# ratings (SP+ points scale, the lab's fitted league mean, a scoring trend
+# this season) turns straight into "every game is an Over" because the pick
+# is just model-above-line. So the median model-minus-market gap on the slate
+# is removed before sides are chosen: the model still says which games it
+# thinks are high or low against their own numbers, but it cannot call the
+# whole card high. Needs enough games for the median to mean something.
+TOTAL_CENTER_MIN_GAMES = 6
+
+
+def _se_center_totals(out):
+    if out is None or out.empty or "fair_total" not in out.columns:
+        return out
+    out = out.copy()
+    fair = pd.to_numeric(out["fair_total"], errors="coerce")
+    mkt = pd.to_numeric(out["market_total"], errors="coerce")
+    ok = fair.notna() & mkt.notna()
+    out["total_level_shift"] = 0.0
+    if int(ok.sum()) < TOTAL_CENTER_MIN_GAMES:
+        return out
+    shift = float((fair[ok] - mkt[ok]).median())
+    if abs(shift) < 1e-9:
+        return out
+    out["total_level_shift"] = shift
+    for idx in out.index[ok]:
+        nt = float(fair[idx]) - shift
+        m = float(mkt[idx])
+        side = "OVER" if nt > m else "UNDER"
+        if side != str(out.at[idx, "pick_side"]).upper():
+            for c in ("tot2_rule_ok", "filter_match"):
+                if c in out.columns:
+                    out.at[idx, c] = False
+        p_over = 1.0 - NormalDist(mu=nt, sigma=BASE_TOTAL_SD).cdf(m)
+        out.at[idx, "fair_total"] = nt
+        out.at[idx, "fair_display"] = nt
+        out.at[idx, "point_edge"] = abs(nt - m)
+        out.at[idx, "pick_side"] = side
+        out.at[idx, "selection"] = f"{side.title()} {m:g}"
+        out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
+    return out
+
+
 def _v410_total_card(slate_df):
     """Convert v4.1 independent total projections into production-card rows."""
     if slate_df is None or slate_df.empty:
@@ -18165,6 +18209,8 @@ def _v410_total_card(slate_df):
         _ad = None
     if _ad:
         out = _tot2_apply_to_totals(out, _ad)
+
+    out = _se_center_totals(out)
 
     # Highest-EV official total gets BEST BET only within totals. When combined
     # with spreads below, a single overall BEST BET is chosen.
@@ -26593,6 +26639,16 @@ if run_mode == "Full Slate":
             v36_card = pd.DataFrame()
 
         total_card = _v410_total_card(slate_df)
+        try:
+            _shift = float(total_card["total_level_shift"].iloc[0]) \
+                if not total_card.empty and "total_level_shift" in total_card.columns else 0.0
+            if abs(_shift) >= 0.05:
+                st.caption(
+                    f"Totals re-centred: the model ran {_shift:+.1f} pts vs the "
+                    "market on this slate (median), so that was removed before "
+                    "picking Overs and Unders.")
+        except Exception:
+            pass
         combined_card = _v410_combine_cards(v36_card, total_card)
 
         st.session_state["cfb_v36_latest_date"] = str(selected_date)
