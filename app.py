@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.10.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.13.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -16723,6 +16723,7 @@ V401_TRACKER_COLUMNS = [
     "closing_captured_at",     # timestamp of the closing snapshot
     "filter_match",            # passed the lab's best filter (blank = no lab)
     "inj_adj",                 # your injury adjustment that touched this play
+    "bc_reason",               # the bettor's checklist verdict, in words
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -17219,7 +17220,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "model_confidence": fnum("model_confidence"),
             "data_completeness": fnum("data_completeness"),
             "selector_score": fnum("selector_score"),
-            "suggested_units": 1.0,
+            "suggested_units": (fnum("bc_units") or 1.0) if tier == "OFFICIAL" else 1.0,
             "frozen_at_et": now,
             "status": "FROZEN",
             "result": "",
@@ -17246,6 +17247,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "conference_game": r.get("conference_game"),
             "closing_captured_at": None,
             "inj_adj": str(r.get("inj_adj") or "") if pd.notna(r.get("inj_adj", np.nan)) else "",
+            "bc_reason": str(r.get("bc_reason") or "") if pd.notna(r.get("bc_reason", np.nan)) else "",
             # Save the card's own filter_match, not the lab's rule flag: an
             # unproven lab sets the flag False, which capped every frozen
             # bet at two stars while the live card showed three.
@@ -18258,21 +18260,25 @@ def _se_center_totals(out):
     out["total_tilt"] = slope
     for idx in out.index[ok]:
         m = float(mkt[idx])
-        nt = m + (float(fair[idx]) - (intercept + slope * m))
-        side = "OVER" if nt > m else "UNDER"
-        if side != str(out.at[idx, "pick_side"]).upper():
-            if "tot2_rule_ok" in out.columns:
-                out.at[idx, "tot2_rule_ok"] = False
-            if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
-                out.at[idx, "filter_match"] = False
-        p_over = 1.0 - NormalDist(mu=nt, sigma=BASE_TOTAL_SD).cdf(m)
-        out.at[idx, "fair_total"] = nt
-        out.at[idx, "fair_display"] = nt
-        out.at[idx, "point_edge"] = abs(nt - m)
-        out.at[idx, "pick_side"] = side
-        out.at[idx, "selection"] = f"{side.title()} {m:g}"
-        out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
+        _se_set_total(out, idx, m + (float(fair[idx]) - (intercept + slope * m)), m)
     return out
+
+
+def _se_set_total(out, idx, nt, m):
+    """Write a new model total for one card row and re-pick its side."""
+    side = "OVER" if nt > m else "UNDER"
+    if side != str(out.at[idx, "pick_side"]).upper():
+        if "tot2_rule_ok" in out.columns:
+            out.at[idx, "tot2_rule_ok"] = False
+        if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
+            out.at[idx, "filter_match"] = False
+    p_over = 1.0 - NormalDist(mu=nt, sigma=BASE_TOTAL_SD).cdf(m)
+    out.at[idx, "fair_total"] = nt
+    out.at[idx, "fair_display"] = nt
+    out.at[idx, "point_edge"] = abs(nt - m)
+    out.at[idx, "pick_side"] = side
+    out.at[idx, "selection"] = f"{side.title()} {m:g}"
+    out.at[idx, "cover_probability"] = p_over if side == "OVER" else 1.0 - p_over
 
 
 # Spreads get the same slate-level treatment as totals. Calibration found
@@ -18312,35 +18318,39 @@ def _se_center_spreads(card):
     for idx in out.index[ok]:
         m_margin = -float(mh[idx])
         new_margin = m_margin + (-float(fh[idx]) - (intercept + slope * m_margin))
-        fair_home = -new_margin
-        line_home = float(mh[idx])
-        edge = line_home - fair_home
-        side = "HOME" if edge > 0 else "AWAY"
-        if side != str(out.at[idx, "pick_side"]).upper():
-            if "spr2_rule_ok" in out.columns:
-                out.at[idx, "spr2_rule_ok"] = False
-            if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
-                out.at[idx, "filter_match"] = False
-            # The old reliability graded the other side; rebuild it from
-            # data quality alone, as the spread lab does on a flip.
-            rel = _se_reliability_from(
-                out.at[idx, "model_confidence"] if "model_confidence" in out.columns else None,
-                out.at[idx, "data_completeness"] if "data_completeness" in out.columns else None,
-            )
-            if rel:
-                out.at[idx, "reliability"] = rel
-        team = out.at[idx, "home_team"] if side == "HOME" else out.at[idx, "away_team"]
-        line = line_home if side == "HOME" else -line_home
-        p_home = cover_probability(new_margin, line_home, "home", BASE_MARGIN_SD)
-        out.at[idx, "fair_home_spread"] = fair_home
-        out.at[idx, "signed_home_edge"] = edge
-        out.at[idx, "point_edge"] = abs(edge)
-        out.at[idx, "pick_side"] = side
-        out.at[idx, "selection"] = f"{team} {line:+.1f}"
-        out.at[idx, "market_display"] = line
-        out.at[idx, "fair_display"] = fair_home if side == "HOME" else -fair_home
-        out.at[idx, "cover_probability"] = p_home if side == "HOME" else 1.0 - p_home
+        _se_set_spread(out, idx, new_margin, float(mh[idx]))
     return out
+
+
+def _se_set_spread(out, idx, new_margin, line_home):
+    """Write a new model home margin for one spread row and re-pick its side."""
+    fair_home = -new_margin
+    edge = line_home - fair_home
+    side = "HOME" if edge > 0 else "AWAY"
+    if side != str(out.at[idx, "pick_side"]).upper():
+        if "spr2_rule_ok" in out.columns:
+            out.at[idx, "spr2_rule_ok"] = False
+        if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
+            out.at[idx, "filter_match"] = False
+        # The old reliability graded the other side; rebuild it from
+        # data quality alone, as the spread lab does on a flip.
+        rel = _se_reliability_from(
+            out.at[idx, "model_confidence"] if "model_confidence" in out.columns else None,
+            out.at[idx, "data_completeness"] if "data_completeness" in out.columns else None,
+        )
+        if rel:
+            out.at[idx, "reliability"] = rel
+    team = out.at[idx, "home_team"] if side == "HOME" else out.at[idx, "away_team"]
+    line = line_home if side == "HOME" else -line_home
+    p_home = cover_probability(new_margin, line_home, "home", BASE_MARGIN_SD)
+    out.at[idx, "fair_home_spread"] = fair_home
+    out.at[idx, "signed_home_edge"] = edge
+    out.at[idx, "point_edge"] = abs(edge)
+    out.at[idx, "pick_side"] = side
+    out.at[idx, "selection"] = f"{team} {line:+.1f}"
+    out.at[idx, "market_display"] = line
+    out.at[idx, "fair_display"] = fair_home if side == "HOME" else -fair_home
+    out.at[idx, "cover_probability"] = p_home if side == "HOME" else 1.0 - p_home
 
 
 def _v410_total_card(slate_df):
@@ -18421,6 +18431,10 @@ def _v410_total_card(slate_df):
         out = _tot2_apply_to_totals(out, _ad)
 
     out = _se_center_totals(out)
+    try:
+        out = _rc_apply(out, "totals")
+    except Exception:
+        pass
 
     # Highest-EV official total gets BEST BET only within totals. When combined
     # with spreads below, a single overall BEST BET is chosen.
@@ -18694,7 +18708,399 @@ def _se_ev_from_prob(p, odds=-110):
     return p * payout - (1.0 - p)
 
 
-def _v50_apply_strict_selection(card):
+# ===== Bettor's checklist (v4.13.0) =======================================
+# A gap is not a bet. Before money goes down, each candidate is checked the
+# way a careful bettor would:
+#   1. Honest odds. The model's number is only partly believed (all of it
+#      once the report card has measured how far to trust it, half before),
+#      and the win chance counts key numbers: final margins pile up on 3, 7
+#      and 10, totals on their own common landing spots, so a half point
+#      through one of them is worth more than a half point anywhere else.
+#   2. Price. Your own book's number if it is in the feed, against the
+#      market's.
+#   3. Line move. A line that moved against the pick since open is the
+#      market saying it knows something; 1.5+ pts (2+ on totals) is a pass.
+#   4. Track record. How this kind of pick has done on the report card.
+#   5. Size. Quarter Kelly on the honest odds: 1 unit = 1% of bankroll,
+#      0.5 to 3 units (2 until the trust is measured). Too little edge for
+#      half a unit is a pass.
+# Every pick ends in BET or PASS with the reason in one line.
+
+BC_TAB = "bettor"
+BC_DEFAULT_TRUST = 0.5      # share of the model's gap believed before it is measured
+BC_MOVE_PASS = {"SPREAD": 1.5, "TOTAL": 2.0}
+BC_MIN_EV = 0.02            # 2% expected return at the price
+BC_KELLY = 0.25
+BC_MAX_UNITS = 3.0
+BC_MAX_UNITS_UNMEASURED = 2.0   # cap while the model's trust is still a guess
+BC_RECORD_MIN = 300         # picks before a track record can veto a bet
+BC_RECORD_FAIL = 0.48
+BC_BOOKS = ["734 Games", "DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
+            "BetRivers", "Bet365", "Fanatics", "William Hill (New Jersey)"]
+BC_NOT_LISTED = "Not in this list"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _bc_load():
+    ws = _v401_sheet(tab=BC_TAB)
+    if ws is None:
+        return {}
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _bc_save(state):
+    ws = _v401_sheet(tab=BC_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps(state)]], "A1", value_input_option="RAW")
+        _bc_load.clear()
+        return True
+    except Exception:
+        return False
+
+
+def _bc_my_book():
+    b = st.session_state.get("se_my_book")
+    if b is None:
+        b = (_bc_load() or {}).get("book") or ""
+    return "" if b == BC_NOT_LISTED else str(b)
+
+
+def _bc_render_settings():
+    cur = _bc_my_book() or BC_NOT_LISTED
+    opts = [BC_NOT_LISTED] + BC_BOOKS
+    if cur not in opts:
+        opts.append(cur)
+    pick = st.selectbox(
+        "My sportsbook", opts, index=opts.index(cur), key="se_my_book_pick",
+        help="The checklist prices each bet at this book's number when it is in "
+             "the line feed. If yours isn't listed, picks are priced at the "
+             "market's number and the card tells you which number you need.")
+    if pick != cur:
+        st.session_state["se_my_book"] = pick
+        _bc_save({**(_bc_load() or {}), "book": pick})
+
+
+def _bc_key_weights(values, hi, absval):
+    """How much more often each final number happens than its neighbours
+    would suggest: 3 and 7 in margins, common totals. 1.0 = ordinary."""
+    v = pd.to_numeric(pd.Series(values), errors="coerce").dropna().to_numpy()
+    if len(v) < 1000:
+        return None
+    v = np.abs(v) if absval else v
+    v = np.clip(np.round(v).astype(int), 0, hi)
+    h = np.bincount(v, minlength=hi + 1).astype(float)
+    k = np.ones(7) / 7.0
+    smooth = np.convolve(h, k, mode="same")
+    w = np.where(smooth > 0, h / np.maximum(smooth, 1e-9), 1.0)
+    return [round(float(x), 3) for x in np.clip(w, 0.0, 4.0)]
+
+
+def _bc_keys():
+    try:
+        return ((_rc_load() or {}).get("keys")) or {}
+    except Exception:
+        return {}
+
+
+def _bc_probs(mu, line, kind, side_sign=1):
+    """(win, push) for a bet that wins when the final number, seen from the
+    bet's side, beats the line. Spreads: number = side's margin, wins when
+    margin + spread > 0. Totals: side_sign +1 Over, -1 Under."""
+    keys = _bc_keys()
+    if kind == "SPREAD":
+        sd, w = BASE_MARGIN_SD, keys.get("margin")
+        ks = np.arange(-90, 91)
+        base = np.exp(-0.5 * ((ks - mu) / sd) ** 2)
+        wt = np.array([(w[abs(k)] if w and abs(k) < len(w) else 1.0) for k in ks])
+        wt[ks == 0] = 0.0                       # no ties in college football
+        p = base * wt
+        p /= p.sum()
+        s = ks + line
+        return float(p[s > 0].sum()), float(p[s == 0].sum())
+    sd, w = BASE_TOTAL_SD, keys.get("total")
+    ks = np.arange(0, 161)
+    base = np.exp(-0.5 * ((ks - mu) / sd) ** 2)
+    wt = np.array([(w[k] if w and k < len(w) else 1.0) for k in ks])
+    p = base * wt
+    p /= p.sum()
+    win = p[ks > line].sum() if side_sign > 0 else p[ks < line].sum()
+    return float(win), float(p[ks == line].sum())
+
+
+def _bc_book_line(prov, mt, side, book):
+    for r in prov or []:
+        if str(r.get("provider") or "").strip().lower() != book.lower():
+            continue
+        v = r.get("total") if mt == "TOTAL" else (
+            r.get("home_spread") if side == "HOME" else r.get("away_spread"))
+        try:
+            return float(v)
+        except Exception:
+            return None
+    return None
+
+
+def _bc_record(mt, side, fav):
+    """The report card's record for this kind of pick, if graded."""
+    try:
+        labs = (_rc_load() or {}).get("labs") or {}
+    except Exception:
+        return None
+    lab = labs.get("totals" if mt == "TOTAL" else "spread") or {}
+    key = ("_over" if side == "OVER" else "_under") if mt == "TOTAL" else ("_fav" if fav else "_dog")
+    for g in lab.get("groups") or []:
+        if g.get("key") == key:
+            return g
+    return None
+
+
+def _bc_payout(odds):
+    try:
+        o = float(odds)
+        if not math.isfinite(o) or o == 0:
+            o = -110.0
+    except Exception:
+        o = -110.0
+    return (100.0 / abs(o)) if o < 0 else (o / 100.0), o
+
+
+def _bc_check(r):
+    """The checklist for one candidate. Returns a dict of bc_* fields."""
+    mt = str(r.get("market_type") or "SPREAD").upper()
+    side = str(r.get("pick_side") or "").upper()
+    try:
+        prov = json.loads(r.get("provider_rows_json") or "[]")
+    except Exception:
+        prov = []
+    checks = []
+    fails = []
+    trust = 1.0 if (_rc_active("totals" if mt == "TOTAL" else "spread") or {}).get("gap") is not None \
+        else BC_DEFAULT_TRUST
+
+    # Model and market on the bet side's own scale.
+    if mt == "TOTAL":
+        mkt = _v3_num(r.get("market_total"))
+        model = _v3_num(r.get("fair_total"))
+        line_mkt = mkt
+        honest = mkt + trust * (model - mkt)
+    else:
+        mh = _v3_num(r.get("market_home_spread_display"))
+        if not np.isfinite(mh):
+            mh = _v3_num(r.get("market_home_spread"))
+        fh = _v3_num(r.get("fair_home_spread"))
+        sgn = 1.0 if side == "HOME" else -1.0
+        mkt_margin, model_margin = -mh * sgn, -fh * sgn       # side's expected margin
+        line_mkt = mh * sgn                                    # side's spread
+        honest = mkt_margin + trust * (model_margin - mkt_margin)
+    if not (np.isfinite(honest) and np.isfinite(line_mkt)):
+        return {"bc_verdict": "PASS", "bc_reason": "Pass: missing a number to price it.",
+                "bc_units": 0.0, "bc_p": np.nan, "bc_ev": np.nan, "bc_checks": "[]"}
+
+    # 2. Price: your book's number, else the market's.
+    book = _bc_my_book()
+    line = line_mkt
+    priced_at_book = False
+    if book:
+        bl = _bc_book_line(prov, mt, side, book)
+        if bl is None:
+            checks.append(("info", f"{book} has no number for this in the feed. "
+                                   f"Priced at the market's {_bc_fmt(line_mkt, mt)}."))
+        else:
+            line = bl
+            priced_at_book = True
+            better = (bl - line_mkt) * (-1 if (mt == "TOTAL" and side == "OVER") else 1)
+            if abs(better) < 0.25:
+                checks.append(("ok", f"{book} matches the market at {_bc_fmt(bl, mt)}."))
+            elif better > 0:
+                checks.append(("good", f"{book} is {abs(better):.1f} pts better than the "
+                                       f"market ({_bc_fmt(bl, mt)} vs {_bc_fmt(line_mkt, mt)})."))
+            else:
+                checks.append(("warn", f"{book} is {abs(better):.1f} pts worse than the "
+                                       f"market ({_bc_fmt(bl, mt)} vs {_bc_fmt(line_mkt, mt)})."))
+    else:
+        checks.append(("info", f"Priced at the market's {_bc_fmt(line_mkt, mt)}. Get that "
+                               "number or better at your book."))
+
+    # 1. Honest odds, key numbers counted.
+    b, o = _bc_payout(r.get("odds"))
+    if mt == "TOTAL":
+        p, push = _bc_probs(honest, line, "TOTAL", 1 if side == "OVER" else -1)
+    else:
+        p, push = _bc_probs(honest, line, "SPREAD")
+    q = max(0.0, 1.0 - p - push)
+    ev = p * b - q
+    be = 1.0 / (1.0 + b)
+    trust_txt = "measured" if trust == 1.0 else "half, until the report card measures it"
+    checks.append(("good" if ev >= BC_MIN_EV else ("ok" if ev > 0 else "warn"),
+                   f"Honest odds {p:.1%} to win" + (f", {push:.1%} push" if push >= 0.005 else "")
+                   + f" at {o:+.0f} (break-even {be:.1%}). Model's gap believed: {trust_txt}."))
+    kn = _bc_key_note(line, mt, side)
+    if kn:
+        checks.append(kn)
+
+    # 3. Line move since open.
+    try:
+        mv, mo, mn, n = line_move_against(prov, mt, side)
+    except Exception:
+        mv = None
+    if mv is None:
+        checks.append(("info", "No opening number in the feed, so no line-move check."))
+    elif mv >= BC_MOVE_PASS["TOTAL" if mt == "TOTAL" else "SPREAD"]:
+        fails.append(f"Pass: the line moved {mv:.1f} pts against this since open "
+                     f"({_bc_fmt(mo, mt)} → {_bc_fmt(mn, mt)}).")
+        checks.append(("fail", f"Line moved {mv:.1f} pts against since open "
+                               f"({_bc_fmt(mo, mt)} → {_bc_fmt(mn, mt)})."))
+    elif mv <= -0.5:
+        checks.append(("good", f"Line moved {abs(mv):.1f} pts our way since open."))
+    else:
+        checks.append(("ok", f"Line about where it opened ({mv:+.1f} against)."))
+
+    # 4. Track record for this kind of pick.
+    fav = (mt != "TOTAL") and line_mkt < 0
+    g = _bc_record(mt, side, fav)
+    kind = ({"OVER": "Overs", "UNDER": "Unders"}.get(side, "") if mt == "TOTAL"
+            else ("favorites" if fav else "underdogs"))
+    if g and (g.get("w", 0) + g.get("l", 0)):
+        w, l = int(g["w"]), int(g["l"])
+        hit = w / (w + l)
+        txt = f"Its {kind} since 2022: {w}-{l} ({hit:.0%})."
+        if w + l >= BC_RECORD_MIN and hit <= BC_RECORD_FAIL:
+            fails.append(f"Pass: its {kind} have lost over time ({w}-{l}, {hit:.0%}).")
+            checks.append(("fail", txt))
+        else:
+            checks.append(("good" if hit >= 0.53 else ("ok" if hit >= be else "warn"), txt))
+    else:
+        checks.append(("info", "No track record yet. The report card grades this after Sunday's run."))
+
+    # Data quality.
+    if bool(r.get("fcs_fallback_used")) and str(r.get("fcs_fallback_used")).lower() not in ("false", "0", "nan"):
+        fails.append("Pass: one team has too little data to price.")
+
+    # 5. Size.
+    f = (b * p - q) / b if b > 0 else 0.0
+    cap = BC_MAX_UNITS if trust == 1.0 else BC_MAX_UNITS_UNMEASURED
+    units = min(cap, math.floor(max(0.0, f) * BC_KELLY * 100 * 2) / 2)
+    if fails:
+        verdict, reason, units = "PASS", fails[0], 0.0
+    elif ev < BC_MIN_EV or units < 0.5:
+        verdict, units = "PASS", 0.0
+        reason = (f"Pass: edge too thin. {p:.1%} to win at {o:+.0f} needs {be:.1%}"
+                  + (" plus a cushion." if p > be else "."))
+    else:
+        verdict = "BET"
+        why = [t for s_, t in checks if s_ == "good" and not t.startswith("Honest")]
+        reason = (f"Bet {units:g}u: {p:.0%} to win at {o:+.0f} ({ev:+.1%} expected)."
+                  + (f" {why[0]}" if why else ""))
+        # A book outside the feed: say the worst number still worth betting.
+        if not priced_at_book:
+            floor = _bc_floor(honest, line, mt, side, b)
+            if floor is not None:
+                where = f" at {book}" if book else ""
+                reason += f" Still a bet{where} down to {_bc_fmt(floor, mt)}; pass past that."
+    return {"bc_verdict": verdict, "bc_reason": reason, "bc_units": float(units),
+            "bc_p": float(p), "bc_ev": float(ev),
+            "bc_checks": json.dumps([{"s": s_, "t": t} for s_, t in checks])}
+
+
+def _bc_floor(honest, line, mt, side, b):
+    """The worst line, in half points from the one priced, that still clears
+    the bar. None if only the priced line does."""
+    worse = 1.0 if (mt == "TOTAL" and side == "OVER") else -1.0
+    best = None
+    for step in range(1, 13):
+        ln = line + worse * 0.5 * step
+        if mt == "TOTAL":
+            p, push = _bc_probs(honest, ln, "TOTAL", 1 if side == "OVER" else -1)
+        else:
+            p, push = _bc_probs(honest, ln, "SPREAD")
+        if p * b - max(0.0, 1.0 - p - push) < BC_MIN_EV:
+            break
+        best = ln
+    return best
+
+
+BC_KEYS = {"SPREAD": (3, 7, 10, 14), "TOTAL": (41, 44, 47, 51, 55)}
+
+
+def _bc_key_note(line, mt, side):
+    """Plain note when the number sits next to a key number."""
+    try:
+        line = float(line)
+    except Exception:
+        return None
+    if mt == "TOTAL":
+        for k in BC_KEYS["TOTAL"]:
+            if abs(line - k) == 0.5:
+                good = (side == "OVER" and line < k) or (side == "UNDER" and line > k)
+                return ("good" if good else "warn",
+                        f"{_bc_fmt(line, mt)} is {'on the right side of' if good else 'just past'} "
+                        f"{k}, a common final total.")
+        return None
+    a = abs(line)
+    for k in BC_KEYS["SPREAD"]:
+        if abs(a - k) == 0.5:
+            # Dog wants more than the key, favourite wants less.
+            good = (line > 0 and a > k) or (line < 0 and a < k)
+            return ("good" if good else "warn",
+                    f"{_bc_fmt(line, mt)} is {'on the right side of' if good else 'the wrong side of'} "
+                    f"{k}, a key number.")
+    return None
+
+
+def _bc_fmt(v, mt):
+    try:
+        v = float(v)
+    except Exception:
+        return "?"
+    return f"{v:g}" if mt == "TOTAL" else f"{v:+g}"
+
+
+def _bc_apply(official):
+    """Run the checklist on official candidates. Returns (bets, passed)."""
+    if official is None or official.empty:
+        return official, official
+    res = pd.DataFrame([_bc_check(r) for _, r in official.iterrows()], index=official.index)
+    out = official.join(res)
+    return out[out["bc_verdict"].eq("BET")].copy(), out[out["bc_verdict"].ne("BET")].copy()
+
+
+BC_ICON = {"good": "✔", "ok": "•", "info": "ℹ", "warn": "⚠", "fail": "✖"}
+
+
+def _bc_html(r, compact=False):
+    """The reason line, plus the checks unless compact."""
+    reason = str(r.get("bc_reason") or "").strip()
+    if not reason or reason.lower() == "nan":
+        return ""
+    out = f'<div class="se-bc-reason">{html.escape(reason)}</div>'
+    if compact:
+        return out
+    try:
+        items = json.loads(r.get("bc_checks") or "[]")
+    except Exception:
+        items = []
+    if items:
+        out += '<div class="se-bc-checks">' + "".join(
+            f'<div class="se-bc-{html.escape(i.get("s", "info"))}">'
+            f'{BC_ICON.get(i.get("s"), BC_ICON["ok"])} {html.escape(str(i.get("t", "")))}</div>'
+            for i in items) + "</div>"
+    return out
+
+
+BC_CSS = """<style>
+.se-bc-reason{margin-top:8px;font-size:.86rem;font-weight:700;color:#dbe7f5}
+.se-bc-checks{margin-top:6px;font-size:.78rem;line-height:1.45;color:#9fb3c8}
+.se-bc-good{color:#5fd39a}.se-bc-warn{color:#f2c14e}.se-bc-fail{color:#ff7a7a}
+</style>"""
+
+
+def _v50_select_core(card):
     """
     Two tiers.
 
@@ -18877,6 +19283,34 @@ def _v50_apply_strict_selection(card):
         if "raw_gap" in fun.columns:
             fun["point_edge"] = pd.to_numeric(fun["raw_gap"], errors="coerce")
     return official, fun
+
+
+def _v50_apply_strict_selection(card):
+    """Official bets and the watch list, then the bettor's checklist: a
+    candidate that fails it moves to the top of the watch list with its
+    reason, and the ones that pass are sized and priced at honest odds."""
+    official, fun = _v50_select_core(card)
+    if official is None or official.empty:
+        return official, fun
+    try:
+        bets, passed = _bc_apply(official)
+    except Exception:
+        return official, fun
+    if not bets.empty:
+        bets["cover_probability"] = bets["bc_p"]
+        bets["expected_value"] = bets["bc_ev"]
+        bets["suggested_units"] = bets["bc_units"]
+        bets["verdict"] = "BET"
+        bets = bets.sort_values(["bc_ev", "raw_gap"], ascending=[False, False])
+        bets.iloc[0, bets.columns.get_loc("verdict")] = "BEST BET"
+    if not passed.empty:
+        passed = passed.copy()
+        passed["verdict"] = "LEAN"
+        passed["cover_probability"] = passed["bc_p"]
+        passed["expected_value"] = passed["bc_ev"]
+        rest = fun[~fun.index.isin(passed.index)] if fun is not None and not fun.empty else None
+        fun = pd.concat([passed] + ([rest] if rest is not None else []), sort=False)
+    return bets, fun
 
 
 def _v410_combine_cards(spread_card, total_card):
@@ -19106,7 +19540,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="ge-official-head">
               <div class="ge-check">✓</div>
               <div><div class="ge-section-title">Bets</div>
-              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 1 unit each.</div></div>
+              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 sized by the bettor's checklist.</div></div>
               <div class="ge-count">{len(official)} {'PLAY' if len(official)==1 else 'PLAYS'}</div>
             </div>
             """,
@@ -19252,6 +19686,7 @@ def _render_v36_live_card(card, selected_date):
                   </div>
                   {_shop}
                   {_inj}
+                  {_bc_html(r)}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -20763,6 +21198,122 @@ def _tot2_expected(r, home, away, neutral):
     return hp + ap
 
 
+# --- Recent form (v4.11) -----------------------------------------------------
+# The season ratings weigh a Week 2 game the same as last Saturday, so a team
+# whose offense fell off (a starting QB hurt, say) keeps its early-season
+# number for weeks. Form re-fits the ratings with the last few weeks counted
+# most, shrunk toward the season rating, and the feature is the gap between
+# the two: how much better or worse a matchup looks on recent games alone.
+# Still opponent-adjusted, and league scoring and home field stay fixed at
+# the season values, so form only moves teams relative to each other.
+#
+# The labs only use form when it lowers the average miss out of sample (see
+# _form_gate); otherwise it is left out and the model is unchanged.
+
+FORM_HALF_LIFE_WEEKS = 1.5        # last week counts 1, three weeks ago ~0.25
+FORM_WINDOW_WEEKS = 5             # older games do not move form at all
+FORM_PRIOR_GAMES = 2.0            # two games of evidence to move off the season rating
+FORM_MIN_SEASONS_BETTER = 3       # of the 4 test seasons
+FORM_MIN_T = 1.645                # the gain must beat luck at 95%, one-sided
+TOT2_FORM_FEATURES = ["form_total"]
+SPR2_FORM_FEATURES = ["form_margin"]
+
+
+def _form_ratings(before, r, week):
+    """Season ratings `r`, re-fit on recent games with recency weights."""
+    win = [g for g in before
+           if int(g.get("week") or 1) >= int(week) - FORM_WINDOW_WEEKS]
+    if not win:
+        return r
+    teams = sorted({str(g["homeTeam"]) for g in win} | {str(g["awayTeam"]) for g in win})
+    ix = {t: i for i, t in enumerate(teams)}
+    T = len(teams)
+    n = 2 * len(win)
+    X = np.zeros((n, 2 * T))
+    y = np.zeros(n)
+    wt = np.zeros(n)
+    mu, hfa = float(r["mu"]), float(r["hfa"])
+    for k, g in enumerate(win):
+        h, a = ix[str(g["homeTeam"])], ix[str(g["awayTeam"])]
+        home = 0.0 if bool(g.get("neutralSite")) else 1.0
+        w = 0.5 ** ((int(week) - 1 - int(g.get("week") or 1)) / FORM_HALF_LIFE_WEEKS)
+        X[2 * k, h] = 1; X[2 * k, T + a] = 1
+        y[2 * k] = float(g["homePoints"]) - mu - hfa * home
+        X[2 * k + 1, a] = 1; X[2 * k + 1, T + h] = 1
+        y[2 * k + 1] = float(g["awayPoints"]) - mu
+        wt[2 * k] = wt[2 * k + 1] = w
+    b0 = np.zeros(2 * T)
+    for t, i in ix.items():
+        b0[i] = float(r["off"].get(t, 0.0))
+        b0[T + i] = float(r["dfn"].get(t, 0.0))
+    A = X.T @ (X * wt[:, None]) + FORM_PRIOR_GAMES * np.eye(2 * T)
+    b = np.linalg.solve(A, X.T @ (wt * y) + FORM_PRIOR_GAMES * b0)
+    off, dfn = dict(r["off"]), dict(r["dfn"])
+    for t, i in ix.items():
+        off[t] = float(b[i])
+        dfn[t] = float(b[T + i])
+    return {"off": off, "dfn": dfn, "mu": mu, "hfa": hfa}
+
+
+def _form_gate(df, pred_fn, ycol, base, extra):
+    """Walk-forward with and without the form features, on the same games.
+    Form is used only if it lowers the average miss by more than luck
+    explains (paired, game by game, 95% one-sided) AND does so in at least
+    FORM_MIN_SEASONS_BETTER of the test seasons. A feature that is pure noise
+    still shaves a hair off the miss half the time, so "lower" alone is not
+    enough."""
+    out = {"used": False, "features": list(base), "seasons": {}}
+    if any(f not in df.columns for f in extra):
+        out["msg"] = "no form data"
+        return out
+    errs = {"base": [], "form": []}
+    better = 0
+    for s in TOT2_TEST_SEASONS:
+        tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
+        te = df[df["season"] == s].dropna(subset=[ycol])
+        if tr.empty or te.empty:
+            continue
+        pb = pred_fn(tr, te, list(base))
+        pf = pred_fn(tr, te, list(base) + list(extra))
+        if pb is None or pf is None:
+            continue
+        y = te[ycol].to_numpy(dtype=float)
+        eb, ef = np.abs(y - np.asarray(pb, dtype=float)), np.abs(y - np.asarray(pf, dtype=float))
+        errs["base"].append(eb)
+        errs["form"].append(ef)
+        out["seasons"][str(s)] = [round(float(eb.mean()), 3), round(float(ef.mean()), 3)]
+        better += int(ef.mean() < eb.mean())
+    if not errs["base"]:
+        out["msg"] = "not enough history"
+        return out
+    eb, ef = np.concatenate(errs["base"]), np.concatenate(errs["form"])
+    mb, mf = float(eb.mean()), float(ef.mean())
+    gain = eb - ef
+    sd = float(gain.std(ddof=1)) if len(gain) > 1 else 0.0
+    t = float(gain.mean() / (sd / math.sqrt(len(gain)))) if sd > 0 else 0.0
+    out.update(mae_base=round(mb, 3), mae_form=round(mf, 3), better=better,
+               tested=len(errs["base"]), t=round(t, 2))
+    if (t >= FORM_MIN_T
+            and better >= min(FORM_MIN_SEASONS_BETTER, len(errs["base"]))):
+        out["used"] = True
+        out["features"] = list(base) + list(extra)
+    return out
+
+
+def _form_gate_text(g):
+    """One line for the lab pages."""
+    if not g:
+        return None
+    if g.get("mae_base") is None:
+        return f"Recent form: not tested ({g.get('msg', 'no data')})."
+    verdict = "**used**" if g.get("used") else "**left out**"
+    return (f"Recent form (last few games, opponent-adjusted): {verdict}. Avg miss "
+            f"{g['mae_base']:.2f} pts without it, {g['mae_form']:.2f} with it; better in "
+            f"{g.get('better', 0)} of {g.get('tested', 0)} unseen seasons, "
+            f"signal t {g.get('t', 0):+.2f} (needs +{FORM_MIN_T:g} and "
+            f"{FORM_MIN_SEASONS_BETTER}+ seasons).")
+
+
 def _tot2_per_game(adv, gp, key):
     v = _v3_num((adv or {}).get(key))
     if not np.isfinite(v) or gp <= 0:
@@ -20826,11 +21377,15 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
     except Exception:
         old_data = None
 
+    fbs = _rc_fbs(year)
+    rctx = _rc_season_ctx(year, games, by_game)
     rows = []
     weeks = sorted({int(g.get("week") or 1) for g in games})
     for w in weeks:
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        rf = _form_ratings(before, r, w)
+        pct = _rc_pcts(r, fbs)
         cur_adv = _v3_advanced_through(int(year), w - 1) if w > 1 else {}
         gp_cur = {}
         for g in before:
@@ -20859,6 +21414,8 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
                 "actual_total": float(g["homePoints"]) + float(g["awayPoints"]),
                 "market_total": mt,
                 "exp_total": _tot2_expected(r, home, away, neutral),
+                "form_total": (_tot2_expected(rf, home, away, neutral)
+                               - _tot2_expected(r, home, away, neutral)),
                 "exp_plays": _tot2_pace(cur_adv or {}, prev_adv, gp_cur, gp_prev, home, away),
                 "week_num": float(w),
                 "neutral": 1.0 if neutral else 0.0,
@@ -20870,6 +21427,8 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
             hp = _v3_adv_fields(prev_adv_ctx.get(home))
             ap = _v3_adv_fields(prev_adv_ctx.get(away))
             row.update(_v3_total_context(hp, ap, "prior"))
+            row.update(home_pct=pct.get(home, np.nan), away_pct=pct.get(away, np.nan))
+            row.update(_rc_game_ctx(g, rctx, by_game.get(key, [])))
             row["old_total"] = np.nan
             if old_data is not None:
                 try:
@@ -20925,14 +21484,19 @@ def _tot2_fit_predict(train, test, feats):
     return pred, use
 
 
-def _tot2_walk_forward(df):
+def _tot2_wf_pred(train, test, feats):
+    return _tot2_fit_predict(train, test, feats)[0]
+
+
+def _tot2_walk_forward(df, feats=None):
+    feats = feats or TOT2_FEATURES
     out = []
     for s in TOT2_TEST_SEASONS:
         tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
         te = df[df["season"] == s].copy()
         if tr.empty or te.empty:
             continue
-        pred, _ = _tot2_fit_predict(tr, te, TOT2_FEATURES)
+        pred, _ = _tot2_fit_predict(tr, te, feats)
         if pred is None:
             continue
         te["new_total"] = pred
@@ -21153,6 +21717,7 @@ def _tot2_live_state(season, week):
     cur = [g for g in _tot2_completed(get_finals_games(int(season)))
            if int(g.get("week") or 1) < int(week)]
     r = _tot2_fit_ratings(cur, prior)
+    rf = _form_ratings(cur, r, week)
     gp_cur, gp_prev = {}, {}
     for g in cur:
         for t in (str(g["homeTeam"]), str(g["awayTeam"])):
@@ -21162,7 +21727,7 @@ def _tot2_live_state(season, week):
             gp_prev[t] = gp_prev.get(t, 0) + 1
     cur_adv = _v3_advanced_through(int(season), int(week) - 1) if int(week) > 1 else {}
     prev_adv = (_v3_preseason_data(int(season)) or {}).get("prev_adv") or {}
-    return {"r": r, "gp_cur": gp_cur, "gp_prev": gp_prev,
+    return {"r": r, "rf": rf, "gp_cur": gp_cur, "gp_prev": gp_prev,
             "cur_adv": cur_adv or {}, "prev_adv": prev_adv,
             "prev_adv_ctx": _new_fbs_prev_adv(prev_adv, season)}
 
@@ -21202,6 +21767,8 @@ def _tot2_live_total(row, coefs):
             "week_num": float(week), "neutral": 1.0 if neutral else 0.0,
         }
         f["exp_total_x_plays"] = f["exp_total"] * f["exp_plays"]
+        f["form_total"] = (_tot2_expected(stt.get("rf") or stt["r"], home, away, neutral)
+                           - f["exp_total"])
         f.update(_v3_total_context(_v3_adv_fields(stt["cur_adv"].get(home)),
                                    _v3_adv_fields(stt["cur_adv"].get(away)), "cur"))
         _pctx = stt.get("prev_adv_ctx") or stt["prev_adv"]
@@ -21303,10 +21870,10 @@ def _tot2_load():
         return None
 
 
-def _tot2_final_fit(df):
+def _tot2_final_fit(df, feats=None):
     """Weights fit on every graded season, saved for live use once adopted."""
     tr = df[df["season"] >= TOT2_FIRST_SEASON].dropna(subset=["actual_total"])
-    use = [f for f in TOT2_FEATURES if f in tr.columns
+    use = [f for f in (feats or TOT2_FEATURES) if f in tr.columns
            and pd.to_numeric(tr[f], errors="coerce").notna().mean() >= 0.5]
     if len(use) < 2:
         return None
@@ -21353,13 +21920,16 @@ def _render_totals_lab():
                         st.error("No games with a closing total were found.")
                         return
                     _s.update(label="Testing against the closing line…")
-                    wf = _tot2_walk_forward(df)
+                    gate = _form_gate(df, _tot2_wf_pred, "actual_total",
+                                      TOT2_FEATURES, TOT2_FORM_FEATURES)
+                    wf = _tot2_walk_forward(df, gate["features"])
                     if wf.empty:
                         st.error("Not enough history to test.")
                         return
                     rep = _tot2_report(wf)
                     rep["scope"] = _scope
-                    coefs = _tot2_final_fit(df)
+                    rep["form"] = gate
+                    coefs = _tot2_final_fit(df, gate["features"])
                     if not _tot2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -21380,6 +21950,9 @@ def _render_totals_lab():
     if (saved.get("coefs") or {}).get("trained_through"):
         st.caption(f"Weights refreshed by the Sunday retrain, through "
                    f"{saved['coefs']['trained_through']}.")
+    _ft = _form_gate_text(rep.get("form"))
+    if _ft:
+        st.caption(_ft)
 
     # 1. Can it reach the extremes?
     st.markdown("**1. Can it reach big and small totals?**")
@@ -21517,9 +22090,12 @@ def _spr2_expected_margin(r, home, away, neutral):
     return hp - ap
 
 
-def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent):
+def _spr2_features(r, home, away, neutral, week, cur_adv, prev_adv, game, talent,
+                   rf=None):
     f = {
         "exp_margin": _spr2_expected_margin(r, home, away, neutral),
+        "form_margin": (_spr2_expected_margin(rf, home, away, neutral)
+                        - _spr2_expected_margin(r, home, away, neutral)) if rf else 0.0,
         "elo_diff": _v3_num(game.get("homePregameElo")) - _v3_num(game.get("awayPregameElo")),
         "talent_diff": (_v3_num((talent.get(home) or {}).get("talent"))
                         - _v3_num((talent.get(away) or {}).get("talent"))),
@@ -21552,10 +22128,14 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
     except Exception:
         old_data = None
 
+    fbs = _rc_fbs(year)
+    rctx = _rc_season_ctx(year, games, by_game)
     rows = []
     for w in sorted({int(g.get("week") or 1) for g in games}):
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        rf = _form_ratings(before, r, w)
+        pct = _rc_pcts(r, fbs)
         cur_adv = (_v3_advanced_through(int(year), w - 1) if w > 1 else {}) or {}
         for g in games:
             if int(g.get("week") or 1) != w or not _bt_game_scope(g, scope):
@@ -21578,7 +22158,9 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
                 "market_margin": -hs,
             }
             row.update(_spr2_features(r, home, away, neutral, w, cur_adv,
-                                      prev_adv, g, talent))
+                                      prev_adv, g, talent, rf))
+            row.update(home_pct=pct.get(home, np.nan), away_pct=pct.get(away, np.nan))
+            row.update(_rc_game_ctx(g, rctx, by_game.get(key, [])))
             row["old_margin"] = np.nan
             if old_data is not None:
                 try:
@@ -21634,14 +22216,20 @@ def _spr2_predict(c, frame):
     return c["ymean"] + X.to_numpy() @ np.array(c["beta"])
 
 
-def _spr2_walk_forward(df):
+def _spr2_wf_pred(train, test, feats):
+    c = _spr2_fit(train, feats)
+    return None if c is None else _spr2_predict(c, test)
+
+
+def _spr2_walk_forward(df, feats=None):
+    feats = feats or SPR2_FEATURES
     out = []
     for s in TOT2_TEST_SEASONS:
         tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
         te = df[df["season"] == s].copy()
         if tr.empty or te.empty:
             continue
-        c = _spr2_fit(tr, SPR2_FEATURES)
+        c = _spr2_fit(tr, feats)
         if c is None:
             continue
         te["new_margin"] = _spr2_predict(c, te)
@@ -21837,7 +22425,7 @@ def _spr2_apply_to_spreads(card, ad):
             neutral = bool(g.get("neutralSite"))
             f = _spr2_features(stt["r"], home, away, neutral, week,
                                stt["cur_adv"], stt.get("prev_adv_ctx") or stt["prev_adv"],
-                               g, talent)
+                               g, talent, stt.get("rf"))
             nm = float(_spr2_predict(ad["coefs"], pd.DataFrame([f]))[0])
             mh = _v3_num(r.get("market_home_spread_display"))
             if not np.isfinite(mh):
@@ -21893,13 +22481,16 @@ def _render_spread_lab():
                         st.error("No games with a closing spread were found.")
                         return
                     _s.update(label="Testing against the closing spread…")
-                    wf = _spr2_walk_forward(df)
+                    gate = _form_gate(df, _spr2_wf_pred, "actual_margin",
+                                      SPR2_FEATURES, SPR2_FORM_FEATURES)
+                    wf = _spr2_walk_forward(df, gate["features"])
                     if wf.empty:
                         st.error("Not enough history to test.")
                         return
                     rep = _spr2_report(wf)
                     rep["scope"] = _scope
-                    coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+                    rep["form"] = gate
+                    coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], gate["features"])
                     if not _spr2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -21918,6 +22509,9 @@ def _render_spread_lab():
     if (saved.get("coefs") or {}).get("trained_through"):
         st.caption(f"Weights refreshed by the Sunday retrain, through "
                    f"{saved['coefs']['trained_through']}.")
+    _ft = _form_gate_text(rep.get("form"))
+    if _ft:
+        st.caption(_ft)
 
     def _rec(v):
         if not v or not (v[0] + v[1]):
@@ -22044,10 +22638,14 @@ AR_LABELS = {
     "hfa_flag": "home field",
     "week_num": "week of season",
     "neutral": "neutral site",
+    "form_total": "recent form",
+    "form_margin": "recent form",
 }
 
 # One fresh download of the current season per run, shared by both labs.
 _AR_FEED = {}
+# Each lab's graded frame from this run, reused by the report card.
+_AR_FRAMES = {}
 
 
 def _ar_season_feed(year, fresh=False):
@@ -22124,11 +22722,14 @@ def _ar_retrain_lab(lab, season, last_seen=None):
         loader, saver, build, ycol, col, mcol = (_tot2_load, _tot2_save, _tot2_build,
                                                  "actual_total", "pred", "market_total")
         fit = _tot2_final_fit
+        base, extra, pred_fn = TOT2_FEATURES, TOT2_FORM_FEATURES, _tot2_wf_pred
         rec = lambda d: _tot2_record(d, _tot2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
     else:
         loader, saver, build, ycol, col, mcol = (_spr2_load, _spr2_save, _spr2_build,
                                                  "actual_margin", "pred", "market_margin")
-        fit = lambda d: _spr2_fit(d[d["season"] >= TOT2_FIRST_SEASON], SPR2_FEATURES)
+        fit = lambda d, feats=None: _spr2_fit(d[d["season"] >= TOT2_FIRST_SEASON],
+                                              feats or SPR2_FEATURES)
+        base, extra, pred_fn = SPR2_FEATURES, SPR2_FORM_FEATURES, _spr2_wf_pred
         rec = lambda d: _spr2_record(d, _spr2_rule_mask(d, {"gap": TOT2_GAP}, col), col)
 
     try:
@@ -22144,6 +22745,7 @@ def _ar_retrain_lab(lab, season, last_seen=None):
     if df.empty:
         return {"result": "skipped", "msg": "no games found"}
     df = df.dropna(subset=[ycol])
+    _AR_FRAMES[lab] = df
     seen = int((df["season"] == season).sum())
     if last_seen is not None and seen <= int(last_seen):
         return {"result": "no_new", "games_seen": seen}
@@ -22158,10 +22760,29 @@ def _ar_retrain_lab(lab, season, last_seen=None):
     if len(hold) < AR_MIN_HOLDOUT:
         return {**out, "result": "kept", "msg": "too few recent games to test"}
 
-    cand = fit(train)
+    y = hold[ycol].to_numpy(dtype=float)
+    mae_of = lambda c: float(np.mean(np.abs(y - np.asarray(_ar_predict(c, hold), dtype=float))))
+
+    # Recent form joins the candidate only if it lowers the miss on the
+    # unseen test seasons (the lab's gate, on games before the holdout) AND
+    # on the holdout weeks themselves. Otherwise the candidate is the plain
+    # model, exactly as before.
+    gate = _form_gate(train, pred_fn, ycol, base, extra)
+    cand = fit(train, base)
     if cand is None:
         return {**out, "result": "skipped", "msg": "not enough data to fit"}
-    y = hold[ycol].to_numpy(dtype=float)
+    feats = list(base)
+    form = {"used": False, "gate": {k: gate.get(k) for k in
+                                    ("used", "mae_base", "mae_form", "better", "tested", "t", "msg")}}
+    if gate["used"]:
+        cand_f = fit(train, gate["features"])
+        if cand_f is not None:
+            mb, mf = mae_of(cand), mae_of(cand_f)
+            form.update(hold_base=round(mb, 3), hold_form=round(mf, 3))
+            if mf < mb:
+                cand, feats = cand_f, gate["features"]
+                form["used"] = True
+    out["form"] = form
     hold[col] = _ar_predict(cand, hold)
     mae_new = float(np.mean(np.abs(y - hold[col].to_numpy(dtype=float))))
     out["new_record"] = list(rec(hold))
@@ -22172,7 +22793,7 @@ def _ar_retrain_lab(lab, season, last_seen=None):
 
     if mae_new >= mae_old:
         return {**out, "result": "kept"}
-    final = fit(df)
+    final = fit(df, feats)
     if final is None:
         return {**out, "result": "skipped", "msg": "not enough data to fit"}
     final["trained_through"] = f"{season} wk {int(order.max()) % 100}"
@@ -22189,6 +22810,7 @@ def _ar_run(due_iso):
              "labs": prev.get("labs") or {}}
     _ar_save(state)
     _AR_FEED.clear()
+    _AR_FRAMES.clear()
     season = _tot2_season_of(pd.Timestamp(due_iso).strftime("%Y-%m-%d"))
     labs = {}
     for lab in ("totals", "spread"):
@@ -22202,7 +22824,12 @@ def _ar_run(due_iso):
         # against the last games actually tested.
         if "games_seen" not in labs[lab] and last_seen is not None:
             labs[lab]["games_seen"] = last_seen
+    try:
+        _rc_run(season)
+    except Exception:
+        pass
     _AR_FEED.clear()
+    _AR_FRAMES.clear()
     _ar_save({"due": due_iso, "status": "done", "season": season,
               "started_at": state["started_at"], "finished_at": now(), "labs": labs})
 
@@ -22254,6 +22881,11 @@ def _ar_maybe_start():
 
 def _ar_lab_line(name, r):
     res = (r or {}).get("result")
+    fm = (r or {}).get("form") or {}
+    form_txt = ""
+    if fm:
+        form_txt = (" Recent form is in." if fm.get("used")
+                    else " Recent form left out (it didn't lower the miss on unseen games).")
     if res == "updated":
         txt = (f"**{name} updated.** Avg miss on the last {AR_HOLDOUT_WEEKS} weeks "
                f"({r['holdout_n']} games): {r['mae_old']:.2f} → {r['mae_new']:.2f} pts.")
@@ -22261,12 +22893,12 @@ def _ar_lab_line(name, r):
         if sh:
             txt += " Leans " + ", ".join(
                 f"{'more' if s['delta'] > 0 else 'less'} on {s['label']}" for s in sh) + "."
-        return txt
+        return txt + form_txt
     if res == "kept":
         if r.get("mae_new") is not None:
             return (f"**{name} kept.** New weights missed by {r['mae_new']:.2f} pts vs "
                     f"{r['mae_old']:.2f} for the current ones on the last "
-                    f"{AR_HOLDOUT_WEEKS} weeks ({r['holdout_n']} games).")
+                    f"{AR_HOLDOUT_WEEKS} weeks ({r['holdout_n']} games)." + form_txt)
         return f"**{name} kept** — {r.get('msg', 'no change')}."
     if res == "no_new":
         return f"**{name}:** no new games since the last retrain."
@@ -22307,6 +22939,726 @@ def _ar_home_note():
                    "are kept only if they beat the current ones on the last "
                    f"{AR_HOLDOUT_WEEKS} weeks, which they never saw. Filters, stars, "
                    "frozen bets and grading are unchanged.")
+
+
+# ===== Weekly report card (v4.12.0) =======================================
+# After the Sunday retrain, the model grades itself. Every game since 2022
+# is priced the way the live card prices it (each season predicted by a
+# model fit only on earlier seasons, then re-centred slate by slate against
+# the market), and the misses are split by kind of game: two bad teams, two
+# good teams, a lopsided matchup, Group of Five only, low and high totals,
+# big spreads, early and late season, and the model's own Unders and
+# underdogs. One shrunk regression fits all groups at once, so overlapping
+# groups (low totals are often bad vs bad) are not counted twice.
+#
+# A group changes live numbers only if its effect is clear (|t| >= 2 over
+# 150+ games), points the same way in at least 3 of 4 seasons, and the
+# corrections, learned without the latest season, also lower the miss on
+# that season. Everything else is reported, not used. The card's re-centring
+# still runs first, so no correction can tilt the whole slate.
+
+RC_TAB = "report_card"
+RC_FIRST_SEASON = TOT2_TEST_SEASONS[0]
+RC_TAU = 1.5            # a real group effect is rarely bigger than ~1.5 pts
+RC_GAP_TAU = 0.5        # prior on "how much of its own disagreement to trust"
+RC_MIN_T = 3.0
+RC_MIN_GAMES = 150
+RC_SEASON_MIN = 30      # a season votes only with this many games in the group
+RC_AGREE = 0.75
+RC_MAX_ADJ = 4.0        # never move one game more than this
+RC_HOLDOUT_MIN = 300    # current season is the holdout once it has this many games
+RC_NOTE_DAYS = 8
+
+RC_GROUPS = {
+    "bad_vs_bad": "Two bottom-third teams",
+    "good_vs_good": "Two top-third teams",
+    "mismatch": "Lopsided matchup",
+    "g5_vs_g5": "Group of Five only",
+    "power_vs_power": "Two power-conference teams",
+    "early": "Weeks 1-3",
+    "late": "Week 10 on",
+    "low_total": "Totals of 45 or less",
+    "high_total": "Totals of 60 or more",
+    "big_spread": "Spreads of 14 or more",
+    "late_kick": "Kickoff 10 PM ET or later",
+    "noon_kick": "Kickoff by 12:30 PM ET",
+    "short_week": "A team on 6 days' rest or less",
+    "off_bye": "A team coming off a bye",
+    "conf_game": "Conference games",
+    "dome": "Domes",
+    "long_trip": "Road team traveled 1,500+ miles",
+    "west_to_east": "Road team came 2+ time zones east",
+    "east_to_west": "Road team went 2+ time zones west",
+    "total_up": "Total rose 2+ pts from the open",
+    "total_down": "Total fell 2+ pts from the open",
+    "both_went_over": "Both teams' last game went 10+ over",
+    "both_went_under": "Both teams' last game went 10+ under",
+}
+
+# One-sided spread signals: what +1 means, for the report.
+RC_EDGES = {
+    "travel_edge": ("Road team traveled 1,500+ miles", "the home team"),
+    "tz_edge": ("Road team crossed 2+ time zones", "the home team"),
+    "body_clock": ("West-coast road team at a noon ET kickoff", "the home team"),
+    "rest_edge": ("3+ days more rest", "the rested team"),
+    "line_move": ("Line moved 1.5+ pts", "the side the line moved to"),
+    "last_week_swing": ("21+ pt gap in last week's results vs the spread", "the team that covered big"),
+}
+
+
+def _rc_fbs(year):
+    try:
+        return _fbs_school_set(API_KEY, int(year))
+    except Exception:
+        return set()
+
+
+def _rc_pcts(r, fbs):
+    """Each FBS team's place in the scoring ratings (off minus points
+    allowed), 0 = worst, 1 = best."""
+    teams = [t for t in (r.get("off") or {}) if not fbs or t in fbs]
+    if len(teams) < 20:
+        return {}
+    net = sorted(teams, key=lambda t: r["off"].get(t, 0.0) - r["dfn"].get(t, 0.0))
+    n = len(net) - 1
+    return {t: i / n for i, t in enumerate(net)}
+
+
+def _rc_center(d, lab):
+    """The live card's slate re-centring, applied to each week of history."""
+    out = d["pred"].astype(float).copy()
+    for _, g in d.groupby(["season", "week"]):
+        f, m = g["pred"].astype(float), g["market"].astype(float)
+        if lab == "totals":
+            if len(g) < TOTAL_CENTER_MIN_GAMES:
+                continue
+            slope = 1.0
+            if len(g) >= TOTAL_TILT_MIN_GAMES and float(m.var()) > 1.0:
+                slope = max(0.3, min(1.5, float(np.cov(m, f)[0, 1] / m.var())))
+            intercept = float((f - slope * m).median())
+        else:
+            fit = m.abs() <= V50_MAX_SPREAD
+            if int(fit.sum()) < SPREAD_CENTER_MIN_GAMES:
+                continue
+            mf, ff = m[fit], f[fit]
+            slope = 1.0
+            if float(mf.var()) > 1.0:
+                slope = max(0.5, min(1.5, float(np.cov(mf, ff)[0, 1] / mf.var())))
+            intercept = float((ff - slope * mf).median())
+        out[g.index] = m + (f - (intercept + slope * m))
+    return out
+
+
+# Game context the ratings never see: travel, time zones, kickoff time,
+# rest, the line's move from open to close, and how each team's last game
+# went against its own line (does the market overreact to it?). Built the
+# same way for history and for the live slate.
+def _rc_tz_hours(tzname, when):
+    try:
+        from zoneinfo import ZoneInfo
+        off = when.astimezone(ZoneInfo(str(tzname))).utcoffset()
+        return off.total_seconds() / 3600.0 if off is not None else np.nan
+    except Exception:
+        return np.nan
+
+
+def _rc_season_ctx(year, games, lines_by_game):
+    """Venues, team homes, each team's game dates and how its games went
+    against the closing line, for one season."""
+    venues = {}
+    try:
+        for v in (fetch_venues(API_KEY) or []):
+            if v.get("id") is not None:
+                venues[str(v["id"])] = _loc_fields(v)
+    except Exception:
+        pass
+    homes = {}
+    try:
+        for t, r in _school_map(_safe_fetch(fetch_fbs_teams, API_KEY, int(year))).items():
+            homes[t] = _loc_fields(r)
+    except Exception:
+        pass
+    dates, hist = {}, {}
+    for g in games or []:
+        dt = _parse_game_datetime(g)
+        if dt is None:
+            continue
+        h, a = str(g.get("homeTeam")), str(g.get("awayTeam"))
+        for t in (h, a):
+            dates.setdefault(t, []).append(dt)
+        if g.get("homePoints") is None or g.get("awayPoints") is None:
+            continue
+        try:
+            key = int(g.get("id"))
+        except Exception:
+            key = g.get("id")
+        mk = _bt_consensus_line(lines_by_game.get(key, []))
+        mt, hs = _v3_num(mk.get("total")), _v3_num(mk.get("home_spread"))
+        hp, ap = float(g["homePoints"]), float(g["awayPoints"])
+        tot = (hp + ap - mt) if np.isfinite(mt) else np.nan
+        ats = (hp - ap + hs) if np.isfinite(hs) else np.nan
+        hist.setdefault(h, []).append((dt, tot, ats))
+        hist.setdefault(a, []).append((dt, tot, -ats if np.isfinite(ats) else np.nan))
+    for t in dates:
+        dates[t].sort()
+    for t in hist:
+        hist[t].sort(key=lambda x: x[0])
+    return {"venues": venues, "homes": homes, "dates": dates, "hist": hist}
+
+
+def _rc_open(rows):
+    def med(k):
+        v = [x.get(k) for x in rows or [] if x.get(k) is not None]
+        v = pd.to_numeric(pd.Series(v), errors="coerce").dropna()
+        return float(v.median()) if not v.empty else np.nan
+    return med("total_open"), med("home_spread_open")
+
+
+def _rc_game_ctx(g, ctx, line_rows):
+    """Raw context for one game, from facts known before kickoff."""
+    out = {}
+    dt = _parse_game_datetime(g)
+    h, a = str(g.get("homeTeam") or g.get("home_team")), str(g.get("awayTeam") or g.get("away_team"))
+    ven = ctx["venues"].get(str(g.get("venueId") or ""), {}) or ctx["homes"].get(h, {})
+    ah = ctx["homes"].get(a, {})
+    out["away_miles"] = _haversine_miles(ah.get("latitude"), ah.get("longitude"),
+                                         ven.get("latitude"), ven.get("longitude"))
+    out["away_miles"] = np.nan if out["away_miles"] is None else float(out["away_miles"])
+    out["tz_shift"] = np.nan
+    out["kick_et"] = np.nan
+    out["home_rest"] = out["away_rest"] = np.nan
+    for t in (h, a):
+        out[f"{'home' if t == h else 'away'}_prev_tot"] = np.nan
+        out[f"{'home' if t == h else 'away'}_prev_ats"] = np.nan
+    if dt is not None:
+        if ven.get("timezone") and ah.get("timezone"):
+            out["tz_shift"] = _rc_tz_hours(ven["timezone"], dt) - _rc_tz_hours(ah["timezone"], dt)
+        if not g.get("startTimeTBD"):
+            et = dt.astimezone(_ZoneInfoET()) if _ZoneInfoET() else dt
+            out["kick_et"] = et.hour + et.minute / 60.0
+        for side, t in (("home", h), ("away", a)):
+            prev = [d for d in ctx["dates"].get(t, []) if d < dt - timedelta(hours=12)]
+            if prev:
+                out[f"{side}_rest"] = (dt - prev[-1]).total_seconds() / 86400.0
+            last = [x for x in ctx["hist"].get(t, []) if x[0] < dt - timedelta(hours=12)]
+            if last:
+                out[f"{side}_prev_tot"], out[f"{side}_prev_ats"] = last[-1][1], last[-1][2]
+    out["conf_game"] = 1.0 if g.get("conferenceGame") else 0.0
+    out["dome"] = 1.0 if ven.get("dome") else 0.0
+    out["total_open"], out["home_spread_open"] = _rc_open(line_rows)
+    return out
+
+
+@lru_cache(maxsize=1)
+def _ZoneInfoET():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/New_York")
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _rc_live_ctx(season):
+    games = get_finals_games(int(season)) or []
+    by_game = {}
+    for lr in (get_backtest_lines(int(season)) or []):
+        gid = lr.get("id")
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        by_game[key] = normalize_game_lines([lr], game_id=gid)
+    return _rc_season_ctx(season, games, by_game)
+
+
+def _rc_col(d, c):
+    return pd.to_numeric(d[c], errors="coerce") if c in d.columns \
+        else pd.Series(np.nan, index=d.index)
+
+
+def _rc_flags(d, lab):
+    """Kinds of game, judged only on what was known before kickoff. These
+    carry no direction; for spreads each gets a home-side and a
+    favourite-side term."""
+    hp, ap = _rc_col(d, "home_pct"), _rc_col(d, "away_pct")
+    tier = d["tier"].astype(str) if "tier" in d.columns else pd.Series("", index=d.index)
+    wk, m = _rc_col(d, "week"), _rc_col(d, "market")
+    kick = _rc_col(d, "kick_et")
+    hr, ar = _rc_col(d, "home_rest"), _rc_col(d, "away_rest")
+    g = {
+        "bad_vs_bad": (hp < 1 / 3) & (ap < 1 / 3),
+        "good_vs_good": (hp > 2 / 3) & (ap > 2 / 3),
+        "mismatch": (hp - ap).abs() > 0.5,
+        "g5_vs_g5": tier.eq("Neither major"),
+        "power_vs_power": tier.eq("Both major"),
+        "early": wk <= 3,
+        "late": wk >= 10,
+        "late_kick": kick >= 22,
+        "noon_kick": kick <= 12.5,
+        "short_week": np.minimum(hr, ar) <= 6,
+        "off_bye": np.maximum(hr, ar) >= 13,
+        "conf_game": _rc_col(d, "conf_game") > 0,
+        "dome": _rc_col(d, "dome") > 0,
+    }
+    if lab == "totals":
+        tz, mv = _rc_col(d, "tz_shift"), m - _rc_col(d, "total_open")
+        hpt, apt = _rc_col(d, "home_prev_tot"), _rc_col(d, "away_prev_tot")
+        g.update({
+            "low_total": m <= 45,
+            "high_total": m >= 60,
+            "long_trip": _rc_col(d, "away_miles") >= 1500,
+            "west_to_east": tz >= 2,
+            "east_to_west": tz <= -2,
+            "total_up": mv >= 2,
+            "total_down": mv <= -2,
+            "both_went_over": (hpt >= 10) & (apt >= 10),
+            "both_went_under": (hpt <= -10) & (apt <= -10),
+        })
+    else:
+        g["big_spread"] = m.abs() >= 14
+    return {k: v.fillna(False).astype(bool) for k, v in g.items()}
+
+
+def _rc_edges(d):
+    """Spread-only signals that favour one side: +1 = the home team has the
+    edge, -1 = the road team does, 0 = neither."""
+    tz = _rc_col(d, "tz_shift")
+    kick = _rc_col(d, "kick_et")
+    rest = _rc_col(d, "home_rest") - _rc_col(d, "away_rest")
+    mv = _rc_col(d, "market") + _rc_col(d, "home_spread_open")
+    swing = _rc_col(d, "home_prev_ats") - _rc_col(d, "away_prev_ats")
+    e = {
+        "travel_edge": (_rc_col(d, "away_miles") >= 1500).astype(float),
+        "tz_edge": (tz.abs() >= 2).astype(float),
+        "body_clock": ((tz >= 2) & (kick <= 12.5)).astype(float),
+        "rest_edge": np.where(rest.abs() >= 3, np.sign(rest), 0.0),
+        "line_move": np.where(mv.abs() >= 1.5, np.sign(mv), 0.0),
+        "last_week_swing": np.where(swing.abs() >= 21, np.sign(swing), 0.0),
+    }
+    return {k: pd.Series(v, index=d.index).fillna(0.0).astype(float) for k, v in e.items()}
+
+
+def _rc_design(d, lab):
+    """Correction inputs. Totals: one level term per kind of game. Spreads:
+    per kind of game a home-side and a favourite-side term, plus the
+    one-sided edges. Both: the model's own gap (is it over- or
+    under-confident?) and its Under / underdog leans."""
+    gap = _rc_col(d, "gap").fillna(0.0)
+    X = {}
+    flags = _rc_flags(d, lab)
+    if lab == "totals":
+        for k, v in flags.items():
+            X[k] = v.astype(float)
+        X["model_under"] = (gap < 0).astype(float)
+    else:
+        fav = np.sign(_rc_col(d, "market").fillna(0.0))
+        for k, v in flags.items():
+            X[f"{k}@home"] = v.astype(float)
+            X[f"{k}@fav"] = v.astype(float) * fav
+        X.update(_rc_edges(d))
+        side = np.sign(gap)
+        X["model_dog"] = np.where((side != 0) & (side == -fav), side, 0.0)
+    X["gap"] = gap
+    return pd.DataFrame(X, index=d.index).astype(float)
+
+
+def _rc_fit(X, y):
+    """Shrunk least squares: each group effect is pulled toward zero as if
+    it were RC_TAU points at most, so a thin group cannot run wild."""
+    cols = list(X.columns)
+    Xm = np.column_stack([np.ones(len(X)), X.to_numpy(dtype=float)])
+    sig = float(np.std(y)) or 1.0
+    lam = [1e-6] + [(sig / (RC_GAP_TAU if c == "gap" else RC_TAU)) ** 2 for c in cols]
+    Ainv = np.linalg.inv(Xm.T @ Xm + np.diag(lam))
+    b = Ainv @ Xm.T @ y
+    s2 = float(np.var(y - Xm @ b))
+    se = np.sqrt(np.maximum(np.diag(Ainv) * s2, 1e-12))
+    return {c: (float(b[i + 1]), float(b[i + 1] / se[i + 1])) for i, c in enumerate(cols)}
+
+
+def _rc_gate(X, y, seasons):
+    """Which corrections are real: clear overall, enough games, and the
+    same sign in most seasons. Returns ({col: pts}, {col: detail})."""
+    full = _rc_fit(X, y)
+    votes = {c: [] for c in X.columns}
+    for s in sorted(set(seasons)):
+        m = seasons == s
+        if int(m.sum()) < 200:
+            continue
+        per = _rc_fit(X[m], y[m])
+        for c in X.columns:
+            if int((X.loc[m, c] != 0).sum()) >= RC_SEASON_MIN:
+                votes[c].append(np.sign(per[c][0]))
+    # The more patterns tried, the higher the bar: with K tries, a pure-chance
+    # pattern clears it about 5% of the time across all K together.
+    tmin = max(RC_MIN_T, NormalDist().inv_cdf(1 - 0.025 / max(len(X.columns), 1)))
+    adj, detail = {}, {}
+    for c in X.columns:
+        b, t = full[c]
+        n = int((X[c] != 0).sum())
+        v = votes[c]
+        agree = (sum(1 for x in v if x == np.sign(b)) / len(v)) if v else 0.0
+        ok = abs(t) >= tmin and n >= RC_MIN_GAMES and len(v) >= 3 and agree >= RC_AGREE
+        detail[c] = {"b": round(b, 3), "t": round(t, 2), "n": n,
+                     "agree": f"{sum(1 for x in v if x == np.sign(b))}/{len(v)}", "ok": bool(ok)}
+        if ok:
+            adj[c] = float(np.clip(b, -1.0, 0.5)) if c == "gap" else float(np.clip(b, -RC_MAX_ADJ, RC_MAX_ADJ))
+    return adj, detail
+
+
+def _rc_delta(X, adj):
+    if not adj:
+        return np.zeros(len(X))
+    cols = [c for c in adj if c in X.columns]
+    v = X[cols].to_numpy(dtype=float) @ np.array([adj[c] for c in cols])
+    return np.clip(v, -RC_MAX_ADJ, RC_MAX_ADJ)
+
+
+def _rc_record(d, gap, bar):
+    """The model's side at the card's bar: W, L."""
+    res = d["actual"] - d["market"]
+    pick = gap.abs() >= bar
+    win = pick & (np.sign(res) == np.sign(gap)) & (res != 0)
+    loss = pick & (np.sign(res) == -np.sign(gap)) & (res != 0)
+    return int(win.sum()), int(loss.sum())
+
+
+def _rc_lab(lab, df, saved, season):
+    if lab == "totals":
+        ycol, mcol, pred_fn, bar = "actual_total", "market_total", _tot2_wf_pred, V50_TOTAL_MIN_GAP_PTS
+    else:
+        ycol, mcol, pred_fn, bar = "actual_margin", "market_margin", _spr2_wf_pred, V50_MIN_GAP_PTS
+    feats = [f for f in saved["coefs"].get("features", []) if f in df.columns]
+    parts = []
+    for s in range(RC_FIRST_SEASON, int(season) + 1):
+        tr = df[(df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)]
+        te = df[df["season"] == s]
+        if len(tr) < 500 or te.empty:
+            continue
+        p = pred_fn(tr, te, feats)
+        if p is None:
+            continue
+        te = te.copy()
+        te["pred"] = np.asarray(p, dtype=float)
+        parts.append(te)
+    if not parts:
+        return {"result": "skipped", "msg": "not enough seasons to grade"}
+    d = pd.concat(parts).reset_index(drop=True)
+    d["market"] = pd.to_numeric(d[mcol], errors="coerce")
+    d["actual"] = pd.to_numeric(d[ycol], errors="coerce")
+    for c in ("home_pct", "away_pct"):
+        if c not in d.columns:
+            d[c] = np.nan
+    d = d.dropna(subset=["market", "actual", "pred"]).reset_index(drop=True)
+    d["pred_c"] = _rc_center(d, lab)
+    d["gap"] = d["pred_c"] - d["market"]
+    y = (d["actual"] - d["pred_c"]).to_numpy(dtype=float)
+    X = _rc_design(d, lab)
+    seasons = d["season"].astype(int).to_numpy()
+
+    # Holdout: learn on earlier seasons, test on the latest one with enough games.
+    hold_s = int(season) if int((seasons == int(season)).sum()) >= RC_HOLDOUT_MIN \
+        else int(seasons[seasons < int(season)].max()) if (seasons < int(season)).any() else None
+    out = {"result": "graded", "games": int(len(d)), "seasons": f"{int(seasons.min())}-{int(seasons.max())}"}
+    adopt = False
+    if hold_s is not None and (seasons < hold_s).sum() >= 1000:
+        tr, ho = seasons < hold_s, seasons == hold_s
+        adj_tr, _ = _rc_gate(X[tr], y[tr], seasons[tr])
+        mae_without = float(np.mean(np.abs(y[ho])))
+        mae_with = float(np.mean(np.abs(y[ho] - _rc_delta(X[ho], adj_tr))))
+        out["holdout"] = {"season": hold_s, "n": int(ho.sum()), "tried": sorted(adj_tr),
+                          "mae_without": round(mae_without, 3), "mae_with": round(mae_with, 3)}
+        adopt = mae_with <= mae_without
+    adj, detail = _rc_gate(X, y, seasons)
+    out["adj"] = adj if adopt else {}
+    out["found"] = adj
+    out["detail"] = detail
+    out["adopted"] = bool(adopt and adj)
+
+    # The report itself: how the model's picks did in each kind of game.
+    d_after = d["gap"] + _rc_delta(X, out["adj"]) if out["adj"] else d["gap"]
+    flags = _rc_flags(d, lab)
+    gap = d["gap"]
+    if lab == "totals":
+        flags["_over"] = gap > 0
+        flags["_under"] = gap < 0
+    else:
+        fav = np.sign(d["market"])
+        flags["_fav"] = np.sign(gap) == fav
+        flags["_dog"] = (np.sign(gap) == -fav) & (fav != 0)
+    rows = []
+    w, l = _rc_record(d, gap, bar)
+    rows.append({"key": "_all", "n": int(len(d)), "w": w, "l": l,
+                 "miss": round(float(np.mean(np.abs(y))), 2)})
+    for k, m in flags.items():
+        if int(m.sum()) < 50:
+            continue
+        w, l = _rc_record(d[m], gap[m], bar)
+        rows.append({"key": k, "n": int(m.sum()), "w": w, "l": l,
+                     "bias": round(float(np.mean(y[m.to_numpy()])), 2)})
+    if lab != "totals":
+        for k, v in _rc_edges(d).items():
+            m = (v != 0).to_numpy()
+            if int(m.sum()) < 50:
+                continue
+            w, l = _rc_record(d[m], gap[m], bar)
+            rows.append({"key": k, "n": int(m.sum()), "w": w, "l": l,
+                         "edge": round(float(np.mean(y[m] * v.to_numpy()[m])), 2)})
+    cur = seasons == int(season)
+    if cur.any():
+        w, l = _rc_record(d[cur], gap[cur], bar)
+        out["this_season"] = {"n": int(cur.sum()), "w": w, "l": l}
+    if out["adj"]:
+        w0, l0 = _rc_record(d, gap, bar)
+        w1, l1 = _rc_record(d, d_after, bar)
+        out["record_before"], out["record_after"] = [w0, l0], [w1, l1]
+    out["groups"] = rows
+    return out
+
+
+def _rc_save(state):
+    ws = _v401_sheet(tab=RC_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps(state)]], "A1", value_input_option="RAW")
+        try:
+            _rc_load.clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _rc_load():
+    ws = _v401_sheet(tab=RC_TAB)
+    if ws is None:
+        return None
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return None
+
+
+def _rc_run(season):
+    prev = (_rc_load() or {}).get("labs") or {}
+    labs = {}
+    for lab, loader in (("totals", _tot2_load), ("spread", _spr2_load)):
+        df = _AR_FRAMES.get(lab)
+        try:
+            loader.clear()
+        except Exception:
+            pass
+        saved = loader()
+        if df is None or df.empty or not saved or not saved.get("coefs"):
+            res = {"result": "skipped", "msg": "lab not run this week"}
+        else:
+            try:
+                res = _rc_lab(lab, df, saved, season)
+            except Exception as e:
+                res = {"result": "error", "msg": str(e)[:160]}
+        # A failed week keeps last week's grades and corrections.
+        if res.get("result") != "graded" and (prev.get(lab) or {}).get("result") == "graded":
+            res = {**prev[lab], "stale": res.get("msg") or res.get("result")}
+        labs[lab] = res
+    keys = (_rc_load() or {}).get("keys") or {}
+    try:
+        if _AR_FRAMES.get("spread") is not None:
+            keys["margin"] = _bc_key_weights(_AR_FRAMES["spread"]["actual_margin"], 90, True) or keys.get("margin")
+        if _AR_FRAMES.get("totals") is not None:
+            keys["total"] = _bc_key_weights(_AR_FRAMES["totals"]["actual_total"], 160, False) or keys.get("total")
+    except Exception:
+        pass
+    _rc_save({"season": int(season), "at": pd.Timestamp.now(tz="America/New_York").isoformat(),
+              "labs": labs, "keys": keys})
+
+
+def _rc_active(lab):
+    try:
+        st_ = _rc_load() or {}
+    except Exception:
+        return None
+    adj = ((st_.get("labs") or {}).get(lab) or {}).get("adj") or {}
+    return adj or None
+
+
+def _rc_live_frame(card, idxs, lab):
+    """Group inputs for live card rows, built from the same ratings and
+    game context the report card graded."""
+    rows = []
+    for idx in idxs:
+        r = card.loc[idx]
+        info = {"home_pct": np.nan, "away_pct": np.nan, "tier": "Neither major", "week": np.nan}
+        try:
+            season = _tot2_season_of(r.get("game_date"))
+            g = next((x for x in (get_finals_games(season) or [])
+                      if _tot2_gid(x.get("id")) == _tot2_gid(r.get("game_id"))), None)
+            if g:
+                week = int(g.get("week") or 1)
+                pct = _rc_pcts(_tot2_live_state(season, week)["r"], _rc_fbs(season))
+                info.update(home_pct=pct.get(str(r.get("home_team")), np.nan),
+                            away_pct=pct.get(str(r.get("away_team")), np.nan),
+                            tier=_tot2_tier(g), week=week)
+                try:
+                    line_rows = json.loads(r.get("provider_rows_json") or "[]")
+                except Exception:
+                    line_rows = []
+                info.update(_rc_game_ctx(g, _rc_live_ctx(season), line_rows))
+        except Exception:
+            pass
+        rows.append(info)
+    return pd.DataFrame(rows, index=idxs)
+
+
+def _rc_apply(card, lab):
+    """Move each live number by the corrections that passed the report card."""
+    adj = _rc_active(lab)
+    if not adj or card is None or card.empty:
+        return card
+    out = card.copy()
+    out["rc_adj"] = 0.0
+    if lab == "totals":
+        fair = pd.to_numeric(out.get("fair_total"), errors="coerce")
+        mkt = pd.to_numeric(out.get("market_total"), errors="coerce")
+        idxs = list(out.index[fair.notna() & mkt.notna()])
+        market, model = mkt, fair
+    else:
+        if "market_type" not in out.columns:
+            return card
+        _nan = pd.Series(np.nan, index=out.index)
+        mh = pd.to_numeric(out.get("market_home_spread_display", _nan), errors="coerce")
+        mh = mh.fillna(pd.to_numeric(out.get("market_home_spread", _nan), errors="coerce"))
+        fh = pd.to_numeric(out.get("fair_home_spread", _nan), errors="coerce")
+        is_sp = out["market_type"].astype(str).str.upper().eq("SPREAD")
+        idxs = list(out.index[is_sp & mh.notna() & fh.notna()])
+        market, model = -mh, -fh
+    if not idxs:
+        return out
+    f = _rc_live_frame(out, idxs, lab)
+    f["market"] = market[idxs].astype(float)
+    f["gap"] = model[idxs].astype(float) - f["market"]
+    delta = _rc_delta(_rc_design(f, lab), adj)
+    for idx, dv in zip(idxs, delta):
+        if abs(dv) < 0.05:
+            continue
+        if lab == "totals":
+            _se_set_total(out, idx, float(model[idx]) + float(dv), float(market[idx]))
+        else:
+            _se_set_spread(out, idx, float(model[idx]) + float(dv), -float(market[idx]))
+        out.at[idx, "rc_adj"] = float(dv)
+    return out
+
+
+def _rc_caption(card, name):
+    if card is None or card.empty or "rc_adj" not in card.columns:
+        return None
+    a = pd.to_numeric(card["rc_adj"], errors="coerce").fillna(0.0)
+    n = int((a.abs() >= 0.05).sum())
+    if not n:
+        return None
+    return (f"Report card moved {n} {name} (up to {a.abs().max():.1f} pts) for patterns "
+            "that held up in past seasons. See the weekly report card on Home.")
+
+
+def _rc_adj_text(lab, c, b):
+    if c == "gap":
+        return (f"Trusts its own disagreement with the line at {100 * (1 + b):.0f}% "
+                f"({'it was overconfident' if b < 0 else 'it was too timid'}).")
+    if c == "model_under":
+        return f"When it leans Under, moves the total {b:+.1f} pts."
+    if c == "model_dog":
+        return (f"When it backs an underdog, moves {abs(b):.1f} pts "
+                f"{'further toward' if b > 0 else 'back toward the favorite from'} that dog.")
+    if c in RC_EDGES:
+        what, who = RC_EDGES[c]
+        return f"{what}: {abs(b):.1f} pts {'toward' if b > 0 else 'away from'} {who}."
+    if lab == "totals":
+        return f"{RC_GROUPS.get(c, c)}: totals {b:+.1f} pts."
+    k, how = c.split("@")
+    name = RC_GROUPS.get(k, k)
+    if how == "home":
+        return f"{name}: {abs(b):.1f} pts toward the {'home' if b > 0 else 'road'} team."
+    return f"{name}: {abs(b):.1f} pts toward the {'favorite' if b > 0 else 'underdog'}."
+
+
+RC_ROW_LABELS = {"_all": "All games", "_over": "Its Over picks", "_under": "Its Under picks",
+                 "_fav": "Its favorite picks", "_dog": "Its underdog picks"}
+
+
+def _rc_group_table(lab, r):
+    rows = []
+    for g in r.get("groups") or []:
+        w, l = g["w"], g["l"]
+        rec = f"{w}-{l} ({100 * w / (w + l):.0f}%)" if (w + l) else "—"
+        label = (RC_ROW_LABELS.get(g["key"]) or RC_GROUPS.get(g["key"])
+                 or RC_EDGES.get(g["key"], (g["key"],))[0])
+        bias = g.get("bias")
+        if g.get("edge") is not None:
+            vs = f"{g['edge']:+.1f} for {RC_EDGES[g['key']][1]} vs model"
+        elif bias is None:
+            vs = f"avg miss {g.get('miss', 0):.1f}"
+        elif lab == "totals":
+            vs = f"{bias:+.1f} vs model"
+        else:
+            vs = f"{bias:+.1f} home vs model"
+        rows.append({"Games": label, "N": g["n"], "Model's picks": rec, "Scored": vs})
+    return pd.DataFrame(rows)
+
+
+def _rc_home_card():
+    try:
+        state = _rc_load() or {}
+    except Exception:
+        return
+    labs = state.get("labs") or {}
+    if not labs or not any((v or {}).get("result") == "graded" for v in labs.values()):
+        return
+    try:
+        at = pd.Timestamp(state.get("at"))
+        title = f"Weekly report card · {at:%a %-m/%-d}"
+    except Exception:
+        title = "Weekly report card"
+    n_adj = sum(len((v or {}).get("adj") or {}) for v in labs.values())
+    with st.expander(title + (f" · {n_adj} adjustment{'s' if n_adj != 1 else ''} on" if n_adj else ""),
+                     expanded=False):
+        for lab, name in (("totals", "Totals"), ("spread", "Spreads")):
+            r = labs.get(lab) or {}
+            if r.get("result") != "graded":
+                continue
+            st.markdown(f"**{name}** · {r.get('games', 0):,} games, {r.get('seasons', '')}")
+            ts = r.get("this_season")
+            if ts and (ts["w"] + ts["l"]):
+                st.caption(f"This season at the card's bar: {ts['w']}-{ts['l']} "
+                           f"({100 * ts['w'] / (ts['w'] + ts['l']):.0f}%).")
+            adj = r.get("adj") or {}
+            if adj:
+                st.markdown("Now adjusting:")
+                for c, b in adj.items():
+                    st.markdown(f"- {_rc_adj_text(lab, c, b)}")
+                if r.get("record_before") and r.get("record_after"):
+                    (w0, l0), (w1, l1) = r["record_before"], r["record_after"]
+                    st.caption(f"Picks at the bar, all graded seasons: {w0}-{l0} before, "
+                               f"{w1}-{l1} after adjusting.")
+            else:
+                found = r.get("found") or {}
+                ho = r.get("holdout") or {}
+                if found and ho:
+                    st.markdown(f"Found {len(found)} pattern(s), but they did not lower the "
+                                f"miss on {ho.get('season')} when learned without it, so "
+                                "nothing is adjusted.")
+                else:
+                    st.markdown("No pattern held up, so nothing is adjusted.")
+            st.dataframe(_rc_group_table(lab, r), hide_index=True, use_container_width=True)
+        st.caption(
+            "Every game since 2022, priced the way the card prices it, split by kind of "
+            "game. \"Scored\" is the average points above (+) or below (-) the model's "
+            "number. A group moves live numbers only if it is clear over 150+ games, "
+            "points the same way in 3 of 4 seasons, and still helps on the latest season "
+            "when learned without it. Runs after the Sunday retrain.")
 
 
 # ===== Injury overrides (v5.4) ============================================
@@ -26085,6 +27437,7 @@ def _render_home_page():
         )
 
     _ar_home_note()
+    _rc_home_card()
 
     def _render_ml_flags(_for_date):
         """
@@ -26260,6 +27613,7 @@ def _render_home_page():
                 )
 
         st.markdown(_SE_TIX_CSS, unsafe_allow_html=True)
+        st.markdown(BC_CSS, unsafe_allow_html=True)
         try:
             st.markdown(_se_card_summary_html(_top, _view_date), unsafe_allow_html=True)
         except Exception:
@@ -26274,7 +27628,7 @@ def _render_home_page():
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
-            f'{_se_hero_meta(_h, _now, _today)}</div>'
+            f'{_se_hero_meta(_h, _now, _today)}{_bc_html(_h, compact=True)}</div>'
             f'<div class="se-hero-ev"><b>{_se_stars(_se_conf(_h))}</b>'
             f'<span>{html.escape(SE_CONF_NAME[_se_conf(_h)])}</span></div>'
             f'</div>'
@@ -26773,6 +28127,10 @@ if run_mode == "Full Slate":
             help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
         )
         st.caption("Unreliable or conflicting line feeds are ignored automatically.")
+        try:
+            _bc_render_settings()
+        except Exception:
+            pass
         st.caption("Building never freezes anything. Picks are added to the "
                    "tracker only when you tap Freeze under the card.")
 
@@ -27348,6 +28706,9 @@ if run_mode == "Full Slate":
                         "picking Overs and Unders.")
             except Exception:
                 pass
+            _rc_cap = _rc_caption(total_card, "totals")
+            if _rc_cap:
+                _bm.caption(_rc_cap)
             combined_card = _v410_combine_cards(v36_card, total_card)
 
             st.session_state["cfb_v36_latest_date"] = str(selected_date)
@@ -27366,6 +28727,10 @@ if run_mode == "Full Slate":
             # injury news is real information and must not be centred away.
             try:
                 combined_card = _se_center_spreads(combined_card)
+                try:
+                    combined_card = _rc_apply(combined_card, "spread")
+                except Exception:
+                    pass
                 _sp_rows = combined_card[combined_card["market_type"].astype(str).str.upper().eq("SPREAD")] \
                     if "market_type" in combined_card.columns else pd.DataFrame()
                 if not _sp_rows.empty and "spread_tilt" in _sp_rows.columns:
@@ -27376,6 +28741,9 @@ if run_mode == "Full Slate":
                             f"Spreads re-centred: the model ran {_ss:+.1f} pts toward the "
                             f"home side vs the market (median) and moved {_st:.2f} pts per "
                             "market point (1.00 = in step). Both removed before picking sides.")
+                _rc_cap = _rc_caption(combined_card, "spreads")
+                if _rc_cap:
+                    _bm.caption(_rc_cap)
             except Exception as _cse:
                 _bm.caption(f"Spread re-centring skipped: {str(_cse)[:80]}")
 
@@ -27480,6 +28848,7 @@ if run_mode == "Full Slate":
         else:
             _render_v36_live_card(_official, selected_date)
 
+        st.markdown(BC_CSS, unsafe_allow_html=True)
         if not _fun.empty:
             st.markdown(
                 '<div class="ge-leans-head"><div>'
@@ -27499,6 +28868,7 @@ if run_mode == "Full Slate":
                       <div class="ge-lean-main">
                         <b>{html.escape(str(fr.get("selection","")))}</b>
                         <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
+                        {_bc_html(fr, compact=True)}
                       </div>
                       <div class="ge-lean-stats">
                         <span>{html.escape(_se_gap_text(fr))} off</span>
