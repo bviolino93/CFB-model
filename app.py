@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.1"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.2"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18398,6 +18398,18 @@ V50_FUN_MIN_EV = V50_MIN_EV - 0.01
 # below the official bar, so these stay genuine near-misses.
 V50_FUN_MIN_GAP_PTS = V50_MIN_GAP_PTS - 1.0
 
+# Totals get their own, lower bar. Once the slate's Over/Under lean and its
+# low/high lean are removed, the totals model mostly agrees with the market,
+# so few totals reach 3 points. Calibration found gap size does not change the
+# hit rate, so this bar only sets volume.
+V50_TOTAL_MIN_GAP_PTS = 2.0
+V50_TOTAL_FUN_MIN_GAP_PTS = V50_TOTAL_MIN_GAP_PTS - 1.0
+
+
+def _v50_gap_bar(frame, spread_bar, total_bar):
+    is_tot = frame["market_type"].astype(str).str.upper().eq("TOTAL")
+    return pd.Series(np.where(is_tot, total_bar, spread_bar), index=frame.index)
+
 # Stamp selection parameters into the version so tuning changes self-separate
 # in the tracker. Defined here because it depends on the constants above.
 # The threshold is part of the version, as in Sunday Edge: change the bar and
@@ -18406,7 +18418,7 @@ V50_FUN_MIN_GAP_PTS = V50_MIN_GAP_PTS - 1.0
 # Bumped: the season-weight ladder now reaches 1.0 and the preseason-only
 # inputs decay to zero by week 8. Those change the model's number, so bets
 # frozen before and after are not the same experiment and must not be pooled.
-MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}-cur1.0"
+MODEL_VERSION = f"{MODEL_VERSION}-s{V50_SHRINK}-g{V50_MIN_GAP_PTS:g}t{V50_TOTAL_MIN_GAP_PTS:g}-cur1.0"
 
 
 # CONFIDENCE STARS (v5.1), same shape as Sunday Edge: one list of bets, each
@@ -18630,7 +18642,7 @@ def _v50_apply_strict_selection(card):
     qualifies = (
         (~_fcs)
         & (~c["excluded"])
-        & (c["raw_gap"] >= V50_MIN_GAP_PTS)
+        & (c["raw_gap"] >= _v50_gap_bar(c, V50_MIN_GAP_PTS, V50_TOTAL_MIN_GAP_PTS))
     )
     # Totals lab adopted: a total is a bet only if it passed the validated
     # filter (which sets its own gap); the 4-point bar does not apply to it.
@@ -18705,7 +18717,7 @@ def _v50_apply_strict_selection(card):
     # plays on the watch list; nothing gets a slot it did not earn.
     eligible = eligible[
         pd.to_numeric(eligible.get("raw_gap"), errors="coerce").fillna(-99)
-        >= V50_FUN_MIN_GAP_PTS
+        >= _v50_gap_bar(eligible, V50_FUN_MIN_GAP_PTS, V50_TOTAL_FUN_MIN_GAP_PTS)
     ].copy()
     eligible = eligible.sort_values("lean_strength", ascending=False)
 
