@@ -9,8 +9,8 @@ name: Sunday model retrain
 # background. If this never runs, the retrain still happens the next time
 # anyone opens the app.
 #
-# Setup: add a repository secret named APP_URL with the full Streamlit URL
-# (Settings -> Secrets and variables -> Actions -> New repository secret).
+# The app's address is below (it is public, so it lives here rather than in
+# a secret). An APP_URL repository secret, if set, overrides it.
 #
 # Times are UTC. 11:30 UTC is 7:30 AM EDT / 6:30 AM EST, after the 6 AM ET
 # start in both; the second run is a backup if the first found the app asleep.
@@ -21,6 +21,9 @@ on:
     - cron: '30 15 * * 0'
   workflow_dispatch:
 
+env:
+  DEFAULT_APP_URL: https://saturday-edge.streamlit.app
+
 concurrency:
   group: sunday-retrain
   cancel-in-progress: false
@@ -30,15 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check the URL secret is set
-        env:
-          APP_URL: ${{ secrets.APP_URL }}
-        run: |
-          if [ -z "$APP_URL" ]; then
-            echo "APP_URL secret is not set. Add it in Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-
       - name: Install a headless browser
         run: |
           pip install playwright==1.47.0
@@ -46,7 +40,7 @@ jobs:
 
       - name: Open the app so the retrain starts
         env:
-          APP_URL: ${{ secrets.APP_URL }}
+          APP_URL: ${{ secrets.APP_URL || env.DEFAULT_APP_URL }}
         run: |
           python - <<'PY'
           import os, time
