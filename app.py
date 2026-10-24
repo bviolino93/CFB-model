@@ -20955,6 +20955,7 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
         old_data = None
 
     fbs = _rc_fbs(year)
+    rctx = _rc_season_ctx(year, games, by_game)
     rows = []
     weeks = sorted({int(g.get("week") or 1) for g in games})
     for w in weeks:
@@ -21004,6 +21005,7 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
             ap = _v3_adv_fields(prev_adv_ctx.get(away))
             row.update(_v3_total_context(hp, ap, "prior"))
             row.update(home_pct=pct.get(home, np.nan), away_pct=pct.get(away, np.nan))
+            row.update(_rc_game_ctx(g, rctx, by_game.get(key, [])))
             row["old_total"] = np.nan
             if old_data is not None:
                 try:
@@ -21704,6 +21706,7 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
         old_data = None
 
     fbs = _rc_fbs(year)
+    rctx = _rc_season_ctx(year, games, by_game)
     rows = []
     for w in sorted({int(g.get("week") or 1) for g in games}):
         before = [g for g in games if int(g.get("week") or 1) < w]
@@ -21734,6 +21737,7 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
             row.update(_spr2_features(r, home, away, neutral, w, cur_adv,
                                       prev_adv, g, talent, rf))
             row.update(home_pct=pct.get(home, np.nan), away_pct=pct.get(away, np.nan))
+            row.update(_rc_game_ctx(g, rctx, by_game.get(key, [])))
             row["old_margin"] = np.nan
             if old_data is not None:
                 try:
@@ -22553,6 +22557,29 @@ RC_GROUPS = {
     "low_total": "Totals of 45 or less",
     "high_total": "Totals of 60 or more",
     "big_spread": "Spreads of 14 or more",
+    "late_kick": "Kickoff 10 PM ET or later",
+    "noon_kick": "Kickoff by 12:30 PM ET",
+    "short_week": "A team on 6 days' rest or less",
+    "off_bye": "A team coming off a bye",
+    "conf_game": "Conference games",
+    "dome": "Domes",
+    "long_trip": "Road team traveled 1,500+ miles",
+    "west_to_east": "Road team came 2+ time zones east",
+    "east_to_west": "Road team went 2+ time zones west",
+    "total_up": "Total rose 2+ pts from the open",
+    "total_down": "Total fell 2+ pts from the open",
+    "both_went_over": "Both teams' last game went 10+ over",
+    "both_went_under": "Both teams' last game went 10+ under",
+}
+
+# One-sided spread signals: what +1 means, for the report.
+RC_EDGES = {
+    "travel_edge": ("Road team traveled 1,500+ miles", "the home team"),
+    "tz_edge": ("Road team crossed 2+ time zones", "the home team"),
+    "body_clock": ("West-coast road team at a noon ET kickoff", "the home team"),
+    "rest_edge": ("3+ days more rest", "the rested team"),
+    "line_move": ("Line moved 1.5+ pts", "the side the line moved to"),
+    "last_week_swing": ("21+ pt gap in last week's results vs the spread", "the team that covered big"),
 }
 
 
@@ -22599,12 +22626,143 @@ def _rc_center(d, lab):
     return out
 
 
+# Game context the ratings never see: travel, time zones, kickoff time,
+# rest, the line's move from open to close, and how each team's last game
+# went against its own line (does the market overreact to it?). Built the
+# same way for history and for the live slate.
+def _rc_tz_hours(tzname, when):
+    try:
+        from zoneinfo import ZoneInfo
+        off = when.astimezone(ZoneInfo(str(tzname))).utcoffset()
+        return off.total_seconds() / 3600.0 if off is not None else np.nan
+    except Exception:
+        return np.nan
+
+
+def _rc_season_ctx(year, games, lines_by_game):
+    """Venues, team homes, each team's game dates and how its games went
+    against the closing line, for one season."""
+    venues = {}
+    try:
+        for v in (fetch_venues(API_KEY) or []):
+            if v.get("id") is not None:
+                venues[str(v["id"])] = _loc_fields(v)
+    except Exception:
+        pass
+    homes = {}
+    try:
+        for t, r in _school_map(_safe_fetch(fetch_fbs_teams, API_KEY, int(year))).items():
+            homes[t] = _loc_fields(r)
+    except Exception:
+        pass
+    dates, hist = {}, {}
+    for g in games or []:
+        dt = _parse_game_datetime(g)
+        if dt is None:
+            continue
+        h, a = str(g.get("homeTeam")), str(g.get("awayTeam"))
+        for t in (h, a):
+            dates.setdefault(t, []).append(dt)
+        if g.get("homePoints") is None or g.get("awayPoints") is None:
+            continue
+        try:
+            key = int(g.get("id"))
+        except Exception:
+            key = g.get("id")
+        mk = _bt_consensus_line(lines_by_game.get(key, []))
+        mt, hs = _v3_num(mk.get("total")), _v3_num(mk.get("home_spread"))
+        hp, ap = float(g["homePoints"]), float(g["awayPoints"])
+        tot = (hp + ap - mt) if np.isfinite(mt) else np.nan
+        ats = (hp - ap + hs) if np.isfinite(hs) else np.nan
+        hist.setdefault(h, []).append((dt, tot, ats))
+        hist.setdefault(a, []).append((dt, tot, -ats if np.isfinite(ats) else np.nan))
+    for t in dates:
+        dates[t].sort()
+    for t in hist:
+        hist[t].sort(key=lambda x: x[0])
+    return {"venues": venues, "homes": homes, "dates": dates, "hist": hist}
+
+
+def _rc_open(rows):
+    def med(k):
+        v = [x.get(k) for x in rows or [] if x.get(k) is not None]
+        v = pd.to_numeric(pd.Series(v), errors="coerce").dropna()
+        return float(v.median()) if not v.empty else np.nan
+    return med("total_open"), med("home_spread_open")
+
+
+def _rc_game_ctx(g, ctx, line_rows):
+    """Raw context for one game, from facts known before kickoff."""
+    out = {}
+    dt = _parse_game_datetime(g)
+    h, a = str(g.get("homeTeam") or g.get("home_team")), str(g.get("awayTeam") or g.get("away_team"))
+    ven = ctx["venues"].get(str(g.get("venueId") or ""), {}) or ctx["homes"].get(h, {})
+    ah = ctx["homes"].get(a, {})
+    out["away_miles"] = _haversine_miles(ah.get("latitude"), ah.get("longitude"),
+                                         ven.get("latitude"), ven.get("longitude"))
+    out["away_miles"] = np.nan if out["away_miles"] is None else float(out["away_miles"])
+    out["tz_shift"] = np.nan
+    out["kick_et"] = np.nan
+    out["home_rest"] = out["away_rest"] = np.nan
+    for t in (h, a):
+        out[f"{'home' if t == h else 'away'}_prev_tot"] = np.nan
+        out[f"{'home' if t == h else 'away'}_prev_ats"] = np.nan
+    if dt is not None:
+        if ven.get("timezone") and ah.get("timezone"):
+            out["tz_shift"] = _rc_tz_hours(ven["timezone"], dt) - _rc_tz_hours(ah["timezone"], dt)
+        if not g.get("startTimeTBD"):
+            et = dt.astimezone(_ZoneInfoET()) if _ZoneInfoET() else dt
+            out["kick_et"] = et.hour + et.minute / 60.0
+        for side, t in (("home", h), ("away", a)):
+            prev = [d for d in ctx["dates"].get(t, []) if d < dt - timedelta(hours=12)]
+            if prev:
+                out[f"{side}_rest"] = (dt - prev[-1]).total_seconds() / 86400.0
+            last = [x for x in ctx["hist"].get(t, []) if x[0] < dt - timedelta(hours=12)]
+            if last:
+                out[f"{side}_prev_tot"], out[f"{side}_prev_ats"] = last[-1][1], last[-1][2]
+    out["conf_game"] = 1.0 if g.get("conferenceGame") else 0.0
+    out["dome"] = 1.0 if ven.get("dome") else 0.0
+    out["total_open"], out["home_spread_open"] = _rc_open(line_rows)
+    return out
+
+
+@lru_cache(maxsize=1)
+def _ZoneInfoET():
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/New_York")
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _rc_live_ctx(season):
+    games = get_finals_games(int(season)) or []
+    by_game = {}
+    for lr in (get_backtest_lines(int(season)) or []):
+        gid = lr.get("id")
+        try:
+            key = int(gid)
+        except Exception:
+            key = gid
+        by_game[key] = normalize_game_lines([lr], game_id=gid)
+    return _rc_season_ctx(season, games, by_game)
+
+
+def _rc_col(d, c):
+    return pd.to_numeric(d[c], errors="coerce") if c in d.columns \
+        else pd.Series(np.nan, index=d.index)
+
+
 def _rc_flags(d, lab):
-    hp = pd.to_numeric(d["home_pct"], errors="coerce")
-    ap = pd.to_numeric(d["away_pct"], errors="coerce")
-    tier = d["tier"].astype(str)
-    wk = pd.to_numeric(d["week"], errors="coerce")
-    m = pd.to_numeric(d["market"], errors="coerce")
+    """Kinds of game, judged only on what was known before kickoff. These
+    carry no direction; for spreads each gets a home-side and a
+    favourite-side term."""
+    hp, ap = _rc_col(d, "home_pct"), _rc_col(d, "away_pct")
+    tier = d["tier"].astype(str) if "tier" in d.columns else pd.Series("", index=d.index)
+    wk, m = _rc_col(d, "week"), _rc_col(d, "market")
+    kick = _rc_col(d, "kick_et")
+    hr, ar = _rc_col(d, "home_rest"), _rc_col(d, "away_rest")
     g = {
         "bad_vs_bad": (hp < 1 / 3) & (ap < 1 / 3),
         "good_vs_good": (hp > 2 / 3) & (ap > 2 / 3),
@@ -22613,20 +22771,57 @@ def _rc_flags(d, lab):
         "power_vs_power": tier.eq("Both major"),
         "early": wk <= 3,
         "late": wk >= 10,
+        "late_kick": kick >= 22,
+        "noon_kick": kick <= 12.5,
+        "short_week": np.minimum(hr, ar) <= 6,
+        "off_bye": np.maximum(hr, ar) >= 13,
+        "conf_game": _rc_col(d, "conf_game") > 0,
+        "dome": _rc_col(d, "dome") > 0,
     }
     if lab == "totals":
-        g["low_total"] = m <= 45
-        g["high_total"] = m >= 60
+        tz, mv = _rc_col(d, "tz_shift"), m - _rc_col(d, "total_open")
+        hpt, apt = _rc_col(d, "home_prev_tot"), _rc_col(d, "away_prev_tot")
+        g.update({
+            "low_total": m <= 45,
+            "high_total": m >= 60,
+            "long_trip": _rc_col(d, "away_miles") >= 1500,
+            "west_to_east": tz >= 2,
+            "east_to_west": tz <= -2,
+            "total_up": mv >= 2,
+            "total_down": mv <= -2,
+            "both_went_over": (hpt >= 10) & (apt >= 10),
+            "both_went_under": (hpt <= -10) & (apt <= -10),
+        })
     else:
         g["big_spread"] = m.abs() >= 14
     return {k: v.fillna(False).astype(bool) for k, v in g.items()}
 
 
+def _rc_edges(d):
+    """Spread-only signals that favour one side: +1 = the home team has the
+    edge, -1 = the road team does, 0 = neither."""
+    tz = _rc_col(d, "tz_shift")
+    kick = _rc_col(d, "kick_et")
+    rest = _rc_col(d, "home_rest") - _rc_col(d, "away_rest")
+    mv = _rc_col(d, "market") + _rc_col(d, "home_spread_open")
+    swing = _rc_col(d, "home_prev_ats") - _rc_col(d, "away_prev_ats")
+    e = {
+        "travel_edge": (_rc_col(d, "away_miles") >= 1500).astype(float),
+        "tz_edge": (tz.abs() >= 2).astype(float),
+        "body_clock": ((tz >= 2) & (kick <= 12.5)).astype(float),
+        "rest_edge": np.where(rest.abs() >= 3, np.sign(rest), 0.0),
+        "line_move": np.where(mv.abs() >= 1.5, np.sign(mv), 0.0),
+        "last_week_swing": np.where(swing.abs() >= 21, np.sign(swing), 0.0),
+    }
+    return {k: pd.Series(v, index=d.index).fillna(0.0).astype(float) for k, v in e.items()}
+
+
 def _rc_design(d, lab):
-    """Correction inputs. Totals: one level term per group. Spreads: per
-    group, a home-side term and a favourite-side term. Both: the model's own
-    gap (is it over- or under-confident?) and its Under / underdog leans."""
-    gap = pd.to_numeric(d["gap"], errors="coerce").fillna(0.0)
+    """Correction inputs. Totals: one level term per kind of game. Spreads:
+    per kind of game a home-side and a favourite-side term, plus the
+    one-sided edges. Both: the model's own gap (is it over- or
+    under-confident?) and its Under / underdog leans."""
+    gap = _rc_col(d, "gap").fillna(0.0)
     X = {}
     flags = _rc_flags(d, lab)
     if lab == "totals":
@@ -22634,10 +22829,11 @@ def _rc_design(d, lab):
             X[k] = v.astype(float)
         X["model_under"] = (gap < 0).astype(float)
     else:
-        fav = np.sign(pd.to_numeric(d["market"], errors="coerce").fillna(0.0))
+        fav = np.sign(_rc_col(d, "market").fillna(0.0))
         for k, v in flags.items():
             X[f"{k}@home"] = v.astype(float)
             X[f"{k}@fav"] = v.astype(float) * fav
+        X.update(_rc_edges(d))
         side = np.sign(gap)
         X["model_dog"] = np.where((side != 0) & (side == -fav), side, 0.0)
     X["gap"] = gap
@@ -22671,13 +22867,16 @@ def _rc_gate(X, y, seasons):
         for c in X.columns:
             if int((X.loc[m, c] != 0).sum()) >= RC_SEASON_MIN:
                 votes[c].append(np.sign(per[c][0]))
+    # The more patterns tried, the higher the bar: with K tries, a pure-chance
+    # pattern clears it about 5% of the time across all K together.
+    tmin = max(RC_MIN_T, NormalDist().inv_cdf(1 - 0.025 / max(len(X.columns), 1)))
     adj, detail = {}, {}
     for c in X.columns:
         b, t = full[c]
         n = int((X[c] != 0).sum())
         v = votes[c]
         agree = (sum(1 for x in v if x == np.sign(b)) / len(v)) if v else 0.0
-        ok = abs(t) >= RC_MIN_T and n >= RC_MIN_GAMES and len(v) >= 3 and agree >= RC_AGREE
+        ok = abs(t) >= tmin and n >= RC_MIN_GAMES and len(v) >= 3 and agree >= RC_AGREE
         detail[c] = {"b": round(b, 3), "t": round(t, 2), "n": n,
                      "agree": f"{sum(1 for x in v if x == np.sign(b))}/{len(v)}", "ok": bool(ok)}
         if ok:
@@ -22775,6 +22974,14 @@ def _rc_lab(lab, df, saved, season):
         w, l = _rc_record(d[m], gap[m], bar)
         rows.append({"key": k, "n": int(m.sum()), "w": w, "l": l,
                      "bias": round(float(np.mean(y[m.to_numpy()])), 2)})
+    if lab != "totals":
+        for k, v in _rc_edges(d).items():
+            m = (v != 0).to_numpy()
+            if int(m.sum()) < 50:
+                continue
+            w, l = _rc_record(d[m], gap[m], bar)
+            rows.append({"key": k, "n": int(m.sum()), "w": w, "l": l,
+                         "edge": round(float(np.mean(y[m] * v.to_numpy()[m])), 2)})
     cur = seasons == int(season)
     if cur.any():
         w, l = _rc_record(d[cur], gap[cur], bar)
@@ -22849,8 +23056,8 @@ def _rc_active(lab):
 
 
 def _rc_live_frame(card, idxs, lab):
-    """Group inputs for live card rows, built from the same ratings the
-    Totals lab uses on the live slate."""
+    """Group inputs for live card rows, built from the same ratings and
+    game context the report card graded."""
     rows = []
     for idx in idxs:
         r = card.loc[idx]
@@ -22865,6 +23072,11 @@ def _rc_live_frame(card, idxs, lab):
                 info.update(home_pct=pct.get(str(r.get("home_team")), np.nan),
                             away_pct=pct.get(str(r.get("away_team")), np.nan),
                             tier=_tot2_tier(g), week=week)
+                try:
+                    line_rows = json.loads(r.get("provider_rows_json") or "[]")
+                except Exception:
+                    line_rows = []
+                info.update(_rc_game_ctx(g, _rc_live_ctx(season), line_rows))
         except Exception:
             pass
         rows.append(info)
@@ -22930,6 +23142,9 @@ def _rc_adj_text(lab, c, b):
     if c == "model_dog":
         return (f"When it backs an underdog, moves {abs(b):.1f} pts "
                 f"{'further toward' if b > 0 else 'back toward the favorite from'} that dog.")
+    if c in RC_EDGES:
+        what, who = RC_EDGES[c]
+        return f"{what}: {abs(b):.1f} pts {'toward' if b > 0 else 'away from'} {who}."
     if lab == "totals":
         return f"{RC_GROUPS.get(c, c)}: totals {b:+.1f} pts."
     k, how = c.split("@")
@@ -22948,9 +23163,12 @@ def _rc_group_table(lab, r):
     for g in r.get("groups") or []:
         w, l = g["w"], g["l"]
         rec = f"{w}-{l} ({100 * w / (w + l):.0f}%)" if (w + l) else "—"
-        label = RC_ROW_LABELS.get(g["key"]) or RC_GROUPS.get(g["key"], g["key"])
+        label = (RC_ROW_LABELS.get(g["key"]) or RC_GROUPS.get(g["key"])
+                 or RC_EDGES.get(g["key"], (g["key"],))[0])
         bias = g.get("bias")
-        if bias is None:
+        if g.get("edge") is not None:
+            vs = f"{g['edge']:+.1f} for {RC_EDGES[g['key']][1]} vs model"
+        elif bias is None:
             vs = f"avg miss {g.get('miss', 0):.1f}"
         elif lab == "totals":
             vs = f"{bias:+.1f} vs model"
