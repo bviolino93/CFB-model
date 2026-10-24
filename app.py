@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.4"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.5"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -7898,6 +7898,19 @@ def _render_power_rankings(year, week):
         _se_power_table.clear()
         get_model_data.clear()
         st.rerun()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _se_game_weeks(year):
+    """game id -> week, so line lookups can use the cached per-week feed."""
+    out = {}
+    for g in get_games(int(year)) or []:
+        try:
+            if g.get("week") is not None:
+                out[int(g.get("id"))] = int(g.get("week"))
+        except Exception:
+            pass
+    return out
 
 
 @st.cache_data(ttl=300)
@@ -17275,16 +17288,26 @@ def _v401_closing_line_for(row):
         gid = int(row.get("game_id"))
     except Exception:
         return None
+    # One request per WEEK, not per game. The per-game fetch ran once for
+    # every started bet on each Home load (and again every 5 minutes, since
+    # a live game often has no line to find), which left Home stuck on
+    # "Running get_market_lines" for a game day's worth of round trips.
+    raw = None
     try:
-        # get_market_lines is cached (ttl 300). Calling fetch_lines directly
-        # meant one uncached request per row, in a loop — on a Saturday
-        # night that was 20-30 sequential round trips on a page load.
-        raw = get_market_lines(gid, int(str(row.get("game_date") or "")[:4] or 0) or None)
+        _yr = int(str(row.get("game_date") or "")[:4])
+        _wk = _se_game_weeks(_yr).get(gid)
+        if _wk is not None:
+            raw = get_week_lines(_yr, int(_wk)) or []
     except Exception:
+        raw = None
+    if raw is None:
         try:
-            raw = fetch_lines(API_KEY, game_id=gid)
+            raw = get_market_lines(gid, int(str(row.get("game_date") or "")[:4] or 0) or None)
         except Exception:
-            return None
+            try:
+                raw = fetch_lines(API_KEY, game_id=gid)
+            except Exception:
+                return None
     prov = normalize_game_lines(raw, game_id=gid)
     if not prov:
         return None
