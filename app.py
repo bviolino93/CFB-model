@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.8.3"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.4"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -7454,8 +7454,16 @@ _ge432_choice = st.radio(
 
 _ge432_route = "Game" if _ge432_choice == "Games" else _ge432_choice
 if _ge432_route != _ge432_view:
+    # Route in this same run. Everything below reads cfb_page after this
+    # point, so the extra st.rerun() only made every tab tap run the whole
+    # app twice.
     st.session_state["cfb_page"] = _ge432_route
-    st.rerun()
+    st.session_state["_ge432_last_view"] = _ge432_choice
+    # A top tab always leaves the full-screen lab pages. They used to
+    # swallow every tab tap until "Back to More" was pressed.
+    for _ge432_mode in ("cfb_threshold_audit_mode", "cfb_validation_mode",
+                        "cfb_research_mode"):
+        st.session_state[_ge432_mode] = False
 
 
 
@@ -15856,7 +15864,9 @@ with st.container(key="ge433_filter_row"):
     with top1:
         selected_date = st.date_input(
             "Game date",
-            value=date.today(),
+            # Eastern date. date.today() is the server's date, which is UTC
+            # on Streamlit Cloud, so after 8 PM ET it jumped to tomorrow.
+            value=pd.Timestamp.now(tz="America/New_York").date(),
             label_visibility="collapsed",
             key="v420_game_date",
         )
@@ -18617,8 +18627,11 @@ def _v50_apply_strict_selection(card):
     # through on a 35-point blowout the app had already ruled out of range.
     # Both markets come from the same team ratings, so both stand or fall on
     # whether those ratings extrapolate to this game.
+    # A card with no spread rows (totals only) has no such column; c.get()
+    # then returned None and .abs() crashed the whole build.
     _game_spread = pd.to_numeric(
-        c.get("market_home_spread_display"), errors="coerce").abs()
+        c.get("market_home_spread_display", pd.Series(np.nan, index=c.index)),
+        errors="coerce").abs()
     _is_total = c["market_type"].astype(str).str.upper().eq("TOTAL")
     _cap = np.where(_is_total, V50_MAX_SPREAD_TOTAL, V50_MAX_SPREAD)
     c["excluded"] = (_game_spread > _cap).fillna(False)
@@ -18706,7 +18719,9 @@ def _v50_apply_strict_selection(card):
     # already declared out of range. Both markets come from the same
     # ratings, so both are excluded together.
     _game_spread = pd.to_numeric(
-        fun_pool.get("market_home_spread_display"), errors="coerce").abs()
+        fun_pool.get("market_home_spread_display",
+                     pd.Series(np.nan, index=fun_pool.index)),
+        errors="coerce").abs()
     _competitive = _game_spread <= V50_FUN_MAX_SPREAD
     # No fallback to the unfiltered pool: an empty watch list is a valid
     # answer, and padding it was what surfaced unqualified plays.
@@ -22954,7 +22969,9 @@ def _render_more_page():
             "current logic. Useful after a scoring change \u2014 mixing bets "
             "frozen under different rules makes the record unreadable."
         )
-        _cd = st.date_input("Date to clear", value=date.today(), key="se_clear_date")
+        _cd = st.date_input("Date to clear",
+                            value=pd.Timestamp.now(tz="America/New_York").date(),
+                            key="se_clear_date")
         _confirm = st.checkbox("I understand this cannot be undone",
                                key="se_clear_confirm")
         if st.button("Clear that date", disabled=not _confirm,
@@ -23111,7 +23128,9 @@ try:
     if not _built:
         _today_games = [
             g for g in (get_games(_today.year) or [])
-            if str(g.get("startDate", ""))[:10] == _today_str
+            # Eastern date, not the UTC date in startDate: an 8 PM ET
+            # kickoff is already tomorrow in UTC.
+            if game_date_et(g) == _today.date()
         ]
         if _today_games:
             _kicks = []
@@ -25409,6 +25428,27 @@ def _se_margin_curve_svg(mu, sigma, market, home, away, w=680, h=190):
 </svg>'''
 
 
+class _SeMsgLog:
+    """Notes raised while pricing a slate, kept so a redraw of the saved
+    slate shows the same notes without pricing it again."""
+
+    def __init__(self):
+        self.items = []
+
+    def caption(self, text):
+        self.items.append(("caption", text))
+
+    def info(self, text):
+        self.items.append(("info", text))
+
+    def warning(self, text):
+        self.items.append(("warning", text))
+
+    def replay(self):
+        for kind, text in self.items:
+            getattr(st, kind)(text)
+
+
 def _render_home_page():
     _now = pd.Timestamp.now(tz="America/New_York")
     _today = _now.strftime("%Y-%m-%d")
@@ -25427,7 +25467,7 @@ def _render_home_page():
 
     try:
         _tg = [g for g in (get_games(_now.year) or [])
-               if str(g.get("startDate", ""))[:10] == _today]
+               if game_date_et(g) == _now.date()]  # Eastern date, not UTC
     except Exception:
         _tg = []
 
@@ -26341,6 +26381,8 @@ if run_mode == "Full Slate":
         _panel_open = bool(st.session_state.get("se_edit_filters"))
         st.session_state["cfb_build_requested"] = True
         st.session_state["se_edit_filters"] = False
+        # Survives the rerun below, so the tap always re-prices.
+        st.session_state["se_force_build"] = True
         # A rebuild never carries over a Freeze tap from earlier.
         st.session_state["se_freeze_now"] = False
         # Refresh whenever the panel was open, so the collapse lands before
@@ -26356,539 +26398,576 @@ if run_mode == "Full Slate":
     _status_slot = st.container()
 
     if st.session_state.get("cfb_build_requested"):
-        with _status_slot:
-            _build_status = st.status(_se_quip(SE_BUILDING, selected_date),
-                                      expanded=False)
-        try:
-            _t_phase = {}
+        # Price the slate ONCE per Build tap and keep the result. Before this,
+        # a built slate re-priced every game on every tap anywhere on the page
+        # (typing an injury, opening the prompt, Freeze), which made the page
+        # slow, and Freeze saved whatever that rerun computed -- which could
+        # differ from the card on screen once the 15-minute line cache
+        # expired. Now every later tap redraws the saved card, and Freeze
+        # saves exactly what you were looking at.
+        _build_sig = (str(selected_date), str(slate_filter), str(slate_choice),
+                      bool(include_lines), MODEL_VERSION)
+        _prev_build = st.session_state.get("se_built_slate")
+        _force_build = st.session_state.pop("se_force_build", False)
+        if (_force_build or not isinstance(_prev_build, dict)
+                or _prev_build.get("sig") != _build_sig):
+            _bm = _SeMsgLog()
+            with _status_slot:
+                _build_status = st.status(_se_quip(SE_BUILDING, selected_date),
+                                          expanded=False)
+            try:
+                _t_phase = {}
+                _t0 = time.perf_counter()
+                model_data_s = get_model_data(year)
+                _t_phase["ratings"] = time.perf_counter() - _t0
+            except Exception as e:
+                _build_status.update(label="Build failed", state="error")
+                st.error(f"CFBD model-data request failed: {e}")
+                st.stop()
+
+            # Efficiently pull all line data by unique week rather than one request per game.
+            line_cache = {}
             _t0 = time.perf_counter()
-            model_data_s = get_model_data(year)
-            _t_phase["ratings"] = time.perf_counter() - _t0
-        except Exception as e:
-            _build_status.update(label="Build failed", state="error")
-            st.error(f"CFBD model-data request failed: {e}")
-            st.stop()
+            if include_lines:
+                weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
+                for wk in weeks:
+                    try:
+                        raw = get_week_lines(year, int(wk))
+                        line_cache[int(wk)] = raw
+                    except Exception:
+                        line_cache[int(wk)] = []
+            _t_phase["lines"] = time.perf_counter() - _t0
 
-        # Efficiently pull all line data by unique week rather than one request per game.
-        line_cache = {}
-        _t0 = time.perf_counter()
-        if include_lines:
-            weeks = sorted({g.get("week") for g in slate_games if g.get("week") is not None})
-            for wk in weeks:
-                try:
-                    raw = get_week_lines(year, int(wk))
-                    line_cache[int(wk)] = raw
-                except Exception:
-                    line_cache[int(wk)] = []
-        _t_phase["lines"] = time.perf_counter() - _t0
+            slate_rows = []
+            _ml_flags = []
+            _ml_all = []   # every moneyline, for the "top moneyline" pick
 
-        slate_rows = []
-        _ml_flags = []
-        _ml_all = []   # every moneyline, for the "top moneyline" pick
-
-        # Fit/load the historical residual correction once per slate run,
-        # not once for every matchup.
-        try:
-            _build_status.update(
-                label=f"Training residual models on "
-                      f"{int(year) - RESIDUAL_TRAIN_START} prior seasons "
-                      f"(first build after a restart only)\u2026"
-            )
-        except Exception:
-            pass
-        _t0 = time.perf_counter()
-        residual_models = fit_live_residual_models(int(year), "Major FBS")
-        _t_phase["residual fit"] = time.perf_counter() - _t0
-        try:
-            _build_status.update(label=_se_quip(SE_BUILDING, selected_date))
-        except Exception:
-            pass
-        _t0 = time.perf_counter()
-
-        for g in slate_games:
-            gp = project_game(g, model_data_s, hfa=2.5)
-            k = kickoff_et(g)
-
-            market = {}
-            provider_rows = []
-            if include_lines and g.get("week") is not None:
-                provider_rows = normalize_game_lines(
-                    line_cache.get(int(g.get("week")), []),
-                    game_id=g.get("id")
+            # Fit/load the historical residual correction once per slate run,
+            # not once for every matchup.
+            try:
+                _build_status.update(
+                    label=f"Training residual models on "
+                          f"{int(year) - RESIDUAL_TRAIN_START} prior seasons "
+                          f"(first build after a restart only)\u2026"
                 )
-                market = consensus_line(provider_rows)
+            except Exception:
+                pass
+            _t0 = time.perf_counter()
+            residual_models = fit_live_residual_models(int(year), "Major FBS")
+            _t_phase["residual fit"] = time.perf_counter() - _t0
+            try:
+                _build_status.update(label=_se_quip(SE_BUILDING, selected_date))
+            except Exception:
+                pass
+            _t0 = time.perf_counter()
 
-            best_verdict = "NO LINE"
-            best_market = ""
-            best_odds = None
-            best_edge = None
-            best_ev = None
+            for g in slate_games:
+                gp = project_game(g, model_data_s, hfa=2.5)
+                k = kickoff_et(g)
 
-            candidates = []
-
-            # v0.4: sportsbook market is the baseline. Historical seasons prior
-            # to the current year train a small regularized residual correction.
-            raw_home_spread = gp["model_home_spread"]
-            raw_total = gp["model_total"]
-
-            # v4.0 FUNDAMENTAL SPREAD ENGINE
-            # This projection is generated before the sportsbook line is introduced.
-            # The market is comparison data only; it does not anchor the fair spread.
-            fundamental_home_spread = float(raw_home_spread)
-            fundamental_home_margin = -fundamental_home_spread
-            fundamental_margin_sd = float(gp.get("margin_sd") or BASE_MARGIN_SD)
-
-            fundamental_home_cover_prob = None
-            fundamental_away_cover_prob = None
-            fundamental_point_edge = None
-            fundamental_pick_side = None
-            fundamental_cover_prob = None
-            fundamental_grade = "NO LINE"
-            fundamental_prob_edge = None
-            fundamental_ev = None
-
-            # v4.1 FUNDAMENTAL TOTAL ENGINE
-            # Like spreads, the projected total is built before the sportsbook
-            # number is introduced. The market total is comparison data only.
-            fundamental_total = float(raw_total)
-            fundamental_total_sd = float(gp.get("total_sd") or BASE_TOTAL_SD)
-            fundamental_total_edge = None
-            fundamental_total_side = None
-            fundamental_total_prob = None
-            fundamental_over_prob = None
-            fundamental_under_prob = None
-            fundamental_total_grade = "NO LINE"
-            fundamental_total_prob_edge = None
-            fundamental_total_ev = None
-
-            if market.get("total") is not None:
-                _mkt_total = float(market["total"])
-                _total_delta = fundamental_total - _mkt_total
-                fundamental_total_edge = abs(_total_delta)
-
-                if _total_delta > 1e-9:
-                    fundamental_total_side = "OVER"
-                elif _total_delta < -1e-9:
-                    fundamental_total_side = "UNDER"
-
-                fundamental_over_prob = 1.0 - NormalDist(
-                    mu=fundamental_total,
-                    sigma=max(fundamental_total_sd, 1e-6),
-                ).cdf(_mkt_total)
-                fundamental_under_prob = 1.0 - fundamental_over_prob
-
-                if fundamental_total_side == "OVER":
-                    fundamental_total_prob = fundamental_over_prob
-                elif fundamental_total_side == "UNDER":
-                    fundamental_total_prob = fundamental_under_prob
-
-                if fundamental_total_prob is not None:
-                    fundamental_total_grade, fundamental_total_prob_edge, fundamental_total_ev, _ = grade(
-                        fundamental_total_prob,
-                        -110,
-                        gp["confidence"],
-                        market_type="total",
-                        projection_gap=fundamental_total_edge,
-                        week=gp["week"],
+                market = {}
+                provider_rows = []
+                if include_lines and g.get("week") is not None:
+                    provider_rows = normalize_game_lines(
+                        line_cache.get(int(g.get("week")), []),
+                        game_id=g.get("id")
                     )
-                    # FCS fallback remains too uncertain for an official total.
-                    fundamental_total_grade = apply_fcs_guard(
-                        fundamental_total_grade,
-                        gp.get("fcs_fallback_used", False),
+                    market = consensus_line(provider_rows)
+
+                best_verdict = "NO LINE"
+                best_market = ""
+                best_odds = None
+                best_edge = None
+                best_ev = None
+
+                candidates = []
+
+                # v0.4: sportsbook market is the baseline. Historical seasons prior
+                # to the current year train a small regularized residual correction.
+                raw_home_spread = gp["model_home_spread"]
+                raw_total = gp["model_total"]
+
+                # v4.0 FUNDAMENTAL SPREAD ENGINE
+                # This projection is generated before the sportsbook line is introduced.
+                # The market is comparison data only; it does not anchor the fair spread.
+                fundamental_home_spread = float(raw_home_spread)
+                fundamental_home_margin = -fundamental_home_spread
+                fundamental_margin_sd = float(gp.get("margin_sd") or BASE_MARGIN_SD)
+
+                fundamental_home_cover_prob = None
+                fundamental_away_cover_prob = None
+                fundamental_point_edge = None
+                fundamental_pick_side = None
+                fundamental_cover_prob = None
+                fundamental_grade = "NO LINE"
+                fundamental_prob_edge = None
+                fundamental_ev = None
+
+                # v4.1 FUNDAMENTAL TOTAL ENGINE
+                # Like spreads, the projected total is built before the sportsbook
+                # number is introduced. The market total is comparison data only.
+                fundamental_total = float(raw_total)
+                fundamental_total_sd = float(gp.get("total_sd") or BASE_TOTAL_SD)
+                fundamental_total_edge = None
+                fundamental_total_side = None
+                fundamental_total_prob = None
+                fundamental_over_prob = None
+                fundamental_under_prob = None
+                fundamental_total_grade = "NO LINE"
+                fundamental_total_prob_edge = None
+                fundamental_total_ev = None
+
+                if market.get("total") is not None:
+                    _mkt_total = float(market["total"])
+                    _total_delta = fundamental_total - _mkt_total
+                    fundamental_total_edge = abs(_total_delta)
+
+                    if _total_delta > 1e-9:
+                        fundamental_total_side = "OVER"
+                    elif _total_delta < -1e-9:
+                        fundamental_total_side = "UNDER"
+
+                    fundamental_over_prob = 1.0 - NormalDist(
+                        mu=fundamental_total,
+                        sigma=max(fundamental_total_sd, 1e-6),
+                    ).cdf(_mkt_total)
+                    fundamental_under_prob = 1.0 - fundamental_over_prob
+
+                    if fundamental_total_side == "OVER":
+                        fundamental_total_prob = fundamental_over_prob
+                    elif fundamental_total_side == "UNDER":
+                        fundamental_total_prob = fundamental_under_prob
+
+                    if fundamental_total_prob is not None:
+                        fundamental_total_grade, fundamental_total_prob_edge, fundamental_total_ev, _ = grade(
+                            fundamental_total_prob,
+                            -110,
+                            gp["confidence"],
+                            market_type="total",
+                            projection_gap=fundamental_total_edge,
+                            week=gp["week"],
+                        )
+                        # FCS fallback remains too uncertain for an official total.
+                        fundamental_total_grade = apply_fcs_guard(
+                            fundamental_total_grade,
+                            gp.get("fcs_fallback_used", False),
+                        )
+
+                if market.get("home_spread") is not None:
+                    _mkt_hs = float(market["home_spread"])
+                    _signed_home_edge = _mkt_hs - fundamental_home_spread
+                    fundamental_point_edge = abs(_signed_home_edge)
+                    if abs(_signed_home_edge) > 1e-9:
+                        fundamental_pick_side = "HOME" if _signed_home_edge > 0 else "AWAY"
+
+                    fundamental_home_cover_prob = cover_probability(
+                        fundamental_home_margin,
+                        _mkt_hs,
+                        side="home",
+                        sigma=fundamental_margin_sd,
                     )
+                    fundamental_away_cover_prob = 1.0 - fundamental_home_cover_prob
 
-            if market.get("home_spread") is not None:
-                _mkt_hs = float(market["home_spread"])
-                _signed_home_edge = _mkt_hs - fundamental_home_spread
-                fundamental_point_edge = abs(_signed_home_edge)
-                if abs(_signed_home_edge) > 1e-9:
-                    fundamental_pick_side = "HOME" if _signed_home_edge > 0 else "AWAY"
+                    if fundamental_pick_side == "HOME":
+                        fundamental_cover_prob = fundamental_home_cover_prob
+                    elif fundamental_pick_side == "AWAY":
+                        fundamental_cover_prob = fundamental_away_cover_prob
 
-                fundamental_home_cover_prob = cover_probability(
-                    fundamental_home_margin,
-                    _mkt_hs,
-                    side="home",
-                    sigma=fundamental_margin_sd,
+                    if fundamental_cover_prob is not None:
+                        fundamental_grade, fundamental_prob_edge, fundamental_ev, _ = grade(
+                            fundamental_cover_prob,
+                            -110,
+                            gp["confidence"],
+                            market_type="spread",
+                            projection_gap=fundamental_point_edge,
+                            week=gp["week"],
+                        )
+                        fundamental_grade = apply_fcs_guard(
+                            fundamental_grade,
+                            gp.get("fcs_fallback_used", False),
+                        )
+
+                # Legacy market-residual layer is retained only for research and
+                # calibration diagnostics. It no longer supplies the production fair line.
+                residual_p = residual_market_projection(gp, market, residual_models)
+
+                adjusted_home_spread = residual_p["adjusted_home_spread"]
+                adjusted_home_margin = -adjusted_home_spread
+                adjusted_total = residual_p["adjusted_total"]
+                cal_margin_sd = residual_p["spread_sigma"]
+                cal_total_sd = residual_p["total_sigma"]
+
+                side_weight = 0.0
+                side_shrink = residual_p["spread_correction"]
+                total_weight = 0.0
+                total_shrink = residual_p["total_correction"]
+
+                # Moneyline is not the promoted v0.4 market; keep a conservative
+                # market-calibrated probability rather than deriving ML from ATS residual.
+                ml_spread, _, _ = calibrated_market_projection(
+                    raw_home_spread, market.get("home_spread"), gp["week"], "side"
                 )
-                fundamental_away_cover_prob = 1.0 - fundamental_home_cover_prob
+                ml_margin = -ml_spread
+                adjusted_home_wp = 1.0 - NormalDist(
+                    mu=ml_margin, sigma=max(cal_margin_sd, 15.0)
+                ).cdf(0)
+                adjusted_away_wp = 1.0 - adjusted_home_wp
 
-                if fundamental_pick_side == "HOME":
-                    fundamental_cover_prob = fundamental_home_cover_prob
-                elif fundamental_pick_side == "AWAY":
-                    fundamental_cover_prob = fundamental_away_cover_prob
+                _ml_rows = []
+                if market.get("away_ml") is not None:
+                    v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
+                                     market_type="moneyline", projection_gap=None, week=gp["week"])
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    v = apply_moneyline_guard(v, market["away_ml"], gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
+                    _ml_rows.append((f"{gp['away']} ML", market["away_ml"],
+                                     float(adjusted_away_wp)))
+                if market.get("home_ml") is not None:
+                    v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
+                                     market_type="moneyline", projection_gap=None, week=gp["week"])
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    v = apply_moneyline_guard(v, market["home_ml"], gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
+                    _ml_rows.append((f"{gp['home']} ML", market["home_ml"],
+                                     float(adjusted_home_wp)))
 
-                if fundamental_cover_prob is not None:
-                    fundamental_grade, fundamental_prob_edge, fundamental_ev, _ = grade(
-                        fundamental_cover_prob,
-                        -110,
-                        gp["confidence"],
-                        market_type="spread",
-                        projection_gap=fundamental_point_edge,
-                        week=gp["week"],
-                    )
-                    fundamental_grade = apply_fcs_guard(
-                        fundamental_grade,
-                        gp.get("fcs_fallback_used", False),
-                    )
+                # Re-price on the SAME scale the rest of the board uses: shrink
+                # toward the market's implied probability, not toward a coin
+                # flip. Kept separate from the card — moneylines stay out of the
+                # official record while the historical feed is audited.
+                for _mn, _mo, _mp in _ml_rows:
+                    _mi = implied_prob(_mo)
+                    if _mi is None:
+                        continue
+                    try:
+                        if (-300 <= int(_mo) <= 300
+                                and abs(float(market.get("home_spread") or 0)) <= V50_MAX_SPREAD
+                                and not gp.get("fcs_fallback_used", False)):
+                            _ml_all.append({
+                                "matchup": f"{gp['away']} @ {gp['home']}",
+                                "pick": _mn, "odds": int(_mo),
+                                "model_wp": float(_mp), "market_wp": float(_mi),
+                                "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
+                            })
+                    except Exception:
+                        pass
+                    _mps = _mi + V50_SHRINK * (_mp - _mi)
+                    _mev = _se_ev_from_prob(_mps, _mo)
+                    if _mev is None or _mev < V50_MIN_EV:
+                        continue
+                    if abs(float(market.get("home_spread") or 0)) > V50_MAX_SPREAD:
+                        continue
+                    if gp.get("fcs_fallback_used", False):
+                        continue
+                    _ml_flags.append({
+                        "matchup": f"{gp['away']} @ {gp['home']}",
+                        "pick": _mn, "odds": int(_mo),
+                        "prob": _mps, "ev": _mev,
+                        "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
+                    })
 
-            # Legacy market-residual layer is retained only for research and
-            # calibration diagnostics. It no longer supplies the production fair line.
-            residual_p = residual_market_projection(gp, market, residual_models)
+                if market.get("home_spread") is not None:
+                    spread_gap = residual_p["spread_correction"]
+                    hp = residual_p["home_cover_prob"]
+                    ap = residual_p["away_cover_prob"]
+                    v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
+                                     projection_gap=spread_gap, week=gp["week"])
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
+                    v,e,ev,_ = grade(ap, -110, gp["confidence"], market_type="spread",
+                                     projection_gap=spread_gap, week=gp["week"])
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
 
-            adjusted_home_spread = residual_p["adjusted_home_spread"]
-            adjusted_home_margin = -adjusted_home_spread
-            adjusted_total = residual_p["adjusted_total"]
-            cal_margin_sd = residual_p["spread_sigma"]
-            cal_total_sd = residual_p["total_sigma"]
+                if market.get("total") is not None:
+                    total_gap = residual_p["total_correction"]
+                    op = residual_p["over_prob"]
+                    up = residual_p["under_prob"]
+                    v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
+                                     projection_gap=total_gap, week=gp["week"])
+                    v = cap_total_research_verdict(v)
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
+                    v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
+                                     projection_gap=total_gap, week=gp["week"])
+                    v = cap_total_research_verdict(v)
+                    v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
+                    candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
 
-            side_weight = 0.0
-            side_shrink = residual_p["spread_correction"]
-            total_weight = 0.0
-            total_shrink = residual_p["total_correction"]
+                if candidates:
+                    rank = {"STRONG BET":3, "BET":2, "LEAN":1, "PASS":0}
+                    candidates.sort(key=lambda x:(rank.get(x[0], -1), x[4]), reverse=True)
+                    b = candidates[0]
+                    best_verdict, best_market, best_odds, best_edge, best_ev = b
 
-            # Moneyline is not the promoted v0.4 market; keep a conservative
-            # market-calibrated probability rather than deriving ML from ATS residual.
-            ml_spread, _, _ = calibrated_market_projection(
-                raw_home_spread, market.get("home_spread"), gp["week"], "side"
-            )
-            ml_margin = -ml_spread
-            adjusted_home_wp = 1.0 - NormalDist(
-                mu=ml_margin, sigma=max(cal_margin_sd, 15.0)
-            ).cdf(0)
-            adjusted_away_wp = 1.0 - adjusted_home_wp
+                market_grades = [
+                    {
+                        "verdict": v,
+                        "market": name,
+                        "odds": odds,
+                        "edge": e,
+                        "ev": ev,
+                    }
+                    for v, name, odds, e, ev in candidates
+                ]
 
-            _ml_rows = []
-            if market.get("away_ml") is not None:
-                v,e,ev,_ = grade(adjusted_away_wp, market["away_ml"], gp["confidence"],
-                                 market_type="moneyline", projection_gap=None, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                v = apply_moneyline_guard(v, market["away_ml"], gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"{gp['away']} ML", market["away_ml"], e, ev))
-                _ml_rows.append((f"{gp['away']} ML", market["away_ml"],
-                                 float(adjusted_away_wp)))
-            if market.get("home_ml") is not None:
-                v,e,ev,_ = grade(adjusted_home_wp, market["home_ml"], gp["confidence"],
-                                 market_type="moneyline", projection_gap=None, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                v = apply_moneyline_guard(v, market["home_ml"], gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"{gp['home']} ML", market["home_ml"], e, ev))
-                _ml_rows.append((f"{gp['home']} ML", market["home_ml"],
-                                 float(adjusted_home_wp)))
-
-            # Re-price on the SAME scale the rest of the board uses: shrink
-            # toward the market's implied probability, not toward a coin
-            # flip. Kept separate from the card — moneylines stay out of the
-            # official record while the historical feed is audited.
-            for _mn, _mo, _mp in _ml_rows:
-                _mi = implied_prob(_mo)
-                if _mi is None:
-                    continue
-                try:
-                    if (-300 <= int(_mo) <= 300
-                            and abs(float(market.get("home_spread") or 0)) <= V50_MAX_SPREAD
-                            and not gp.get("fcs_fallback_used", False)):
-                        _ml_all.append({
-                            "matchup": f"{gp['away']} @ {gp['home']}",
-                            "pick": _mn, "odds": int(_mo),
-                            "model_wp": float(_mp), "market_wp": float(_mi),
-                            "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
-                        })
-                except Exception:
-                    pass
-                _mps = _mi + V50_SHRINK * (_mp - _mi)
-                _mev = _se_ev_from_prob(_mps, _mo)
-                if _mev is None or _mev < V50_MIN_EV:
-                    continue
-                if abs(float(market.get("home_spread") or 0)) > V50_MAX_SPREAD:
-                    continue
-                if gp.get("fcs_fallback_used", False):
-                    continue
-                _ml_flags.append({
-                    "matchup": f"{gp['away']} @ {gp['home']}",
-                    "pick": _mn, "odds": int(_mo),
-                    "prob": _mps, "ev": _mev,
-                    "kickoff": k.strftime("%-I:%M %p") if k is not None else "",
+                slate_rows.append({
+                    "model_version": MODEL_VERSION,
+                    "game_date": str(selected_date),
+                    "slate": slate_choice,
+                    "provider_rows_json": json.dumps(provider_rows or []),
+                    # Store the DATE as well as the time. Time-only values made
+                    # _se_kick_dt fall back to "today" wherever the caller had no
+                    # day to supply, so a Saturday 7:45 PM game counted down as if
+                    # it kicked off tonight. _se_kick_dt already parses a full
+                    # datetime, and _se_kick_label still prints only the clock.
+                    "kickoff_et": k.strftime("%Y-%m-%d %I:%M %p") if k is not None else "",
+                    "game_id": g.get("id"),
+                    # Needed for the kickoff weather lookup.
+                    "venue_id": g.get("venueId") or g.get("venue_id"),
+                    "away_team": gp["away"],
+                    "home_team": gp["home"],
+                    "away_logo": _team_logo_url(model_data_s, gp["away"]),
+                    "home_logo": _team_logo_url(model_data_s, gp["home"]),
+                    "neutral_site": gp["neutral"],
+                    "away_rating_source": gp["away_rating"]["source"],
+                    "home_rating_source": gp["home_rating"]["source"],
+                    "away_sp_rating": gp["away_rating"]["rating"],
+                    "home_sp_rating": gp["home_rating"]["rating"],
+                    "projected_away_score": round(gp["away_score"], 2),
+                    "projected_home_score": round(gp["home_score"], 2),
+                    "model_home_spread": round(gp["model_home_spread"], 2),
+                    "model_total": round(gp["model_total"], 2),
+                    "away_win_prob": round(gp["away_win_prob"], 6),
+                    "home_win_prob": round(gp["home_win_prob"], 6),
+                    "model_confidence": gp["confidence"],
+                    "fcs_fallback_used": gp.get("fcs_fallback_used", False),
+                    "away_is_fbs": gp.get("away_is_fbs"),
+                    "home_is_fbs": gp.get("home_is_fbs"),
+                    "margin_sd": round(gp["margin_sd"], 3),
+                    "total_sd": round(gp["total_sd"], 3),
+                    "data_completeness": round(gp["data_completeness"], 4),
+                    "base_power_margin": round(gp["components"]["base_power_margin"], 4),
+                    "matchup_margin_adjustment": round(gp["components"]["matchup_margin_adjustment"], 4),
+                    "sp_total_base": round(gp["components"]["sp_total_base"], 4),
+                    "efficiency_total_adjustment": round(gp["components"]["efficiency_total_adjustment"], 4),
+                    "pace_total_adjustment": round(gp["components"]["pace_total_adjustment"], 4),
+                    "environment_margin_adjustment": round(gp["components"]["environment_margin_adjustment"], 4),
+                    "environment_total_adjustment": round(gp["components"]["environment_total_adjustment"], 4),
+                    "away_travel_miles": gp["environment"].get("away_travel_miles"),
+                    "home_travel_miles": gp["environment"].get("home_travel_miles"),
+                    "international_game": gp["environment"].get("international"),
+                    "venue_source": gp["environment"].get("venue_source"),
+                    "weather_source": gp["environment"].get("weather_source"),
+                    "wind_mph": gp["environment"].get("wind_mph"),
+                    "wind_gust_mph": gp["environment"].get("wind_gust_mph"),
+                    "temperature_f": gp["environment"].get("temperature_f"),
+                    "precip_probability": gp["environment"].get("precip_probability"),
+                    "environment_flags": "; ".join(gp["environment"].get("reasons") or []),
+                    "market_source": market.get("provider"),
+                    "market_away_ml": market.get("away_ml"),
+                    "market_home_ml": market.get("home_ml"),
+                    "market_home_spread": market.get("home_spread"),
+                    "market_total": market.get("total"),
+                    "raw_model_home_spread": round(raw_home_spread, 3),
+                    "fundamental_home_spread": round(fundamental_home_spread, 3),
+                    "fundamental_point_edge": round(fundamental_point_edge, 3) if fundamental_point_edge is not None else None,
+                    "fundamental_pick_side": fundamental_pick_side,
+                    "fundamental_home_cover_prob": round(float(fundamental_home_cover_prob), 6) if fundamental_home_cover_prob is not None else None,
+                    "fundamental_away_cover_prob": round(float(fundamental_away_cover_prob), 6) if fundamental_away_cover_prob is not None else None,
+                    "fundamental_cover_prob": round(float(fundamental_cover_prob), 6) if fundamental_cover_prob is not None else None,
+                    "fundamental_grade": fundamental_grade,
+                    "fundamental_prob_edge": round(float(fundamental_prob_edge), 6) if fundamental_prob_edge is not None else None,
+                    "fundamental_ev": round(float(fundamental_ev), 6) if fundamental_ev is not None else None,
+                    "fundamental_total": round(float(fundamental_total), 3),
+                    "fundamental_total_edge": round(float(fundamental_total_edge), 3) if fundamental_total_edge is not None else None,
+                    "fundamental_total_side": fundamental_total_side,
+                    "fundamental_total_prob": round(float(fundamental_total_prob), 6) if fundamental_total_prob is not None else None,
+                    "fundamental_over_prob": round(float(fundamental_over_prob), 6) if fundamental_over_prob is not None else None,
+                    "fundamental_under_prob": round(float(fundamental_under_prob), 6) if fundamental_under_prob is not None else None,
+                    "fundamental_total_grade": fundamental_total_grade,
+                    "fundamental_total_prob_edge": round(float(fundamental_total_prob_edge), 6) if fundamental_total_prob_edge is not None else None,
+                    "fundamental_total_ev": round(float(fundamental_total_ev), 6) if fundamental_total_ev is not None else None,
+                    "adjusted_model_home_spread": round(adjusted_home_spread, 3),
+                    "side_market_weight": round(side_weight, 3),
+                    "side_shrink_points": round(side_shrink, 3),
+                    "spread_residual_correction": round(residual_p["spread_correction"], 3),
+                    "spread_residual_train_n": residual_p["spread_model_n"],
+                    "raw_model_total": round(raw_total, 3),
+                    "adjusted_model_total": round(adjusted_total, 3),
+                    "total_market_weight": round(total_weight, 3),
+                    "total_shrink_points": round(total_shrink, 3),
+                    "total_residual_correction": round(residual_p["total_correction"], 3),
+                    "total_residual_train_n": residual_p["total_model_n"],
+                    "calibrated_margin_sd": round(cal_margin_sd, 3),
+                    "calibrated_total_sd": round(cal_total_sd, 3),
+                    "home_cover_prob": round(float(residual_p["home_cover_prob"]), 6) if residual_p.get("home_cover_prob") is not None else None,
+                    "away_cover_prob": round(float(residual_p["away_cover_prob"]), 6) if residual_p.get("away_cover_prob") is not None else None,
+                    "best_verdict": best_verdict,
+                    "best_market": best_market,
+                    "best_odds": best_odds,
+                    "best_edge": round(best_edge, 6) if best_edge is not None else None,
+                    "best_ev": round(best_ev, 6) if best_ev is not None else None,
+                    "market_grades_json": json.dumps(market_grades),
                 })
 
-            if market.get("home_spread") is not None:
-                spread_gap = residual_p["spread_correction"]
-                hp = residual_p["home_cover_prob"]
-                ap = residual_p["away_cover_prob"]
-                v,e,ev,_ = grade(hp, -110, gp["confidence"], market_type="spread",
-                                 projection_gap=spread_gap, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"{gp['home']} {market['home_spread']:+.1f}", -110, e, ev))
-                v,e,ev,_ = grade(ap, -110, gp["confidence"], market_type="spread",
-                                 projection_gap=spread_gap, week=gp["week"])
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"{gp['away']} {-market['home_spread']:+.1f}", -110, e, ev))
-
-            if market.get("total") is not None:
-                total_gap = residual_p["total_correction"]
-                op = residual_p["over_prob"]
-                up = residual_p["under_prob"]
-                v,e,ev,_ = grade(op, -110, gp["confidence"], market_type="total",
-                                 projection_gap=total_gap, week=gp["week"])
-                v = cap_total_research_verdict(v)
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"Over {market['total']:g}", -110, e, ev))
-                v,e,ev,_ = grade(up, -110, gp["confidence"], market_type="total",
-                                 projection_gap=total_gap, week=gp["week"])
-                v = cap_total_research_verdict(v)
-                v = apply_fcs_guard(v, gp.get("fcs_fallback_used", False))
-                candidates.append((v, f"Under {market['total']:g}", -110, e, ev))
-
-            if candidates:
-                rank = {"STRONG BET":3, "BET":2, "LEAN":1, "PASS":0}
-                candidates.sort(key=lambda x:(rank.get(x[0], -1), x[4]), reverse=True)
-                b = candidates[0]
-                best_verdict, best_market, best_odds, best_edge, best_ev = b
-
-            market_grades = [
-                {
-                    "verdict": v,
-                    "market": name,
-                    "odds": odds,
-                    "edge": e,
-                    "ev": ev,
-                }
-                for v, name, odds, e, ev in candidates
-            ]
-
-            slate_rows.append({
-                "model_version": MODEL_VERSION,
-                "game_date": str(selected_date),
-                "slate": slate_choice,
-                "provider_rows_json": json.dumps(provider_rows or []),
-                # Store the DATE as well as the time. Time-only values made
-                # _se_kick_dt fall back to "today" wherever the caller had no
-                # day to supply, so a Saturday 7:45 PM game counted down as if
-                # it kicked off tonight. _se_kick_dt already parses a full
-                # datetime, and _se_kick_label still prints only the clock.
-                "kickoff_et": k.strftime("%Y-%m-%d %I:%M %p") if k is not None else "",
-                "game_id": g.get("id"),
-                # Needed for the kickoff weather lookup.
-                "venue_id": g.get("venueId") or g.get("venue_id"),
-                "away_team": gp["away"],
-                "home_team": gp["home"],
-                "away_logo": _team_logo_url(model_data_s, gp["away"]),
-                "home_logo": _team_logo_url(model_data_s, gp["home"]),
-                "neutral_site": gp["neutral"],
-                "away_rating_source": gp["away_rating"]["source"],
-                "home_rating_source": gp["home_rating"]["source"],
-                "away_sp_rating": gp["away_rating"]["rating"],
-                "home_sp_rating": gp["home_rating"]["rating"],
-                "projected_away_score": round(gp["away_score"], 2),
-                "projected_home_score": round(gp["home_score"], 2),
-                "model_home_spread": round(gp["model_home_spread"], 2),
-                "model_total": round(gp["model_total"], 2),
-                "away_win_prob": round(gp["away_win_prob"], 6),
-                "home_win_prob": round(gp["home_win_prob"], 6),
-                "model_confidence": gp["confidence"],
-                "fcs_fallback_used": gp.get("fcs_fallback_used", False),
-                "away_is_fbs": gp.get("away_is_fbs"),
-                "home_is_fbs": gp.get("home_is_fbs"),
-                "margin_sd": round(gp["margin_sd"], 3),
-                "total_sd": round(gp["total_sd"], 3),
-                "data_completeness": round(gp["data_completeness"], 4),
-                "base_power_margin": round(gp["components"]["base_power_margin"], 4),
-                "matchup_margin_adjustment": round(gp["components"]["matchup_margin_adjustment"], 4),
-                "sp_total_base": round(gp["components"]["sp_total_base"], 4),
-                "efficiency_total_adjustment": round(gp["components"]["efficiency_total_adjustment"], 4),
-                "pace_total_adjustment": round(gp["components"]["pace_total_adjustment"], 4),
-                "environment_margin_adjustment": round(gp["components"]["environment_margin_adjustment"], 4),
-                "environment_total_adjustment": round(gp["components"]["environment_total_adjustment"], 4),
-                "away_travel_miles": gp["environment"].get("away_travel_miles"),
-                "home_travel_miles": gp["environment"].get("home_travel_miles"),
-                "international_game": gp["environment"].get("international"),
-                "venue_source": gp["environment"].get("venue_source"),
-                "weather_source": gp["environment"].get("weather_source"),
-                "wind_mph": gp["environment"].get("wind_mph"),
-                "wind_gust_mph": gp["environment"].get("wind_gust_mph"),
-                "temperature_f": gp["environment"].get("temperature_f"),
-                "precip_probability": gp["environment"].get("precip_probability"),
-                "environment_flags": "; ".join(gp["environment"].get("reasons") or []),
-                "market_source": market.get("provider"),
-                "market_away_ml": market.get("away_ml"),
-                "market_home_ml": market.get("home_ml"),
-                "market_home_spread": market.get("home_spread"),
-                "market_total": market.get("total"),
-                "raw_model_home_spread": round(raw_home_spread, 3),
-                "fundamental_home_spread": round(fundamental_home_spread, 3),
-                "fundamental_point_edge": round(fundamental_point_edge, 3) if fundamental_point_edge is not None else None,
-                "fundamental_pick_side": fundamental_pick_side,
-                "fundamental_home_cover_prob": round(float(fundamental_home_cover_prob), 6) if fundamental_home_cover_prob is not None else None,
-                "fundamental_away_cover_prob": round(float(fundamental_away_cover_prob), 6) if fundamental_away_cover_prob is not None else None,
-                "fundamental_cover_prob": round(float(fundamental_cover_prob), 6) if fundamental_cover_prob is not None else None,
-                "fundamental_grade": fundamental_grade,
-                "fundamental_prob_edge": round(float(fundamental_prob_edge), 6) if fundamental_prob_edge is not None else None,
-                "fundamental_ev": round(float(fundamental_ev), 6) if fundamental_ev is not None else None,
-                "fundamental_total": round(float(fundamental_total), 3),
-                "fundamental_total_edge": round(float(fundamental_total_edge), 3) if fundamental_total_edge is not None else None,
-                "fundamental_total_side": fundamental_total_side,
-                "fundamental_total_prob": round(float(fundamental_total_prob), 6) if fundamental_total_prob is not None else None,
-                "fundamental_over_prob": round(float(fundamental_over_prob), 6) if fundamental_over_prob is not None else None,
-                "fundamental_under_prob": round(float(fundamental_under_prob), 6) if fundamental_under_prob is not None else None,
-                "fundamental_total_grade": fundamental_total_grade,
-                "fundamental_total_prob_edge": round(float(fundamental_total_prob_edge), 6) if fundamental_total_prob_edge is not None else None,
-                "fundamental_total_ev": round(float(fundamental_total_ev), 6) if fundamental_total_ev is not None else None,
-                "adjusted_model_home_spread": round(adjusted_home_spread, 3),
-                "side_market_weight": round(side_weight, 3),
-                "side_shrink_points": round(side_shrink, 3),
-                "spread_residual_correction": round(residual_p["spread_correction"], 3),
-                "spread_residual_train_n": residual_p["spread_model_n"],
-                "raw_model_total": round(raw_total, 3),
-                "adjusted_model_total": round(adjusted_total, 3),
-                "total_market_weight": round(total_weight, 3),
-                "total_shrink_points": round(total_shrink, 3),
-                "total_residual_correction": round(residual_p["total_correction"], 3),
-                "total_residual_train_n": residual_p["total_model_n"],
-                "calibrated_margin_sd": round(cal_margin_sd, 3),
-                "calibrated_total_sd": round(cal_total_sd, 3),
-                "home_cover_prob": round(float(residual_p["home_cover_prob"]), 6) if residual_p.get("home_cover_prob") is not None else None,
-                "away_cover_prob": round(float(residual_p["away_cover_prob"]), 6) if residual_p.get("away_cover_prob") is not None else None,
-                "best_verdict": best_verdict,
-                "best_market": best_market,
-                "best_odds": best_odds,
-                "best_edge": round(best_edge, 6) if best_edge is not None else None,
-                "best_ev": round(best_ev, 6) if best_ev is not None else None,
-                "market_grades_json": json.dumps(market_grades),
-            })
-
-        # Selected slate is both the analysis universe and the display universe.
-        slate_df = pd.DataFrame(slate_rows)
+            # Selected slate is both the analysis universe and the display universe.
+            slate_df = pd.DataFrame(slate_rows)
 
 
-        market_board = _ranked_market_board(slate_df)
-        st.session_state["cfb_latest_market_board"] = market_board.copy()
-        st.session_state["cfb_latest_slate_df"] = slate_df.copy()
-        st.session_state["cfb_latest_slate_name"] = slate_choice
-        st.session_state["cfb_latest_slate_date"] = str(selected_date)
+            market_board = _ranked_market_board(slate_df)
+            st.session_state["cfb_latest_market_board"] = market_board.copy()
+            st.session_state["cfb_latest_slate_df"] = slate_df.copy()
+            st.session_state["cfb_latest_slate_name"] = slate_choice
+            st.session_state["cfb_latest_slate_date"] = str(selected_date)
 
-        v36_card = pd.DataFrame()
-        try:
-            # v3.8.2: rank only the selected slate. Cross-sectional percentiles,
-            # day_rank and BEST BET designation are therefore slate-native.
-            v36_card = _v36_live_daily_card(slate_games, slate_df, scope="Major FBS")
-        except Exception as _v36e:
-            st.warning(f"Locked slate selector could not run: {_v36e}")
             v36_card = pd.DataFrame()
-
-        total_card = _v410_total_card(slate_df)
-        try:
-            _shift = float(total_card["total_level_shift"].iloc[0]) \
-                if not total_card.empty and "total_level_shift" in total_card.columns else 0.0
-            _tilt = float(total_card["total_tilt"].iloc[0]) \
-                if not total_card.empty and "total_tilt" in total_card.columns else 1.0
-            if abs(_shift) >= 0.05 or abs(_tilt - 1.0) >= 0.01:
-                st.caption(
-                    f"Totals re-centred: the model ran {_shift:+.1f} pts vs the "
-                    f"market on this slate (median) and moved {_tilt:.2f} pts per "
-                    "market point (1.00 = in step). Both were removed before "
-                    "picking Overs and Unders.")
-        except Exception:
-            pass
-        combined_card = _v410_combine_cards(v36_card, total_card)
-
-        st.session_state["cfb_v36_latest_date"] = str(selected_date)
-        st.session_state["cfb_v36_latest_slate"] = slate_choice
-
-        # Spread lab, on by default once it has been run.
-        try:
-            _sad = _spr2_adopted()
-            if _sad:
-                combined_card = _spr2_apply_to_spreads(combined_card, _sad)
-        except Exception as _spe:
-            st.caption(f"Spread model update skipped: {str(_spe)[:80]}")
-
-        # Remove the slate's home/road lean and favourite exaggeration so
-        # only genuine mismatches with the market remain. Before injuries:
-        # injury news is real information and must not be centred away.
-        try:
-            combined_card = _se_center_spreads(combined_card)
-            _sp_rows = combined_card[combined_card["market_type"].astype(str).str.upper().eq("SPREAD")] \
-                if "market_type" in combined_card.columns else pd.DataFrame()
-            if not _sp_rows.empty and "spread_tilt" in _sp_rows.columns:
-                _ss = float(_sp_rows["spread_level_shift"].iloc[0])
-                _st = float(_sp_rows["spread_tilt"].iloc[0])
-                if abs(_ss) >= 0.05 or abs(_st - 1.0) >= 0.01:
-                    st.caption(
-                        f"Spreads re-centred: the model ran {_ss:+.1f} pts toward the "
-                        f"home side vs the market (median) and moved {_st:.2f} pts per "
-                        "market point (1.00 = in step). Both removed before picking sides.")
-        except Exception as _cse:
-            st.caption(f"Spread re-centring skipped: {str(_cse)[:80]}")
-
-        # Your injuries, before bets are chosen (two-way).
-        try:
-            _inj = _inj_active(selected_date)
-            if _inj:
-                combined_card, _inj_touched = _inj_apply(combined_card, _inj)
-                if _inj_touched:
-                    st.info("**Injuries applied**\n\n- " + "\n- ".join(_inj_touched))
-                else:
-                    st.caption("Injuries in force, but none involve this slate's games. "
-                               "Check the team spelling if that's unexpected.")
-        except Exception as _ie:
-            st.caption(f"Injuries skipped: {str(_ie)[:80]}")
-
-        # Two tiers: strict official bets, plus an always-there watch list.
-        _official, _fun = _v50_apply_strict_selection(combined_card)
-
-        # Kickoff conditions. Applied HERE, before the card is stored and
-        # frozen, so the tracker grades what you were actually shown —
-        # a display-only filter would silently diverge from the record.
-        _wx_suppressed, _wx_status = [], "not run"
-        try:
-            _official, _wx_suppressed, _wx_status = _se_apply_weather(_official)
-        except Exception as _wx_err:
-            _wx_status = f"failed: {str(_wx_err)[:80]}"
-
-        if _wx_suppressed:            st.warning(
-                "**Weather filter suppressed "
-                f"{len(_wx_suppressed)} Over play"
-                f"{'s' if len(_wx_suppressed) != 1 else ''}** \u2014 the model "
-                "has no weather input, so it prices windy games as though "
-                "conditions are neutral.\n\n- "
-                + "\n- ".join(_wx_suppressed)
-            )
-        elif _wx_status == "ok":
-            st.caption("Weather filter: ran, nothing suppressed.")
-        else:
-            st.caption(f"Weather filter: {_wx_status} \u2014 no adjustment made.")
-
-        # Store the POST-selection card so other views report the real verdict.
-        _stored = combined_card.copy()
-        _stored["verdict"] = "PASS"
-        if not _official.empty:
-            _stored.loc[_official.index, "verdict"] = _official["verdict"]
-            for _col in ["cover_probability", "expected_value", "point_edge", "fair_display"]:
-                if _col in _official.columns:
-                    _stored.loc[_official.index, _col] = _official[_col]
-        st.session_state["cfb_v36_latest_card"] = _stored
-        # Board snapshot is a nicety for the front-page visuals, not core.
-        # Skip it if we already saved this date recently — repeated rebuilds
-        # were stacking Sheets writes and hitting Google's rate limit, which
-        # makes gspread retry with backoff for minutes.
-        _bkey = f"se_board_saved_{selected_date}"
-        if not st.session_state.get(_bkey):
             try:
-                if _se_save_board(_stored, selected_date):
-                    st.session_state[_bkey] = True
+                # v3.8.2: rank only the selected slate. Cross-sectional percentiles,
+                # day_rank and BEST BET designation are therefore slate-native.
+                v36_card = _v36_live_daily_card(slate_games, slate_df, scope="Major FBS")
+            except Exception as _v36e:
+                _bm.warning(f"Locked slate selector could not run: {_v36e}")
+                v36_card = pd.DataFrame()
+
+            total_card = _v410_total_card(slate_df)
+            try:
+                _shift = float(total_card["total_level_shift"].iloc[0]) \
+                    if not total_card.empty and "total_level_shift" in total_card.columns else 0.0
+                _tilt = float(total_card["total_tilt"].iloc[0]) \
+                    if not total_card.empty and "total_tilt" in total_card.columns else 1.0
+                if abs(_shift) >= 0.05 or abs(_tilt - 1.0) >= 0.01:
+                    _bm.caption(
+                        f"Totals re-centred: the model ran {_shift:+.1f} pts vs the "
+                        f"market on this slate (median) and moved {_tilt:.2f} pts per "
+                        "market point (1.00 = in step). Both were removed before "
+                        "picking Overs and Unders.")
+            except Exception:
+                pass
+            combined_card = _v410_combine_cards(v36_card, total_card)
+
+            st.session_state["cfb_v36_latest_date"] = str(selected_date)
+            st.session_state["cfb_v36_latest_slate"] = slate_choice
+
+            # Spread lab, on by default once it has been run.
+            try:
+                _sad = _spr2_adopted()
+                if _sad:
+                    combined_card = _spr2_apply_to_spreads(combined_card, _sad)
+            except Exception as _spe:
+                _bm.caption(f"Spread model update skipped: {str(_spe)[:80]}")
+
+            # Remove the slate's home/road lean and favourite exaggeration so
+            # only genuine mismatches with the market remain. Before injuries:
+            # injury news is real information and must not be centred away.
+            try:
+                combined_card = _se_center_spreads(combined_card)
+                _sp_rows = combined_card[combined_card["market_type"].astype(str).str.upper().eq("SPREAD")] \
+                    if "market_type" in combined_card.columns else pd.DataFrame()
+                if not _sp_rows.empty and "spread_tilt" in _sp_rows.columns:
+                    _ss = float(_sp_rows["spread_level_shift"].iloc[0])
+                    _st = float(_sp_rows["spread_tilt"].iloc[0])
+                    if abs(_ss) >= 0.05 or abs(_st - 1.0) >= 0.01:
+                        _bm.caption(
+                            f"Spreads re-centred: the model ran {_ss:+.1f} pts toward the "
+                            f"home side vs the market (median) and moved {_st:.2f} pts per "
+                            "market point (1.00 = in step). Both removed before picking sides.")
+            except Exception as _cse:
+                _bm.caption(f"Spread re-centring skipped: {str(_cse)[:80]}")
+
+            # Your injuries, before bets are chosen (two-way).
+            try:
+                _inj = _inj_active(selected_date)
+                if _inj:
+                    combined_card, _inj_touched = _inj_apply(combined_card, _inj)
+                    if _inj_touched:
+                        _bm.info("**Injuries applied**\n\n- " + "\n- ".join(_inj_touched))
+                    else:
+                        _bm.caption("Injuries in force, but none involve this slate's games. "
+                                   "Check the team spelling if that's unexpected.")
+            except Exception as _ie:
+                _bm.caption(f"Injuries skipped: {str(_ie)[:80]}")
+
+            # Two tiers: strict official bets, plus an always-there watch list.
+            _official, _fun = _v50_apply_strict_selection(combined_card)
+
+            # Kickoff conditions. Applied HERE, before the card is stored and
+            # frozen, so the tracker grades what you were actually shown —
+            # a display-only filter would silently diverge from the record.
+            _wx_suppressed, _wx_status = [], "not run"
+            try:
+                _official, _wx_suppressed, _wx_status = _se_apply_weather(_official)
+            except Exception as _wx_err:
+                _wx_status = f"failed: {str(_wx_err)[:80]}"
+
+            if _wx_suppressed:            _bm.warning(
+                    "**Weather filter suppressed "
+                    f"{len(_wx_suppressed)} Over play"
+                    f"{'s' if len(_wx_suppressed) != 1 else ''}** \u2014 the model "
+                    "has no weather input, so it prices windy games as though "
+                    "conditions are neutral.\n\n- "
+                    + "\n- ".join(_wx_suppressed)
+                )
+            elif _wx_status == "ok":
+                _bm.caption("Weather filter: ran, nothing suppressed.")
+            else:
+                _bm.caption(f"Weather filter: {_wx_status} \u2014 no adjustment made.")
+
+            # Store the POST-selection card so other views report the real verdict.
+            _stored = combined_card.copy()
+            _stored["verdict"] = "PASS"
+            if not _official.empty:
+                _stored.loc[_official.index, "verdict"] = _official["verdict"]
+                for _col in ["cover_probability", "expected_value", "point_edge", "fair_display"]:
+                    if _col in _official.columns:
+                        _stored.loc[_official.index, _col] = _official[_col]
+            st.session_state["cfb_v36_latest_card"] = _stored
+            # Board snapshot is a nicety for the front-page visuals, not core.
+            # Skip it if we already saved this date recently — repeated rebuilds
+            # were stacking Sheets writes and hitting Google's rate limit, which
+            # makes gspread retry with backoff for minutes.
+            _bkey = f"se_board_saved_{selected_date}"
+            if not st.session_state.get(_bkey):
+                try:
+                    if _se_save_board(_stored, selected_date):
+                        st.session_state[_bkey] = True
+                except Exception:
+                    pass
+
+            try:
+                _t_phase["pricing games"] = time.perf_counter() - _t0
+                _build_status.update(label="Slate ready", state="complete")
+                _bm.caption(
+                    "Build time \u2014 "
+                    + " \u00b7 ".join(f"{k} {v:.1f}s"
+                                      for k, v in sorted(_t_phase.items(),
+                                                         key=lambda x: -x[1]))
+                )
             except Exception:
                 pass
 
-        try:
-            _t_phase["pricing games"] = time.perf_counter() - _t0
-            _build_status.update(label="Slate ready", state="complete")
+            st.session_state["se_built_slate"] = {
+                "sig": _build_sig,
+                "official": _official, "fun": _fun,
+                "ml_flags": list(_ml_flags), "ml_all": list(_ml_all),
+                "market_board": market_board, "slate_df": slate_df,
+                "msgs": _bm,
+                "built_at": pd.Timestamp.now(tz="America/New_York"),
+            }
+        else:
+            _official = _prev_build["official"]
+            _fun = _prev_build["fun"]
+            _ml_flags = list(_prev_build["ml_flags"])
+            _ml_all = list(_prev_build["ml_all"])
+            market_board = _prev_build["market_board"]
+            slate_df = _prev_build["slate_df"]
+            _bm = _prev_build["msgs"]
             st.caption(
-                "Build time \u2014 "
-                + " \u00b7 ".join(f"{k} {v:.1f}s"
-                                  for k, v in sorted(_t_phase.items(),
-                                                     key=lambda x: -x[1]))
+                f"Built at {_prev_build['built_at']:%-I:%M %p} ET with the lines "
+                "from then. Tap Rebuild Slate for fresh lines or to apply new "
+                "injuries."
             )
-        except Exception:
-            pass
+        _bm.replay()
 
         if _official.empty:
             st.info(
@@ -27439,6 +27518,12 @@ game_id = game.get("id")
 # CFBD for every visitor on every rerun.
 _ln_key = f"cfb_line_rows_{game_id}"
 _ln_err = f"cfb_line_err_{game_id}"
+_ln_at = f"cfb_line_at_{game_id}"
+# Lines used to be kept for the whole session, so on game day a matchup
+# opened in the morning still showed the morning's numbers at kickoff.
+# Refetch after 5 minutes, the same as the cached line feed.
+if time.time() - st.session_state.get(_ln_at, 0) > 300:
+    st.session_state.pop(_ln_key, None)
 if _ln_key not in st.session_state:
     try:
         st.session_state[_ln_key] = normalize_game_lines(
@@ -27448,6 +27533,7 @@ if _ln_key not in st.session_state:
     except Exception:
         st.session_state[_ln_key] = []
         st.session_state[_ln_err] = True
+    st.session_state[_ln_at] = time.time()
 
 line_rows = st.session_state.get(_ln_key, [])
 if st.session_state.get(_ln_err):
