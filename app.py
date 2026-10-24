@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.12.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.13.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -16723,6 +16723,7 @@ V401_TRACKER_COLUMNS = [
     "closing_captured_at",     # timestamp of the closing snapshot
     "filter_match",            # passed the lab's best filter (blank = no lab)
     "inj_adj",                 # your injury adjustment that touched this play
+    "bc_reason",               # the bettor's checklist verdict, in words
 ]
 
 def best_available_line(provider_rows, market_type, pick_side):
@@ -17219,7 +17220,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "model_confidence": fnum("model_confidence"),
             "data_completeness": fnum("data_completeness"),
             "selector_score": fnum("selector_score"),
-            "suggested_units": 1.0,
+            "suggested_units": (fnum("bc_units") or 1.0) if tier == "OFFICIAL" else 1.0,
             "frozen_at_et": now,
             "status": "FROZEN",
             "result": "",
@@ -17246,6 +17247,7 @@ def _v401_build_freeze_rows(card, selected_date, tier, existing):
             "conference_game": r.get("conference_game"),
             "closing_captured_at": None,
             "inj_adj": str(r.get("inj_adj") or "") if pd.notna(r.get("inj_adj", np.nan)) else "",
+            "bc_reason": str(r.get("bc_reason") or "") if pd.notna(r.get("bc_reason", np.nan)) else "",
             # Save the card's own filter_match, not the lab's rule flag: an
             # unproven lab sets the flag False, which capped every frozen
             # bet at two stars while the live card showed three.
@@ -18706,7 +18708,374 @@ def _se_ev_from_prob(p, odds=-110):
     return p * payout - (1.0 - p)
 
 
-def _v50_apply_strict_selection(card):
+# ===== Bettor's checklist (v4.13.0) =======================================
+# A gap is not a bet. Before money goes down, each candidate is checked the
+# way a careful bettor would:
+#   1. Honest odds. The model's number is only partly believed (all of it
+#      once the report card has measured how far to trust it, half before),
+#      and the win chance counts key numbers: final margins pile up on 3, 7
+#      and 10, totals on their own common landing spots, so a half point
+#      through one of them is worth more than a half point anywhere else.
+#   2. Price. Your own book's number if it is in the feed, against the
+#      market's.
+#   3. Line move. A line that moved against the pick since open is the
+#      market saying it knows something; 1.5+ pts (2+ on totals) is a pass.
+#   4. Track record. How this kind of pick has done on the report card.
+#   5. Size. Quarter Kelly on the honest odds: 1 unit = 1% of bankroll,
+#      0.5 to 3 units (2 until the trust is measured). Too little edge for
+#      half a unit is a pass.
+# Every pick ends in BET or PASS with the reason in one line.
+
+BC_TAB = "bettor"
+BC_DEFAULT_TRUST = 0.5      # share of the model's gap believed before it is measured
+BC_MOVE_PASS = {"SPREAD": 1.5, "TOTAL": 2.0}
+BC_MIN_EV = 0.02            # 2% expected return at the price
+BC_KELLY = 0.25
+BC_MAX_UNITS = 3.0
+BC_MAX_UNITS_UNMEASURED = 2.0   # cap while the model's trust is still a guess
+BC_RECORD_MIN = 300         # picks before a track record can veto a bet
+BC_RECORD_FAIL = 0.48
+BC_BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
+            "BetRivers", "Bet365", "Fanatics", "William Hill (New Jersey)"]
+BC_NOT_LISTED = "Not in this list"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _bc_load():
+    ws = _v401_sheet(tab=BC_TAB)
+    if ws is None:
+        return {}
+    try:
+        raw = ws.acell("A1").value
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _bc_save(state):
+    ws = _v401_sheet(tab=BC_TAB)
+    if ws is None:
+        return False
+    try:
+        ws.update([[json.dumps(state)]], "A1", value_input_option="RAW")
+        _bc_load.clear()
+        return True
+    except Exception:
+        return False
+
+
+def _bc_my_book():
+    b = st.session_state.get("se_my_book")
+    if b is None:
+        b = (_bc_load() or {}).get("book") or ""
+    return "" if b == BC_NOT_LISTED else str(b)
+
+
+def _bc_render_settings():
+    cur = _bc_my_book() or BC_NOT_LISTED
+    opts = [BC_NOT_LISTED] + BC_BOOKS
+    if cur not in opts:
+        opts.append(cur)
+    pick = st.selectbox(
+        "My sportsbook", opts, index=opts.index(cur), key="se_my_book_pick",
+        help="The checklist prices each bet at this book's number when it is in "
+             "the line feed. If yours isn't listed, picks are priced at the "
+             "market's number and the card tells you which number you need.")
+    if pick != cur:
+        st.session_state["se_my_book"] = pick
+        _bc_save({**(_bc_load() or {}), "book": pick})
+
+
+def _bc_key_weights(values, hi, absval):
+    """How much more often each final number happens than its neighbours
+    would suggest: 3 and 7 in margins, common totals. 1.0 = ordinary."""
+    v = pd.to_numeric(pd.Series(values), errors="coerce").dropna().to_numpy()
+    if len(v) < 1000:
+        return None
+    v = np.abs(v) if absval else v
+    v = np.clip(np.round(v).astype(int), 0, hi)
+    h = np.bincount(v, minlength=hi + 1).astype(float)
+    k = np.ones(7) / 7.0
+    smooth = np.convolve(h, k, mode="same")
+    w = np.where(smooth > 0, h / np.maximum(smooth, 1e-9), 1.0)
+    return [round(float(x), 3) for x in np.clip(w, 0.0, 4.0)]
+
+
+def _bc_keys():
+    try:
+        return ((_rc_load() or {}).get("keys")) or {}
+    except Exception:
+        return {}
+
+
+def _bc_probs(mu, line, kind, side_sign=1):
+    """(win, push) for a bet that wins when the final number, seen from the
+    bet's side, beats the line. Spreads: number = side's margin, wins when
+    margin + spread > 0. Totals: side_sign +1 Over, -1 Under."""
+    keys = _bc_keys()
+    if kind == "SPREAD":
+        sd, w = BASE_MARGIN_SD, keys.get("margin")
+        ks = np.arange(-90, 91)
+        base = np.exp(-0.5 * ((ks - mu) / sd) ** 2)
+        wt = np.array([(w[abs(k)] if w and abs(k) < len(w) else 1.0) for k in ks])
+        wt[ks == 0] = 0.0                       # no ties in college football
+        p = base * wt
+        p /= p.sum()
+        s = ks + line
+        return float(p[s > 0].sum()), float(p[s == 0].sum())
+    sd, w = BASE_TOTAL_SD, keys.get("total")
+    ks = np.arange(0, 161)
+    base = np.exp(-0.5 * ((ks - mu) / sd) ** 2)
+    wt = np.array([(w[k] if w and k < len(w) else 1.0) for k in ks])
+    p = base * wt
+    p /= p.sum()
+    win = p[ks > line].sum() if side_sign > 0 else p[ks < line].sum()
+    return float(win), float(p[ks == line].sum())
+
+
+def _bc_book_line(prov, mt, side, book):
+    for r in prov or []:
+        if str(r.get("provider") or "").strip().lower() != book.lower():
+            continue
+        v = r.get("total") if mt == "TOTAL" else (
+            r.get("home_spread") if side == "HOME" else r.get("away_spread"))
+        try:
+            return float(v)
+        except Exception:
+            return None
+    return None
+
+
+def _bc_record(mt, side, fav):
+    """The report card's record for this kind of pick, if graded."""
+    try:
+        labs = (_rc_load() or {}).get("labs") or {}
+    except Exception:
+        return None
+    lab = labs.get("totals" if mt == "TOTAL" else "spread") or {}
+    key = ("_over" if side == "OVER" else "_under") if mt == "TOTAL" else ("_fav" if fav else "_dog")
+    for g in lab.get("groups") or []:
+        if g.get("key") == key:
+            return g
+    return None
+
+
+def _bc_payout(odds):
+    try:
+        o = float(odds)
+        if not math.isfinite(o) or o == 0:
+            o = -110.0
+    except Exception:
+        o = -110.0
+    return (100.0 / abs(o)) if o < 0 else (o / 100.0), o
+
+
+def _bc_check(r):
+    """The checklist for one candidate. Returns a dict of bc_* fields."""
+    mt = str(r.get("market_type") or "SPREAD").upper()
+    side = str(r.get("pick_side") or "").upper()
+    try:
+        prov = json.loads(r.get("provider_rows_json") or "[]")
+    except Exception:
+        prov = []
+    checks = []
+    fails = []
+    trust = 1.0 if (_rc_active("totals" if mt == "TOTAL" else "spread") or {}).get("gap") is not None \
+        else BC_DEFAULT_TRUST
+
+    # Model and market on the bet side's own scale.
+    if mt == "TOTAL":
+        mkt = _v3_num(r.get("market_total"))
+        model = _v3_num(r.get("fair_total"))
+        line_mkt = mkt
+        honest = mkt + trust * (model - mkt)
+    else:
+        mh = _v3_num(r.get("market_home_spread_display"))
+        if not np.isfinite(mh):
+            mh = _v3_num(r.get("market_home_spread"))
+        fh = _v3_num(r.get("fair_home_spread"))
+        sgn = 1.0 if side == "HOME" else -1.0
+        mkt_margin, model_margin = -mh * sgn, -fh * sgn       # side's expected margin
+        line_mkt = mh * sgn                                    # side's spread
+        honest = mkt_margin + trust * (model_margin - mkt_margin)
+    if not (np.isfinite(honest) and np.isfinite(line_mkt)):
+        return {"bc_verdict": "PASS", "bc_reason": "Pass: missing a number to price it.",
+                "bc_units": 0.0, "bc_p": np.nan, "bc_ev": np.nan, "bc_checks": "[]"}
+
+    # 2. Price: your book's number, else the market's.
+    book = _bc_my_book()
+    line = line_mkt
+    if book:
+        bl = _bc_book_line(prov, mt, side, book)
+        if bl is None:
+            checks.append(("info", f"{book} has no number for this in the feed. "
+                                   f"Priced at the market's {_bc_fmt(line_mkt, mt)}."))
+        else:
+            line = bl
+            better = (bl - line_mkt) * (-1 if (mt == "TOTAL" and side == "OVER") else 1)
+            if abs(better) < 0.25:
+                checks.append(("ok", f"{book} matches the market at {_bc_fmt(bl, mt)}."))
+            elif better > 0:
+                checks.append(("good", f"{book} is {abs(better):.1f} pts better than the "
+                                       f"market ({_bc_fmt(bl, mt)} vs {_bc_fmt(line_mkt, mt)})."))
+            else:
+                checks.append(("warn", f"{book} is {abs(better):.1f} pts worse than the "
+                                       f"market ({_bc_fmt(bl, mt)} vs {_bc_fmt(line_mkt, mt)})."))
+    else:
+        checks.append(("info", f"Priced at the market's {_bc_fmt(line_mkt, mt)}. Get that "
+                               "number or better at your book."))
+
+    # 1. Honest odds, key numbers counted.
+    b, o = _bc_payout(r.get("odds"))
+    if mt == "TOTAL":
+        p, push = _bc_probs(honest, line, "TOTAL", 1 if side == "OVER" else -1)
+    else:
+        p, push = _bc_probs(honest, line, "SPREAD")
+    q = max(0.0, 1.0 - p - push)
+    ev = p * b - q
+    be = 1.0 / (1.0 + b)
+    trust_txt = "measured" if trust == 1.0 else "half, until the report card measures it"
+    checks.append(("good" if ev >= BC_MIN_EV else ("ok" if ev > 0 else "warn"),
+                   f"Honest odds {p:.1%} to win" + (f", {push:.1%} push" if push >= 0.005 else "")
+                   + f" at {o:+.0f} (break-even {be:.1%}). Model's gap believed: {trust_txt}."))
+    kn = _bc_key_note(line, mt, side)
+    if kn:
+        checks.append(kn)
+
+    # 3. Line move since open.
+    try:
+        mv, mo, mn, n = line_move_against(prov, mt, side)
+    except Exception:
+        mv = None
+    if mv is None:
+        checks.append(("info", "No opening number in the feed, so no line-move check."))
+    elif mv >= BC_MOVE_PASS["TOTAL" if mt == "TOTAL" else "SPREAD"]:
+        fails.append(f"Pass: the line moved {mv:.1f} pts against this since open "
+                     f"({_bc_fmt(mo, mt)} → {_bc_fmt(mn, mt)}).")
+        checks.append(("fail", f"Line moved {mv:.1f} pts against since open "
+                               f"({_bc_fmt(mo, mt)} → {_bc_fmt(mn, mt)})."))
+    elif mv <= -0.5:
+        checks.append(("good", f"Line moved {abs(mv):.1f} pts our way since open."))
+    else:
+        checks.append(("ok", f"Line about where it opened ({mv:+.1f} against)."))
+
+    # 4. Track record for this kind of pick.
+    fav = (mt != "TOTAL") and line_mkt < 0
+    g = _bc_record(mt, side, fav)
+    kind = ({"OVER": "Overs", "UNDER": "Unders"}.get(side, "") if mt == "TOTAL"
+            else ("favorites" if fav else "underdogs"))
+    if g and (g.get("w", 0) + g.get("l", 0)):
+        w, l = int(g["w"]), int(g["l"])
+        hit = w / (w + l)
+        txt = f"Its {kind} since 2022: {w}-{l} ({hit:.0%})."
+        if w + l >= BC_RECORD_MIN and hit <= BC_RECORD_FAIL:
+            fails.append(f"Pass: its {kind} have lost over time ({w}-{l}, {hit:.0%}).")
+            checks.append(("fail", txt))
+        else:
+            checks.append(("good" if hit >= 0.53 else ("ok" if hit >= be else "warn"), txt))
+    else:
+        checks.append(("info", "No track record yet. The report card grades this after Sunday's run."))
+
+    # Data quality.
+    if bool(r.get("fcs_fallback_used")) and str(r.get("fcs_fallback_used")).lower() not in ("false", "0", "nan"):
+        fails.append("Pass: one team has too little data to price.")
+
+    # 5. Size.
+    f = (b * p - q) / b if b > 0 else 0.0
+    cap = BC_MAX_UNITS if trust == 1.0 else BC_MAX_UNITS_UNMEASURED
+    units = min(cap, math.floor(max(0.0, f) * BC_KELLY * 100 * 2) / 2)
+    if fails:
+        verdict, reason, units = "PASS", fails[0], 0.0
+    elif ev < BC_MIN_EV or units < 0.5:
+        verdict, units = "PASS", 0.0
+        reason = (f"Pass: edge too thin. {p:.1%} to win at {o:+.0f} needs {be:.1%}"
+                  + (" plus a cushion." if p > be else "."))
+    else:
+        verdict = "BET"
+        why = [t for s_, t in checks if s_ == "good" and not t.startswith("Honest")]
+        reason = (f"Bet {units:g}u: {p:.0%} to win at {o:+.0f} ({ev:+.1%} expected)."
+                  + (f" {why[0]}" if why else ""))
+    return {"bc_verdict": verdict, "bc_reason": reason, "bc_units": float(units),
+            "bc_p": float(p), "bc_ev": float(ev),
+            "bc_checks": json.dumps([{"s": s_, "t": t} for s_, t in checks])}
+
+
+BC_KEYS = {"SPREAD": (3, 7, 10, 14), "TOTAL": (41, 44, 47, 51, 55)}
+
+
+def _bc_key_note(line, mt, side):
+    """Plain note when the number sits next to a key number."""
+    try:
+        line = float(line)
+    except Exception:
+        return None
+    if mt == "TOTAL":
+        for k in BC_KEYS["TOTAL"]:
+            if abs(line - k) == 0.5:
+                good = (side == "OVER" and line < k) or (side == "UNDER" and line > k)
+                return ("good" if good else "warn",
+                        f"{_bc_fmt(line, mt)} is {'on the right side of' if good else 'just past'} "
+                        f"{k}, a common final total.")
+        return None
+    a = abs(line)
+    for k in BC_KEYS["SPREAD"]:
+        if abs(a - k) == 0.5:
+            # Dog wants more than the key, favourite wants less.
+            good = (line > 0 and a > k) or (line < 0 and a < k)
+            return ("good" if good else "warn",
+                    f"{_bc_fmt(line, mt)} is {'on the right side of' if good else 'the wrong side of'} "
+                    f"{k}, a key number.")
+    return None
+
+
+def _bc_fmt(v, mt):
+    try:
+        v = float(v)
+    except Exception:
+        return "?"
+    return f"{v:g}" if mt == "TOTAL" else f"{v:+g}"
+
+
+def _bc_apply(official):
+    """Run the checklist on official candidates. Returns (bets, passed)."""
+    if official is None or official.empty:
+        return official, official
+    res = pd.DataFrame([_bc_check(r) for _, r in official.iterrows()], index=official.index)
+    out = official.join(res)
+    return out[out["bc_verdict"].eq("BET")].copy(), out[out["bc_verdict"].ne("BET")].copy()
+
+
+BC_ICON = {"good": "✔", "ok": "•", "info": "ℹ", "warn": "⚠", "fail": "✖"}
+
+
+def _bc_html(r, compact=False):
+    """The reason line, plus the checks unless compact."""
+    reason = str(r.get("bc_reason") or "").strip()
+    if not reason or reason.lower() == "nan":
+        return ""
+    out = f'<div class="se-bc-reason">{html.escape(reason)}</div>'
+    if compact:
+        return out
+    try:
+        items = json.loads(r.get("bc_checks") or "[]")
+    except Exception:
+        items = []
+    if items:
+        out += '<div class="se-bc-checks">' + "".join(
+            f'<div class="se-bc-{html.escape(i.get("s", "info"))}">'
+            f'{BC_ICON.get(i.get("s"), BC_ICON["ok"])} {html.escape(str(i.get("t", "")))}</div>'
+            for i in items) + "</div>"
+    return out
+
+
+BC_CSS = """<style>
+.se-bc-reason{margin-top:8px;font-size:.86rem;font-weight:700;color:#dbe7f5}
+.se-bc-checks{margin-top:6px;font-size:.78rem;line-height:1.45;color:#9fb3c8}
+.se-bc-good{color:#5fd39a}.se-bc-warn{color:#f2c14e}.se-bc-fail{color:#ff7a7a}
+</style>"""
+
+
+def _v50_select_core(card):
     """
     Two tiers.
 
@@ -18889,6 +19258,34 @@ def _v50_apply_strict_selection(card):
         if "raw_gap" in fun.columns:
             fun["point_edge"] = pd.to_numeric(fun["raw_gap"], errors="coerce")
     return official, fun
+
+
+def _v50_apply_strict_selection(card):
+    """Official bets and the watch list, then the bettor's checklist: a
+    candidate that fails it moves to the top of the watch list with its
+    reason, and the ones that pass are sized and priced at honest odds."""
+    official, fun = _v50_select_core(card)
+    if official is None or official.empty:
+        return official, fun
+    try:
+        bets, passed = _bc_apply(official)
+    except Exception:
+        return official, fun
+    if not bets.empty:
+        bets["cover_probability"] = bets["bc_p"]
+        bets["expected_value"] = bets["bc_ev"]
+        bets["suggested_units"] = bets["bc_units"]
+        bets["verdict"] = "BET"
+        bets = bets.sort_values(["bc_ev", "raw_gap"], ascending=[False, False])
+        bets.iloc[0, bets.columns.get_loc("verdict")] = "BEST BET"
+    if not passed.empty:
+        passed = passed.copy()
+        passed["verdict"] = "LEAN"
+        passed["cover_probability"] = passed["bc_p"]
+        passed["expected_value"] = passed["bc_ev"]
+        rest = fun[~fun.index.isin(passed.index)] if fun is not None and not fun.empty else None
+        fun = pd.concat([passed] + ([rest] if rest is not None else []), sort=False)
+    return bets, fun
 
 
 def _v410_combine_cards(spread_card, total_card):
@@ -19118,7 +19515,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="ge-official-head">
               <div class="ge-check">✓</div>
               <div><div class="ge-section-title">Bets</div>
-              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 1 unit each.</div></div>
+              <div class="ge-section-sub">Most confident first. \u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low \u00b7 sized by the bettor's checklist.</div></div>
               <div class="ge-count">{len(official)} {'PLAY' if len(official)==1 else 'PLAYS'}</div>
             </div>
             """,
@@ -19264,6 +19661,7 @@ def _render_v36_live_card(card, selected_date):
                   </div>
                   {_shop}
                   {_inj}
+                  {_bc_html(r)}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -23042,8 +23440,16 @@ def _rc_run(season):
         if res.get("result") != "graded" and (prev.get(lab) or {}).get("result") == "graded":
             res = {**prev[lab], "stale": res.get("msg") or res.get("result")}
         labs[lab] = res
+    keys = (_rc_load() or {}).get("keys") or {}
+    try:
+        if _AR_FRAMES.get("spread") is not None:
+            keys["margin"] = _bc_key_weights(_AR_FRAMES["spread"]["actual_margin"], 90, True) or keys.get("margin")
+        if _AR_FRAMES.get("totals") is not None:
+            keys["total"] = _bc_key_weights(_AR_FRAMES["totals"]["actual_total"], 160, False) or keys.get("total")
+    except Exception:
+        pass
     _rc_save({"season": int(season), "at": pd.Timestamp.now(tz="America/New_York").isoformat(),
-              "labs": labs})
+              "labs": labs, "keys": keys})
 
 
 def _rc_active(lab):
@@ -27182,6 +27588,7 @@ def _render_home_page():
                 )
 
         st.markdown(_SE_TIX_CSS, unsafe_allow_html=True)
+        st.markdown(BC_CSS, unsafe_allow_html=True)
         try:
             st.markdown(_se_card_summary_html(_top, _view_date), unsafe_allow_html=True)
         except Exception:
@@ -27196,7 +27603,7 @@ def _render_home_page():
             f'<b>{html.escape(str(_h.get("selection","")))}</b>'
             f'<small>{html.escape(str(_h.get("away_team","")))} @ '
             f'{html.escape(str(_h.get("home_team","")))}</small>'
-            f'{_se_hero_meta(_h, _now, _today)}</div>'
+            f'{_se_hero_meta(_h, _now, _today)}{_bc_html(_h, compact=True)}</div>'
             f'<div class="se-hero-ev"><b>{_se_stars(_se_conf(_h))}</b>'
             f'<span>{html.escape(SE_CONF_NAME[_se_conf(_h)])}</span></div>'
             f'</div>'
@@ -27695,6 +28102,10 @@ if run_mode == "Full Slate":
             help="Uses actual CFBD provider quotes. Different provider lines are never averaged into a synthetic betting line."
         )
         st.caption("Unreliable or conflicting line feeds are ignored automatically.")
+        try:
+            _bc_render_settings()
+        except Exception:
+            pass
         st.caption("Building never freezes anything. Picks are added to the "
                    "tracker only when you tap Freeze under the card.")
 
@@ -28412,6 +28823,7 @@ if run_mode == "Full Slate":
         else:
             _render_v36_live_card(_official, selected_date)
 
+        st.markdown(BC_CSS, unsafe_allow_html=True)
         if not _fun.empty:
             st.markdown(
                 '<div class="ge-leans-head"><div>'
@@ -28431,6 +28843,7 @@ if run_mode == "Full Slate":
                       <div class="ge-lean-main">
                         <b>{html.escape(str(fr.get("selection","")))}</b>
                         <small>{html.escape(str(fr.get("away_team","")))} @ {html.escape(str(fr.get("home_team","")))}</small>
+                        {_bc_html(fr, compact=True)}
                       </div>
                       <div class="ge-lean-stats">
                         <span>{html.escape(_se_gap_text(fr))} off</span>
