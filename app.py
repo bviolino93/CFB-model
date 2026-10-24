@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.7.4"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.8.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18155,6 +18155,74 @@ def _se_center_totals(out):
     return out
 
 
+# Spreads get the same slate-level treatment as totals. Calibration found
+# the model leaning toward road teams (mean home margin +6.94 vs the
+# market's +7.68) and swinging 1.09x as wide as the market, which turns into
+# laying big numbers with favourites. Neither carries information. Like a
+# book, take the market's number as the baseline, regress the model's
+# margins on it across the slate, and bet only the part of the model the
+# market's own number cannot explain: the mismatches.
+SPREAD_CENTER_MIN_GAMES = 10
+
+
+def _se_center_spreads(card):
+    if card is None or card.empty or "market_type" not in card.columns:
+        return card
+    out = card.copy()
+    is_sp = out["market_type"].astype(str).str.upper().eq("SPREAD")
+    out["spread_level_shift"] = 0.0
+    out["spread_tilt"] = 1.0
+    if not is_sp.any():
+        return out
+    _nan = pd.Series(np.nan, index=out.index)
+    mh = pd.to_numeric(out.get("market_home_spread_display", _nan), errors="coerce")
+    mh = mh.fillna(pd.to_numeric(out.get("market_home_spread", _nan), errors="coerce"))
+    fh = pd.to_numeric(out.get("fair_home_spread", _nan), errors="coerce")
+    ok = is_sp & mh.notna() & fh.notna()
+    fit = ok & (mh.abs() <= V50_MAX_SPREAD)
+    if int(fit.sum()) < SPREAD_CENTER_MIN_GAMES:
+        return out
+    mm, fm = -mh[fit].astype(float), -fh[fit].astype(float)
+    slope = 1.0
+    if float(mm.var()) > 1.0:
+        slope = max(0.5, min(1.5, float(np.cov(mm, fm)[0, 1] / mm.var())))
+    intercept = float((fm - slope * mm).median())
+    out["spread_level_shift"] = float((fm - mm).median())
+    out["spread_tilt"] = slope
+    for idx in out.index[ok]:
+        m_margin = -float(mh[idx])
+        new_margin = m_margin + (-float(fh[idx]) - (intercept + slope * m_margin))
+        fair_home = -new_margin
+        line_home = float(mh[idx])
+        edge = line_home - fair_home
+        side = "HOME" if edge > 0 else "AWAY"
+        if side != str(out.at[idx, "pick_side"]).upper():
+            if "spr2_rule_ok" in out.columns:
+                out.at[idx, "spr2_rule_ok"] = False
+            if "filter_match" in out.columns and _se_fm_true(out.at[idx, "filter_match"]):
+                out.at[idx, "filter_match"] = False
+            # The old reliability graded the other side; rebuild it from
+            # data quality alone, as the spread lab does on a flip.
+            rel = _se_reliability_from(
+                out.at[idx, "model_confidence"] if "model_confidence" in out.columns else None,
+                out.at[idx, "data_completeness"] if "data_completeness" in out.columns else None,
+            )
+            if rel:
+                out.at[idx, "reliability"] = rel
+        team = out.at[idx, "home_team"] if side == "HOME" else out.at[idx, "away_team"]
+        line = line_home if side == "HOME" else -line_home
+        p_home = cover_probability(new_margin, line_home, "home", BASE_MARGIN_SD)
+        out.at[idx, "fair_home_spread"] = fair_home
+        out.at[idx, "signed_home_edge"] = edge
+        out.at[idx, "point_edge"] = abs(edge)
+        out.at[idx, "pick_side"] = side
+        out.at[idx, "selection"] = f"{team} {line:+.1f}"
+        out.at[idx, "market_display"] = line
+        out.at[idx, "fair_display"] = fair_home if side == "HOME" else -fair_home
+        out.at[idx, "cover_probability"] = p_home if side == "HOME" else 1.0 - p_home
+    return out
+
+
 def _v410_total_card(slate_df):
     """Convert v4.1 independent total projections into production-card rows."""
     if slate_df is None or slate_df.empty:
@@ -19725,6 +19793,8 @@ def _cal_run(years, scope="Major FBS"):
             rows.append({
                 "season": yr, "week": g.get("week"),
                 "tier": _tier, "home_conf": _hc, "away_conf": _ac,
+                "home_class": str(g.get("homeClassification") or "").lower(),
+                "away_class": str(g.get("awayClassification") or "").lower(),
                 # Carried so the QB lab can join personnel to each game.
                 "game_id": g.get("id"),
                 "home_team": g.get("homeTeam") or g.get("home_team"),
@@ -19983,6 +20053,31 @@ def _cal_tier_bias(df):
             "Model MAE": f"{(b.model_margin - b.actual_margin).abs().mean():.2f}",
             "Market MAE": f"{(b.mkt_margin - b.actual_margin).abs().mean():.2f}",
         })
+    # Split "One major" by the non-power opponent, seen from the POWER team's
+    # side (negative = the model underrates the power team). FCS games are
+    # never bet (FCS guard, spread cap), so a gap that lives only there does
+    # not need fixing; a gap against Group of Five teams does.
+    _major = {"ACC", "SEC", "Big Ten", "Big 12", "Pac-12"}
+    if {"home_conf", "away_conf", "home_class", "away_class"} <= set(d.columns):
+        one = d[d["tier"] == "One major"].copy()
+        home_major = one["home_conf"].isin(_major)
+        sign = np.where(home_major, 1.0, -1.0)
+        opp_class = np.where(home_major, one["away_class"], one["home_class"])
+        one["_mb"] = sign * (one.model_margin - one.actual_margin)
+        one["_kb"] = sign * (one.mkt_margin - one.actual_margin)
+        for lab, mask in (("One major \u00b7 vs Group of Five", opp_class == "fbs"),
+                          ("One major \u00b7 vs FCS", opp_class == "fcs")):
+            b = one[mask]
+            if len(b) < 40:
+                continue
+            rows.append({
+                "Conference tier": lab + " (power team's side)",
+                "Games": len(b),
+                "Model bias": f"{b['_mb'].mean():+.2f}",
+                "Market bias": f"{b['_kb'].mean():+.2f}",
+                "Model MAE": f"{(b.model_margin - b.actual_margin).abs().mean():.2f}",
+                "Market MAE": f"{(b.mkt_margin - b.actual_margin).abs().mean():.2f}",
+            })
     return pd.DataFrame(rows)
 
 
@@ -26690,6 +26785,24 @@ if run_mode == "Full Slate":
                 combined_card = _spr2_apply_to_spreads(combined_card, _sad)
         except Exception as _spe:
             st.caption(f"Spread model update skipped: {str(_spe)[:80]}")
+
+        # Remove the slate's home/road lean and favourite exaggeration so
+        # only genuine mismatches with the market remain. Before injuries:
+        # injury news is real information and must not be centred away.
+        try:
+            combined_card = _se_center_spreads(combined_card)
+            _sp_rows = combined_card[combined_card["market_type"].astype(str).str.upper().eq("SPREAD")] \
+                if "market_type" in combined_card.columns else pd.DataFrame()
+            if not _sp_rows.empty and "spread_tilt" in _sp_rows.columns:
+                _ss = float(_sp_rows["spread_level_shift"].iloc[0])
+                _st = float(_sp_rows["spread_tilt"].iloc[0])
+                if abs(_ss) >= 0.05 or abs(_st - 1.0) >= 0.01:
+                    st.caption(
+                        f"Spreads re-centred: the model ran {_ss:+.1f} pts toward the "
+                        f"home side vs the market (median) and moved {_st:.2f} pts per "
+                        "market point (1.00 = in step). Both removed before picking sides.")
+        except Exception as _cse:
+            st.caption(f"Spread re-centring skipped: {str(_cse)[:80]}")
 
         # Your injuries, before bets are chosen (two-way).
         try:
