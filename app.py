@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.13.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.14.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -21205,9 +21205,12 @@ def _tot2_fit_ratings(games, prior):
 
     b0 = np.zeros(P)
     lam = np.full(P, TOT2_PRIOR_GAMES)
+    p_games = prior.get("games") or {}
     for t, i in ix.items():
         b0[i] = float(p_off.get(t, 0.0))
         b0[T + i] = float(p_dfn.get(t, 0.0))
+        if t in p_games:
+            lam[i] = lam[T + i] = float(p_games[t])
     b0[2 * T], b0[2 * T + 1] = mu0, hfa0
     lam[2 * T] = 1e-3            # mu and hfa are estimated freely
     lam[2 * T + 1] = 1e-3
@@ -21352,6 +21355,122 @@ def _form_gate_text(g):
             f"{FORM_MIN_SEASONS_BETTER}+ seasons).")
 
 
+# New head coach. Last season's ratings and tempo describe the old staff's
+# team, so a team with a new coach (Oklahoma State 2026: a slow, low-scoring
+# offense replaced by an up-tempo one) should lean on this season's games
+# much sooner. Its carried rating is halved again and counts as one game of
+# evidence instead of three; its tempo prior counts as one game.
+#
+# Built as a second set of ratings alongside the usual one, and the labs use
+# it only when it lowers the average miss on unseen seasons (_coach_gate),
+# the same bar recent form has to clear.
+COACH_KEEP = 0.5
+COACH_PRIOR_GAMES = 1.0
+COACH_SWAP = ("exp_total", "exp_plays", "exp_total_x_plays", "exp_margin")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _coach_of(year):
+    """school -> head coach who ran the most games that season."""
+    try:
+        rows = cfbd_get("/coaches", API_KEY, {"year": int(year)}) or []
+    except Exception:
+        return {}
+    best = {}
+    for c in rows:
+        name = f"{c.get('firstName') or c.get('first_name') or ''} " \
+               f"{c.get('lastName') or c.get('last_name') or ''}".strip()
+        for sn in c.get("seasons") or []:
+            if int(sn.get("year") or 0) != int(year):
+                continue
+            school = str(sn.get("school") or "")
+            g = int(sn.get("games") or 0)
+            if school and (school not in best or g > best[school][1]):
+                best[school] = (name, g)
+    return {s: v[0] for s, v in best.items()}
+
+
+def _new_coach_teams(year):
+    cur, prev = _coach_of(int(year)), _coach_of(int(year) - 1)
+    return {s for s, c in cur.items() if prev.get(s) and prev[s] != c}
+
+
+def _coach_prior(prior, fresh):
+    if not fresh:
+        return prior
+    out = {**prior, "off": dict(prior.get("off", {})), "dfn": dict(prior.get("dfn", {})),
+           "games": dict(prior.get("games") or {})}
+    for t in fresh:
+        if t in out["off"]:
+            out["off"][t] *= COACH_KEEP
+        if t in out["dfn"]:
+            out["dfn"][t] *= COACH_KEEP
+        out["games"][t] = COACH_PRIOR_GAMES
+    return out
+
+
+def _coach_swap(df):
+    """The frame with the new-coach versions of the rating inputs."""
+    out = df.copy()
+    for c in COACH_SWAP:
+        if f"{c}_nc" in out.columns:
+            out[c] = out[f"{c}_nc"]
+    return out
+
+
+def _coach_gate(df, pred_fn, ycol, feats):
+    """Walk-forward on the same games with the usual and the new-coach
+    rating inputs. Used only if the miss drops by more than luck explains
+    (paired, 95% one-sided) and in at least 3 of the 4 test seasons."""
+    out = {"used": False}
+    if not any(f"{c}_nc" in df.columns for c in COACH_SWAP):
+        out["msg"] = "no coach data"
+        return out
+    alt = _coach_swap(df)
+    eb_all, ea_all, better, tested = [], [], 0, 0
+    for s in TOT2_TEST_SEASONS:
+        m_tr = (df["season"] < s) & (df["season"] >= TOT2_FIRST_SEASON)
+        m_te = (df["season"] == s) & df[ycol].notna()
+        if not m_tr.any() or not m_te.any():
+            continue
+        pb = pred_fn(df[m_tr], df[m_te], list(feats))
+        pa = pred_fn(alt[m_tr], alt[m_te], list(feats))
+        if pb is None or pa is None:
+            continue
+        y = df.loc[m_te, ycol].to_numpy(dtype=float)
+        eb = np.abs(y - np.asarray(pb, dtype=float))
+        ea = np.abs(y - np.asarray(pa, dtype=float))
+        eb_all.append(eb)
+        ea_all.append(ea)
+        tested += 1
+        better += int(ea.mean() < eb.mean())
+    if not tested:
+        out["msg"] = "not enough history"
+        return out
+    eb, ea = np.concatenate(eb_all), np.concatenate(ea_all)
+    gain = eb - ea
+    sd = float(gain.std(ddof=1)) if len(gain) > 1 else 0.0
+    t = float(gain.mean() / (sd / math.sqrt(len(gain)))) if sd > 0 else 0.0
+    nc = df["new_coach_game"] if "new_coach_game" in df.columns else pd.Series(0, index=df.index)
+    out.update(mae_base=round(float(eb.mean()), 3), mae_coach=round(float(ea.mean()), 3),
+               better=better, tested=tested, t=round(t, 2),
+               games=int(nc[df["season"].isin(TOT2_TEST_SEASONS)].fillna(0).astype(bool).sum()))
+    out["used"] = bool(t >= FORM_MIN_T and better >= min(FORM_MIN_SEASONS_BETTER, tested))
+    return out
+
+
+def _coach_gate_text(g):
+    if not g:
+        return None
+    if g.get("mae_base") is None:
+        return f"New-coach adjustment: not tested ({g.get('msg', 'no data')})."
+    verdict = "**used**" if g.get("used") else "**left out**"
+    return (f"New-coach adjustment (this season counts sooner for teams with a new head "
+            f"coach): {verdict}. Avg miss {g['mae_base']:.2f} pts without it, "
+            f"{g['mae_coach']:.2f} with it; better in {g.get('better', 0)} of "
+            f"{g.get('tested', 0)} unseen seasons, signal t {g.get('t', 0):+.2f}.")
+
+
 def _tot2_per_game(adv, gp, key):
     v = _v3_num((adv or {}).get(key))
     if not np.isfinite(v) or gp <= 0:
@@ -21359,17 +21478,19 @@ def _tot2_per_game(adv, gp, key):
     return v / gp
 
 
-def _tot2_pace(cur_adv, prev_adv, gp_cur, gp_prev, home, away):
+def _tot2_pace(cur_adv, prev_adv, gp_cur, gp_prev, home, away, fresh=None):
     """Expected plays: each offense's tempo against what each defense
     usually faces, blended from last season toward this season as games
-    accumulate."""
+    accumulate. Teams in `fresh` (a new head coach) move off last season
+    after about one game instead of three."""
     def team_rate(t, side):
         key = f"{side}_plays"
         c = _tot2_per_game(_v3_adv_fields(cur_adv.get(t)), gp_cur.get(t, 0), key)
         p = _tot2_per_game(_v3_adv_fields(prev_adv.get(t)), gp_prev.get(t, 0), key)
         g = float(gp_cur.get(t, 0))
         if np.isfinite(c) and np.isfinite(p):
-            w = g / (g + TOT2_PACE_PRIOR_GAMES)
+            pg = COACH_PRIOR_GAMES if (fresh and t in fresh) else TOT2_PACE_PRIOR_GAMES
+            w = g / (g + pg)
             return w * c + (1 - w) * p
         return c if np.isfinite(c) else p
     vals = [team_rate(home, "off"), team_rate(away, "def"),
@@ -21417,11 +21538,14 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
 
     fbs = _rc_fbs(year)
     rctx = _rc_season_ctx(year, games, by_game)
+    fresh = _new_coach_teams(year)
+    prior_nc = _coach_prior(prior, fresh)
     rows = []
     weeks = sorted({int(g.get("week") or 1) for g in games})
     for w in weeks:
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        r_nc = _tot2_fit_ratings(before, prior_nc) if fresh else r
         rf = _form_ratings(before, r, w)
         pct = _rc_pcts(r, fbs)
         cur_adv = _v3_advanced_through(int(year), w - 1) if w > 1 else {}
@@ -21455,6 +21579,10 @@ def _tot2_season_rows(year, prior, scope, fresh=False, with_old=True):
                 "form_total": (_tot2_expected(rf, home, away, neutral)
                                - _tot2_expected(r, home, away, neutral)),
                 "exp_plays": _tot2_pace(cur_adv or {}, prev_adv, gp_cur, gp_prev, home, away),
+                "exp_total_nc": _tot2_expected(r_nc, home, away, neutral),
+                "exp_plays_nc": _tot2_pace(cur_adv or {}, prev_adv, gp_cur, gp_prev,
+                                           home, away, fresh),
+                "new_coach_game": 1.0 if (home in fresh or away in fresh) else 0.0,
                 "week_num": float(w),
                 "neutral": 1.0 if neutral else 0.0,
                 "min_gp": float(min(gp_cur.get(home, 0), gp_cur.get(away, 0))),
@@ -21498,6 +21626,8 @@ def _tot2_build(scope="All FBS", progress=None, last=None, fresh_season=None,
     df = pd.DataFrame(all_rows)
     if not df.empty:
         df["exp_total_x_plays"] = df["exp_total"] * df["exp_plays"]
+        if "exp_total_nc" in df.columns:
+            df["exp_total_x_plays_nc"] = df["exp_total_nc"] * df["exp_plays_nc"]
     return df
 
 
@@ -21755,6 +21885,8 @@ def _tot2_live_state(season, week):
     cur = [g for g in _tot2_completed(get_finals_games(int(season)))
            if int(g.get("week") or 1) < int(week)]
     r = _tot2_fit_ratings(cur, prior)
+    fresh = _new_coach_teams(season)
+    r_nc = _tot2_fit_ratings(cur, _coach_prior(prior, fresh)) if fresh else r
     rf = _form_ratings(cur, r, week)
     gp_cur, gp_prev = {}, {}
     for g in cur:
@@ -21765,7 +21897,8 @@ def _tot2_live_state(season, week):
             gp_prev[t] = gp_prev.get(t, 0) + 1
     cur_adv = _v3_advanced_through(int(season), int(week) - 1) if int(week) > 1 else {}
     prev_adv = (_v3_preseason_data(int(season)) or {}).get("prev_adv") or {}
-    return {"r": r, "rf": rf, "gp_cur": gp_cur, "gp_prev": gp_prev,
+    return {"r": r, "rf": rf, "r_nc": r_nc, "new_coach": sorted(fresh),
+            "gp_cur": gp_cur, "gp_prev": gp_prev,
             "cur_adv": cur_adv or {}, "prev_adv": prev_adv,
             "prev_adv_ctx": _new_fbs_prev_adv(prev_adv, season)}
 
@@ -21798,15 +21931,18 @@ def _tot2_live_total(row, coefs):
         stt = _tot2_live_state(season, week)
         home, away = str(row.get("home_team")), str(row.get("away_team"))
         neutral = bool(row.get("neutral_site"))
+        coach = bool(coefs.get("coach"))
+        r_use = stt.get("r_nc") or stt["r"] if coach else stt["r"]
+        fresh = set(stt.get("new_coach") or []) if coach else None
         f = {
-            "exp_total": _tot2_expected(stt["r"], home, away, neutral),
+            "exp_total": _tot2_expected(r_use, home, away, neutral),
             "exp_plays": _tot2_pace(stt["cur_adv"], stt["prev_adv"],
-                                    stt["gp_cur"], stt["gp_prev"], home, away),
+                                    stt["gp_cur"], stt["gp_prev"], home, away, fresh),
             "week_num": float(week), "neutral": 1.0 if neutral else 0.0,
         }
         f["exp_total_x_plays"] = f["exp_total"] * f["exp_plays"]
         f["form_total"] = (_tot2_expected(stt.get("rf") or stt["r"], home, away, neutral)
-                           - f["exp_total"])
+                           - _tot2_expected(stt["r"], home, away, neutral))
         f.update(_v3_total_context(_v3_adv_fields(stt["cur_adv"].get(home)),
                                    _v3_adv_fields(stt["cur_adv"].get(away)), "cur"))
         _pctx = stt.get("prev_adv_ctx") or stt["prev_adv"]
@@ -21958,6 +22094,9 @@ def _render_totals_lab():
                         st.error("No games with a closing total were found.")
                         return
                     _s.update(label="Testing against the closing line…")
+                    cgate = _coach_gate(df, _tot2_wf_pred, "actual_total", TOT2_FEATURES)
+                    if cgate["used"]:
+                        df = _coach_swap(df)
                     gate = _form_gate(df, _tot2_wf_pred, "actual_total",
                                       TOT2_FEATURES, TOT2_FORM_FEATURES)
                     wf = _tot2_walk_forward(df, gate["features"])
@@ -21967,7 +22106,10 @@ def _render_totals_lab():
                     rep = _tot2_report(wf)
                     rep["scope"] = _scope
                     rep["form"] = gate
+                    rep["coach"] = cgate
                     coefs = _tot2_final_fit(df, gate["features"])
+                    if coefs is not None:
+                        coefs["coach"] = bool(cgate["used"])
                     if not _tot2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -21991,6 +22133,9 @@ def _render_totals_lab():
     _ft = _form_gate_text(rep.get("form"))
     if _ft:
         st.caption(_ft)
+    _ct = _coach_gate_text(rep.get("coach"))
+    if _ct:
+        st.caption(_ct)
 
     # 1. Can it reach the extremes?
     st.markdown("**1. Can it reach big and small totals?**")
@@ -22166,12 +22311,15 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
     except Exception:
         old_data = None
 
+    fresh = _new_coach_teams(year)
+    prior_nc = _coach_prior(prior, fresh)
     fbs = _rc_fbs(year)
     rctx = _rc_season_ctx(year, games, by_game)
     rows = []
     for w in sorted({int(g.get("week") or 1) for g in games}):
         before = [g for g in games if int(g.get("week") or 1) < w]
         r = _tot2_fit_ratings(before, prior)
+        r_nc = _tot2_fit_ratings(before, prior_nc) if fresh else r
         rf = _form_ratings(before, r, w)
         pct = _rc_pcts(r, fbs)
         cur_adv = (_v3_advanced_through(int(year), w - 1) if w > 1 else {}) or {}
@@ -22197,6 +22345,8 @@ def _spr2_season_rows(year, prior, scope, fresh=False, with_old=True):
             }
             row.update(_spr2_features(r, home, away, neutral, w, cur_adv,
                                       prev_adv, g, talent, rf))
+            row["exp_margin_nc"] = _spr2_expected_margin(r_nc, home, away, neutral)
+            row["new_coach_game"] = 1.0 if (home in fresh or away in fresh) else 0.0
             row.update(home_pct=pct.get(home, np.nan), away_pct=pct.get(away, np.nan))
             row.update(_rc_game_ctx(g, rctx, by_game.get(key, [])))
             row["old_margin"] = np.nan
@@ -22464,6 +22614,8 @@ def _spr2_apply_to_spreads(card, ad):
             f = _spr2_features(stt["r"], home, away, neutral, week,
                                stt["cur_adv"], stt.get("prev_adv_ctx") or stt["prev_adv"],
                                g, talent, stt.get("rf"))
+            if (ad.get("coefs") or {}).get("coach") and stt.get("r_nc"):
+                f["exp_margin"] = _spr2_expected_margin(stt["r_nc"], home, away, neutral)
             nm = float(_spr2_predict(ad["coefs"], pd.DataFrame([f]))[0])
             mh = _v3_num(r.get("market_home_spread_display"))
             if not np.isfinite(mh):
@@ -22519,6 +22671,9 @@ def _render_spread_lab():
                         st.error("No games with a closing spread were found.")
                         return
                     _s.update(label="Testing against the closing spread…")
+                    cgate = _coach_gate(df, _spr2_wf_pred, "actual_margin", SPR2_FEATURES)
+                    if cgate["used"]:
+                        df = _coach_swap(df)
                     gate = _form_gate(df, _spr2_wf_pred, "actual_margin",
                                       SPR2_FEATURES, SPR2_FORM_FEATURES)
                     wf = _spr2_walk_forward(df, gate["features"])
@@ -22528,7 +22683,10 @@ def _render_spread_lab():
                     rep = _spr2_report(wf)
                     rep["scope"] = _scope
                     rep["form"] = gate
+                    rep["coach"] = cgate
                     coefs = _spr2_fit(df[df["season"] >= TOT2_FIRST_SEASON], gate["features"])
+                    if coefs is not None:
+                        coefs["coach"] = bool(cgate["used"])
                     if not _spr2_save(rep, coefs, adopted=True):
                         st.warning("Results are below but could not be saved to Sheets.")
                     saved = {"report": rep, "coefs": coefs, "adopted": True,
@@ -22550,6 +22708,9 @@ def _render_spread_lab():
     _ft = _form_gate_text(rep.get("form"))
     if _ft:
         st.caption(_ft)
+    _ct = _coach_gate_text(rep.get("coach"))
+    if _ct:
+        st.caption(_ct)
 
     def _rec(v):
         if not v or not (v[0] + v[1]):
@@ -22783,6 +22944,17 @@ def _ar_retrain_lab(lab, season, last_seen=None):
     if df.empty:
         return {"result": "skipped", "msg": "no games found"}
     df = df.dropna(subset=[ycol])
+    # New-coach adjustment: follow the lab's call; if the lab was saved before
+    # it existed, test it here on the finished seasons (never this one).
+    coach = (saved.get("coefs") or {}).get("coach")
+    if coach is None:
+        try:
+            coach = bool(_coach_gate(df[df["season"] < int(season)], pred_fn, ycol, base)["used"])
+        except Exception:
+            coach = False
+    coach = bool(coach)
+    if coach:
+        df = _coach_swap(df)
     _AR_FRAMES[lab] = df
     seen = int((df["season"] == season).sum())
     if last_seen is not None and seen <= int(last_seen):
@@ -22835,6 +23007,7 @@ def _ar_retrain_lab(lab, season, last_seen=None):
     if final is None:
         return {**out, "result": "skipped", "msg": "not enough data to fit"}
     final["trained_through"] = f"{season} wk {int(order.max()) % 100}"
+    final["coach"] = coach
     final["auto"] = True
     if not saver(saved["report"], final, adopted=saved.get("adopted", True)):
         return {**out, "result": "error", "msg": "could not save to Sheets"}
@@ -23024,6 +23197,7 @@ RC_GROUPS = {
     "off_bye": "A team coming off a bye",
     "conf_game": "Conference games",
     "dome": "Domes",
+    "new_coach": "A team with a new head coach",
     "long_trip": "Road team traveled 1,500+ miles",
     "west_to_east": "Road team came 2+ time zones east",
     "east_to_west": "Road team went 2+ time zones west",
@@ -23238,6 +23412,7 @@ def _rc_flags(d, lab):
         "off_bye": np.maximum(hr, ar) >= 13,
         "conf_game": _rc_col(d, "conf_game") > 0,
         "dome": _rc_col(d, "dome") > 0,
+        "new_coach": _rc_col(d, "new_coach_game") > 0,
     }
     if lab == "totals":
         tz, mv = _rc_col(d, "tz_shift"), m - _rc_col(d, "total_open")
@@ -23546,6 +23721,9 @@ def _rc_live_frame(card, idxs, lab):
                 except Exception:
                     line_rows = []
                 info.update(_rc_game_ctx(g, _rc_live_ctx(season), line_rows))
+                _nc = _new_coach_teams(season)
+                info["new_coach_game"] = 1.0 if (str(r.get("home_team")) in _nc
+                                                 or str(r.get("away_team")) in _nc) else 0.0
         except Exception:
             pass
         rows.append(info)
