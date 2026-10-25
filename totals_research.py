@@ -21,7 +21,8 @@ Findings (2026-10-25), which became cfb_picks.TOTAL_RULES:
     the lower the total the stronger it gets: spread 21+ and total under
     55 hit 55.9 / 57.3 / 56.2% vs the opener (59.0 / 54.3 / 53.9 vs the
     close); spread 24+ and total under 50, about 60%.
-  * Week, month, neutral site, pace, kickoff time alone, and the points
+  * Night games lean under (~52.5% every era) but too little to bet alone.
+  * Week, month, neutral site, pace and the points
     rating's view of the total showed nothing that held in every era. The
     efficiency model's totals (cfb_model) stayed near break-even.
 """
