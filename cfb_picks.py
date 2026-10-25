@@ -11,8 +11,7 @@ Same steps as the NFL picks:
      result distributions built from college games (bigger margins, fewer
      key numbers than the NFL)
   3. cfb_model's prediction of result-minus-line moves the fair line:
-     spreads; totals move on TOTAL_RULES (patterns that held in every era),
-     capped to the best few a week (MAX_MODEL_TOTALS)
+     spreads; totals move on TOTAL_RULES (patterns that held in every era)
   4. every DraftKings/FanDuel offer priced; bets that clear the EV bar are
      sized (quarter Kelly) and explained in football terms
 
@@ -73,10 +72,6 @@ TOTAL_RULES = [
      "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
      "Books shade big totals up for public over money"),
 ]
-# At most this many pattern totals a week, the biggest edges (Brian,
-# 2026-10-25: "the best options available, like NFL"). Totals where a book
-# is simply off the sharp consensus aren't capped.
-MAX_MODEL_TOTALS = 3
 # College picks go through at a 3% edge (NFL: 2%): below ~1.5 points of
 # lean the backtest's picks ran about break-even.
 MIN_EV = 0.03
@@ -354,18 +349,6 @@ def rule_shift(tm, total: float, side: str, p: float) -> float:
     return sign * 10.0
 
 
-def cap_model_totals(bettable: pd.DataFrame, min_ev: float,
-                     keep: int = MAX_MODEL_TOTALS) -> pd.DataFrame:
-    """Drop model-driven totals outside the `keep` games with the biggest
-    edge. A total counts as model-driven when the book isn't already off
-    the sharp consensus by itself ("market" not among its sources)."""
-    src = bettable.sources.astype(str).str.split(",")
-    model = (bettable.market == "totals") & ~src.map(lambda s: "market" in s)
-    best = (bettable[model & (bettable.ev >= min_ev)]
-            .groupby("event_id").ev.max().nlargest(keep).index)
-    return bettable[~model | bettable.event_id.isin(best)]
-
-
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None):
     now = pd.Timestamp(now or datetime.now(timezone.utc))
@@ -411,7 +394,6 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         return priced, fair, ids
     bettable = priced[priced.market.isin(["spreads", "totals"])
                       & priced.book.isin(my_books)]
-    bettable = cap_model_totals(bettable, min_ev)
     picks = sel.select(bettable, bankroll, pol)
     if len(picks):
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
