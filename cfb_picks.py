@@ -11,8 +11,8 @@ Same steps as the NFL picks:
      result distributions built from college games (bigger margins, fewer
      key numbers than the NFL)
   3. cfb_model's prediction of result-minus-line moves the fair line:
-     spreads always; totals only on lines seen 2+ days before kickoff,
-     where the backtest found the edge (they lose to the closing total)
+     spreads only; totals are worked out but not bet on the model's say
+     (about break-even in the backtest, see MODEL_MARKETS)
   4. every DraftKings/FanDuel offer priced; bets that clear the EV bar are
      sized (quarter Kelly) and explained in football terms
 
@@ -47,7 +47,13 @@ BOOK_NAME = {"draftkings": "DraftKings", "fanduel": "FanDuel"}
 # with two games of play-by-play) from making a huge edge.
 SPREAD_CAP = 3.0
 TOTAL_CAP = 3.0
-TOTAL_MIN_LEAD_DAYS = 2.0
+# Totals stay INFO (computed, shown in the fair-line table, not bet): split
+# by side, the backtest's model overs went 47-60% by season, about
+# break-even overall, and the first live run leaned over on 14 of 19 games.
+# Same rule as the NFL model: only a market whose picks held up out of
+# sample moves the line. Totals can still be bet when a book is off the
+# sharp consensus.
+MODEL_MARKETS = {"spread"}
 # College picks go through at a 3% edge (NFL: 2%): below ~1.5 points of
 # lean the backtest's picks ran about break-even.
 MIN_EV = 0.03
@@ -263,11 +269,13 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
                         f"{_fav(home, away, view)}: {_matchup(t, u, 'epa', ranks)}")
             if k == "elo":
                 return f"Elo has it {_fav(home, away, view)}"
-            # scores: fitted with a negative weight, so it pushes toward the
-            # side the scoreboard rates BELOW the market
-            return (f"{u}'s scores so far ({_fav(home, away, view)}) run ahead of "
-                    f"what the line already gives them, and teams like that have "
-                    f"tended to fall short of the spread")
+            # scores: fitted with a negative weight. When the line has moved
+            # far from a team's results, the market has usually been right
+            # and then some, so it pushes further the market's way.
+            return (f"the market ({_fav(home, away, fair_market)}) is far from what "
+                    f"the scores so far say ({_fav(home, away, view)}); when the "
+                    f"market strays that far from the scoreboard it has usually "
+                    f"been right, and then some")
         up = over == toward
         if k == "eff":
             # no number: the efficiency fit runs high on low totals and
@@ -277,10 +285,17 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
                     f"scoring than the total" + (f": {units}" if units else ""))
         return f"scoring so far, adjusted for opponents, puts it at {view:.1f}"
 
-    pro = sorted(((sign * v, k, view) for k, (v, view) in parts.items() if sign * v >= 0.2),
-                 reverse=True)
-    con = sorted(((-sign * v, k, view) for k, (v, view) in parts.items() if -sign * v >= 0.4),
-                 reverse=True)
+    def agrees(k, push, view):
+        # An opinion with a negative fitted weight pushes AWAY from what it
+        # says; only "scores" has a sentence for that, so the others are
+        # cited only when they say what they push.
+        return k == "scores" if spread and (push > 0) != (view > fair_market) \
+            else True
+
+    pro = sorted(((sign * v, k, view) for k, (v, view) in parts.items()
+                  if sign * v >= 0.2 and agrees(k, v, view)), reverse=True)
+    con = sorted(((-sign * v, k, view) for k, (v, view) in parts.items()
+                  if -sign * v >= 0.4 and agrees(k, v, view)), reverse=True)
     why = [call]
     if pro:
         why.append("Why: " + "; ".join(say(k, view, True) for _, k, view in pro) + ".")
@@ -309,7 +324,6 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     adj, ctx = [], {}
     for ev, gid in ids.items():
         f, r = fair[ev], upcoming.loc[gid]
-        lead = (pd.Timestamp(f.commence) - now) / pd.Timedelta(days=1)
         c = ctx.setdefault(f.home_team, {"row": r})
         for kind, mkt, cap in (("spread", f.market_margin, SPREAD_CAP),
                                ("total", f.market_total, TOTAL_CAP)):
@@ -320,8 +334,7 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             pts = float(np.clip(m.predict(frame, np.array([mkt]))[0], -cap, cap))
             c[kind] = (pts, m.parts(r, mkt))
             market = "spreads" if kind == "spread" else "totals"
-            src = "combined" if kind == "spread" or lead >= TOTAL_MIN_LEAD_DAYS \
-                else "combined_info"
+            src = "combined" if kind in MODEL_MARKETS else "combined_info"
             if abs(pts) >= 0.05:
                 adj.append(sel.Adjustment(f.home_team, market, pts, src))
     sel.apply_adjustments(fair, adj)
