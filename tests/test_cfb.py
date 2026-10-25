@@ -45,3 +45,12 @@ def test_grade_by_game_id():
     out = cfb_picks.grade(bets, g)
     assert [b["result"] for b in out] == ["win", "loss"]
     assert out[0]["profit"] == 10.0 and out[0]["final"] == "21-31"
+
+
+def test_model_totals_capped_to_best_few():
+    rows = [{"event_id": f"e{i}", "market": "totals", "sources": "combined",
+             "ev": 0.03 + i / 100} for i in range(6)]
+    rows += [{"event_id": "m", "market": "totals", "sources": "market,combined", "ev": 0.04},
+             {"event_id": "s", "market": "spreads", "sources": "combined", "ev": 0.05}]
+    out = cfb_picks.cap_model_totals(pd.DataFrame(rows), 0.03, keep=3)
+    assert set(out.event_id) == {"e3", "e4", "e5", "m", "s"}
