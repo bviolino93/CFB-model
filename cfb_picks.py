@@ -11,7 +11,8 @@ Same steps as the NFL picks:
      result distributions built from college games (bigger margins, fewer
      key numbers than the NFL)
   3. cfb_model's prediction of result-minus-line moves the fair line:
-     spreads, and totals capped to the best few a week (MAX_MODEL_TOTALS)
+     spreads; totals move on TOTAL_RULES (patterns that held in every era),
+     capped to the best few a week (MAX_MODEL_TOTALS)
   4. every DraftKings/FanDuel offer priced; bets that clear the EV bar are
      sized (quarter Kelly) and explained in football terms
 
@@ -46,12 +47,35 @@ BOOK_NAME = {"draftkings": "DraftKings", "fanduel": "FanDuel"}
 # with two games of play-by-play) from making a huge edge.
 SPREAD_CAP = 3.0
 TOTAL_CAP = 3.0
-MODEL_MARKETS = {"spread", "total"}
-# Totals the model alone argues for are capped to the best few a week (Brian,
-# 2026-10-25: "the best options available, like NFL"). Split by side the
-# backtest's model overs went 47-60% by season, and the first live run
-# leaned over on 14 of 19 games, so only the biggest edges go through.
-# Totals where a book is simply off the sharp consensus aren't capped.
+# The efficiency model's totals don't beat the line (model overs went 47-60%
+# by season), so it only informs. Totals are bet on the patterns below.
+MODEL_MARKETS = {"spread"}
+
+# Totals patterns from totals_research.py: each held in 2012-16, 2017-21
+# and 2022-25, against opening and closing totals. (bet side, rule, chance
+# the bet side wins, plain-English reason). The chances are a little under
+# what history shows (in brackets) so stated edges stay conservative.
+# The first rule that matches a game applies.
+TOTAL_RULES = [
+    ("Over", lambda t, sp, night, conf: sp >= 24 and t < 50, 0.58,
+     "a {fav}-point favorite with a total under 50: since 2012 the over has hit "
+     "about 60% in games like this (270 games). Big favorites keep scoring and "
+     "low totals leave no room for it"),
+    ("Over", lambda t, sp, night, conf: sp >= 21 and t < 55, 0.545,
+     "a {fav}-point favorite with a total under 55: since 2012 the over has hit "
+     "about 56% in games like this (980 games). Mismatches score more than "
+     "low totals allow for"),
+    ("Under", lambda t, sp, night, conf: t >= 60 and night and conf, 0.545,
+     "a conference game at night with a total of 60+: since 2017 the under has "
+     "hit about 55% in games like this (450 games). Books shade big totals up "
+     "for public over money"),
+    ("Under", lambda t, sp, night, conf: t >= 60, 0.535,
+     "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
+     "Books shade big totals up for public over money"),
+]
+# At most this many pattern totals a week, the biggest edges (Brian,
+# 2026-10-25: "the best options available, like NFL"). Totals where a book
+# is simply off the sharp consensus aren't capped.
 MAX_MODEL_TOTALS = 3
 # College picks go through at a 3% edge (NFL: 2%): below ~1.5 points of
 # lean the backtest's picks ran about break-even.
@@ -307,6 +331,29 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
 # ----------------------------------------------------------------------
 # Pipeline
 # ----------------------------------------------------------------------
+def total_rule(total: float, abs_spread: float, kickoff, conference: bool):
+    """The first TOTAL_RULES row matching a game, or None."""
+    night = pd.Timestamp(kickoff).tz_convert("America/New_York").hour >= 19
+    for side, rule, p, why in TOTAL_RULES:
+        if rule(total, abs_spread, night, bool(conference)):
+            return side, p, why
+    return None
+
+
+def rule_shift(tm, total: float, side: str, p: float) -> float:
+    """Smallest move of the fair total (in quarter points, toward the bet
+    side) at which the bet side wins with chance p, pushes aside, at the
+    market total itself."""
+    sign = 1 if side == "Over" else -1
+    for k in range(0, 41):
+        mu = total + sign * 0.25 * k
+        p_over, p_push = tm.probs(mu, total)
+        win = p_over if side == "Over" else 1 - p_over - p_push
+        if win / max(1e-9, 1 - p_push) >= p:
+            return mu - total
+    return sign * 10.0
+
+
 def cap_model_totals(bettable: pd.DataFrame, min_ev: float,
                      keep: int = MAX_MODEL_TOTALS) -> pd.DataFrame:
     """Drop model-driven totals outside the `keep` games with the biggest
@@ -348,6 +395,15 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             src = "combined" if kind in MODEL_MARKETS else "combined_info"
             if abs(pts) >= 0.05:
                 adj.append(sel.Adjustment(f.home_team, market, pts, src))
+        if not (np.isnan(f.market_total) or np.isnan(f.market_margin)):
+            hit = total_rule(f.market_total, abs(f.market_margin), f.commence,
+                             r.get("conference_game", False))
+            if hit:
+                side, p, why = hit
+                fav = round(abs(f.market_margin) * 2) / 2
+                c["trend"] = why.format(fav=f"{fav:g}")
+                adj.append(sel.Adjustment(f.home_team, "totals",
+                                          rule_shift(tm, f.market_total, side, p), "trend"))
     sel.apply_adjustments(fair, adj)
     pol = sel.Policy(min_ev=min_ev)
     priced = sel.price_offers(rows, fair, mm, tm, pol)
@@ -363,7 +419,11 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         for p in picks.itertuples():
             c = ctx.get(p.home, {})
             kind = "spread" if p.market == "spreads" else "total"
-            if kind in c and "combined" in str(p.sources).split(","):
+            srcs = str(p.sources).split(",")
+            if kind == "total" and "trend" in srcs and "trend" in c:
+                t = c["trend"]
+                why.append(f"{t[0].upper()}{t[1:]}.")
+            elif kind in c and "combined" in srcs:
                 pts, parts = c[kind]
                 why.append(explain(p, c["row"], parts, ranks, pts, p.fair_market))
             else:

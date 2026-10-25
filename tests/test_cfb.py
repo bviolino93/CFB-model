@@ -54,3 +54,13 @@ def test_model_totals_capped_to_best_few():
              {"event_id": "s", "market": "spreads", "sources": "combined", "ev": 0.05}]
     out = cfb_picks.cap_model_totals(pd.DataFrame(rows), 0.03, keep=3)
     assert set(out.event_id) == {"e3", "e4", "e5", "m", "s"}
+
+
+def test_total_rules_pick_the_right_pattern():
+    sat_noon = "2026-10-31T16:00:00Z"
+    sat_night = "2026-11-01T00:00:00Z"      # 8pm ET
+    assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False)[:2] == ("Over", 0.58)
+    assert cfb_picks.total_rule(52.5, 21.0, sat_noon, False)[:2] == ("Over", 0.545)
+    assert cfb_picks.total_rule(63.5, 3.0, sat_night, True)[:2] == ("Under", 0.545)
+    assert cfb_picks.total_rule(63.5, 3.0, sat_noon, True)[:2] == ("Under", 0.535)
+    assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True) is None
