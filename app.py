@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.14.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.15.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -17103,8 +17103,18 @@ def _v401_track_both(official_card, watch_card, selected_date):
     existing = set(tracker["record_key"].astype(str)) if not tracker.empty else set()
 
     new_rows, counts = [], {"OFFICIAL": 0, "WATCH": 0}
+    # Every build freezes the bets it finds, so the daily cap has to count
+    # what earlier builds that day already froze.
+    try:
+        _done = int(((tracker["game_date"].astype(str) == str(selected_date))
+                     & (tracker["bet_tier"].astype(str) == "OFFICIAL")).sum()) \
+            if not tracker.empty and {"game_date", "bet_tier"} <= set(tracker.columns) else 0
+    except Exception:
+        _done = 0
     for card, tier in ((official_card, "OFFICIAL"), (watch_card, "WATCH")):
         rows = _v401_build_freeze_rows(card, selected_date, tier, existing)
+        if tier == "OFFICIAL":
+            rows = rows[:max(0, SE_MAX_BETS_PER_DAY - _done)]
         for r in rows:
             existing.add(str(r["record_key"]))
         new_rows.extend(rows)
@@ -18737,6 +18747,13 @@ BC_MAX_UNITS = 3.0
 BC_MAX_UNITS_UNMEASURED = 2.0   # cap while the model's trust is still a guess
 BC_RECORD_MIN = 300         # picks before a track record can veto a bet
 BC_RECORD_FAIL = 0.48
+# v4.15.0: a pick is only a bet when an edge has been shown on seasons the
+# rule was not built on. Through 2026-10-24 the model went 120-117 on its
+# official card and about 50% on 2022-25, so by default this passes everything.
+SE_PROOF_BREAKEVEN = 110.0 / 210.0
+SE_PROOF_MIN_PICKS = 300
+SE_PROOF_Z = 2.0
+SE_MAX_BETS_PER_DAY = 3
 BC_BOOKS = ["734 Games", "DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
             "BetRivers", "Bet365", "Fanatics", "William Hill (New Jersey)"]
 BC_NOT_LISTED = "Not in this list"
@@ -18984,6 +19001,12 @@ def _bc_check(r):
     if bool(r.get("fcs_fallback_used")) and str(r.get("fcs_fallback_used")).lower() not in ("false", "0", "nan"):
         fails.append("Pass: one team has too little data to price.")
 
+    # No proven edge, no bet. This comes first because it is the reason.
+    proof = _se_edge_proof(mt, r)
+    if proof:
+        fails.insert(0, proof)
+        checks.append(("fail", proof[len("Pass: "):]))
+
     # 5. Size.
     f = (b * p - q) / b if b > 0 else 0.0
     cap = BC_MAX_UNITS if trust == 1.0 else BC_MAX_UNITS_UNMEASURED
@@ -19011,6 +19034,47 @@ def _bc_check(r):
             "bc_line": float(line), "bc_floor": float(floor) if floor is not None else np.nan,
             "bc_p": float(p), "bc_ev": float(ev),
             "bc_checks": json.dumps([{"s": s_, "t": t} for s_, t in checks])}
+
+
+def _se_lab_record(mt):
+    """The lab's walk-forward record (w, l) for the model's picks, or None."""
+    try:
+        saved = _tot2_load() if mt == "TOTAL" else _spr2_load()
+    except Exception:
+        return None
+    picks = ((((saved or {}).get("report") or {}).get("models") or {}).get("new") or {}).get("picks")
+    if isinstance(picks, dict):
+        w, l = picks.get("w"), picks.get("l")
+    elif isinstance(picks, (list, tuple)) and len(picks) >= 2:
+        w, l = picks[0], picks[1]
+    else:
+        return None
+    try:
+        return int(w), int(l)
+    except Exception:
+        return None
+
+
+def _se_edge_proof(mt, r):
+    """None when this pick has a proven edge behind it, else the Pass reason.
+    Proven means a lab filter that passed its holdout matches this game, or
+    the lab's picks as a whole beat break-even by a clear margin."""
+    fm = r.get("filter_match")
+    if fm is True or str(fm).strip().lower() == "true":
+        return None
+    kind = "totals" if mt == "TOTAL" else "spread"
+    rec = _se_lab_record(mt)
+    if not rec:
+        return (f"Pass: no proven edge. Run the {kind.capitalize()} lab to measure "
+                "the model against past closing lines.")
+    w, l = rec
+    n = w + l
+    rate = w / n if n else 0.0
+    z = (rate - 0.5) / math.sqrt(0.25 / n) if n else 0.0
+    if n >= SE_PROOF_MIN_PICKS and rate >= SE_PROOF_BREAKEVEN and z >= SE_PROOF_Z:
+        return None
+    return (f"Pass: no proven edge. Against past closing lines the model's {kind} "
+            f"picks went {w}-{l} ({rate:.1%}); betting needs {SE_PROOF_BREAKEVEN:.1%}+.")
 
 
 def _bc_floor(honest, line, mt, side, b):
@@ -19338,6 +19402,16 @@ def _v50_apply_strict_selection(card):
         bets["suggested_units"] = bets["bc_units"]
         bets["verdict"] = "BET"
         bets = bets.sort_values(["bc_ev", "raw_gap"], ascending=[False, False])
+        # Daily cap. 40 bets on one Saturday is how a coin-flip model lost
+        # real money in week 8; the cap holds even once something proves out.
+        over = bets.iloc[SE_MAX_BETS_PER_DAY:].copy()
+        bets = bets.iloc[:SE_MAX_BETS_PER_DAY].copy()
+        if not over.empty:
+            over["bc_verdict"] = "PASS"
+            over["bc_units"] = 0.0
+            over["bc_reason"] = (f"Pass: only the top {SE_MAX_BETS_PER_DAY} bets a day "
+                                 "make the card.")
+            passed = pd.concat([over, passed], sort=False)
         bets.iloc[0, bets.columns.get_loc("verdict")] = "BEST BET"
     if not passed.empty:
         passed = passed.copy()
@@ -19565,7 +19639,7 @@ def _render_v36_live_card(card, selected_date):
             <div class="edge-empty ge-empty">
               <div class="edge-status-pass">NO BETS</div>
               <div class="edge-empty-title">Pass the slate.</div>
-              <div class="edge-empty-copy">The model found no spread or total strong enough to bet officially.</div>
+              <div class="edge-empty-copy">Nothing on this slate has a proven edge, so the card says pass. Reasons are on the watch list below.</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -24925,6 +24999,424 @@ def _render_calibration():
         )
 
 
+# ===== v4.15.0 Edge hunt: betting spots tested on past seasons =====
+# The labs search rules built on the model's own numbers, and none of
+# ~2,500 survived a holdout. This looks somewhere the model never does:
+# schedule spots (byes, short weeks, letdowns, lookaheads), kickoff
+# slots, line moves and ATS streaks, priced against the consensus
+# closing line, which is close to what a game-day bettor gets.
+# Rules are picked on EH_PICK_SEASONS and must hold on EH_CHECK_SEASONS.
+EH_PICK_SEASONS = (2018, 2023)
+EH_CHECK_SEASONS = (2024, 2025)
+EH_TAB = "edge_hunt"
+EH_GAMES_TAB = "edge_hunt_games"
+EH_BREAKEVEN = 110.0 / 210.0
+EH_MIN_PICK = 150      # bets a rule needs in the pick seasons
+EH_MIN_CHECK = 50      # and in the check seasons
+EH_PICK_Z = 2.0        # pick-season win rate this far from 50%
+EH_SHUFFLES = 20       # coin-flip reruns, to show how many pass by luck
+EH_GAME_COLS = ["season", "week", "game_id", "kick_et", "home", "away",
+                "home_conf", "away_conf", "home_class", "away_class",
+                "neutral", "conf_game", "home_pts", "away_pts",
+                "margin_open", "margin_close", "total_open", "total_close"]
+
+
+def _eh_games(seasons, cur=None):
+    """One row per finished game with an FBS team and a consensus close.
+    margin_* is the home margin the market expects (positive = home
+    favoured)."""
+    rows = []
+    for yr in seasons:
+        games = (fetch_games(API_KEY, int(yr)) if cur is not None and int(yr) == int(cur)
+                 else get_backtest_games(int(yr))) or []
+        lines = _olt_lines([int(yr)])
+        for g in games:
+            hp, ap = g.get("homePoints"), g.get("awayPoints")
+            if hp is None or ap is None:
+                continue
+            hc = str(g.get("homeClassification") or "").lower()
+            ac = str(g.get("awayClassification") or "").lower()
+            if "fbs" not in (hc, ac):
+                continue
+            try:
+                gid = int(g.get("id"))
+            except Exception:
+                continue
+            ln = lines.get(gid, {})
+            dt = _parse_game_datetime(g)
+            kick = ""
+            if dt is not None:
+                et = pd.Timestamp(dt).tz_convert("America/New_York")
+                kick = et.strftime("%Y-%m-%d" if g.get("startTimeTBD") else "%Y-%m-%d %H:%M")
+            rows.append({
+                "season": int(yr), "week": g.get("week"), "game_id": gid,
+                "kick_et": kick,
+                "home": g.get("homeTeam"), "away": g.get("awayTeam"),
+                "home_conf": g.get("homeConference") or "",
+                "away_conf": g.get("awayConference") or "",
+                "home_class": hc, "away_class": ac,
+                "neutral": bool(g.get("neutralSite")),
+                "conf_game": bool(g.get("conferenceGame")),
+                "home_pts": float(hp), "away_pts": float(ap),
+                "margin_open": ln.get("margin_open", np.nan),
+                "margin_close": ln.get("margin_close", np.nan),
+                "total_open": ln.get("total_open", np.nan),
+                "total_close": ln.get("total_close", np.nan),
+            })
+    return pd.DataFrame(rows, columns=EH_GAME_COLS)
+
+
+def _eh_team_rows(games):
+    """Two rows per game, one from each team's side, with schedule context.
+    `line` is the margin the market expects for the team (positive =
+    favoured) and `ats` is +1 cover, -1 no cover, 0 push. Every context
+    column is known before kickoff, except next_dog, which reads next
+    week's closing line as a stand-in for "the next opponent is better"."""
+    g = games.copy()
+    g["kick"] = pd.to_datetime(g["kick_et"].str.slice(0, 10), errors="coerce")
+    g["hour"] = pd.to_numeric(g["kick_et"].str.slice(11, 13), errors="coerce")
+    major = {"ACC", "SEC", "Big Ten", "Big 12", "Pac-12"}
+    out = []
+    for side in ("home", "away"):
+        opp = "away" if side == "home" else "home"
+        sign = 1.0 if side == "home" else -1.0
+        t = pd.DataFrame({
+            "season": g["season"], "week": g["week"], "game_id": g["game_id"],
+            "kick": g["kick"], "hour": g["hour"],
+            "team": g[side], "opp": g[opp],
+            "team_major": g[f"{side}_conf"].isin(major),
+            "opp_major": g[f"{opp}_conf"].isin(major),
+            "team_fbs": g[f"{side}_class"] == "fbs",
+            "opp_fbs": g[f"{opp}_class"] == "fbs",
+            "home": (side == "home") & ~g["neutral"],
+            "road": (side == "away") & ~g["neutral"],
+            "conf_game": g["conf_game"],
+            "margin": sign * (g["home_pts"] - g["away_pts"]),
+            "line": sign * g["margin_close"],
+            "line_open": sign * g["margin_open"],
+            "total_close": g["total_close"],
+            "game_total": g["home_pts"] + g["away_pts"],
+        })
+        out.append(t)
+    t = pd.concat(out, ignore_index=True)
+    t = t.sort_values(["season", "team", "kick", "week"]).reset_index(drop=True)
+    grp = t.groupby(["season", "team"], sort=False)
+    t["rest"] = (t["kick"] - grp["kick"].shift(1)).dt.days
+    t["prev_margin"] = grp["margin"].shift(1)
+    t["prev_line"] = grp["line"].shift(1)
+    cov = np.sign(t["margin"] - t["line"])
+    t["ats"] = cov
+    t["prev_ats"] = grp["ats"].shift(1)
+    t["ats_last3"] = grp["ats"].transform(lambda s: s.shift(1).rolling(3).sum())
+    ou = np.sign(t["game_total"] - t["total_close"])
+    t["ou"] = ou
+    t["ou_last3"] = ou.groupby([t["season"], t["team"]]).transform(
+        lambda s: s.shift(1).rolling(3).sum())
+    t["next_line"] = grp["line"].shift(-1)
+    t["road_streak"] = grp["road"].transform(
+        lambda s: s.groupby((~s).cumsum()).cumsum())
+    t["games_played"] = grp.cumcount()
+    o = t[["season", "game_id", "team", "rest", "prev_margin", "ats_last3"]].rename(
+        columns={"team": "opp", "rest": "opp_rest", "prev_margin": "opp_prev_margin",
+                 "ats_last3": "opp_ats_last3"})
+    t = t.merge(o, on=["season", "game_id", "opp"], how="left")
+    t["weekday"] = t["kick"].dt.dayofweek
+    t["move"] = t["line"] - t["line_open"]
+    return t[t["line"].notna()].reset_index(drop=True)
+
+
+def _eh_spread_spots(t):
+    """Name -> boolean mask over team rows: back this team ATS."""
+    dog, fav = t["line"] < 0, t["line"] > 0
+    pm, pl = t["prev_margin"], t["prev_line"]
+    base = {
+        "Off a bye (opponent not)": (t["rest"] >= 13) & (t["opp_rest"] <= 8),
+        "Short week (opponent rested)": (t["rest"] <= 5) & (t["opp_rest"] >= 7),
+        "Off a 21+ point loss": pm <= -21,
+        "Off a 28+ point win": pm >= 28,
+        "Off an upset win as a 7+ dog": (pm > 0) & (pl <= -7),
+        "Off an upset loss as a 7+ favourite": (pm < 0) & (pl >= 7),
+        "Lookahead: 7+ favourite, underdog next week": (t["line"] >= 7) & (t["next_line"] < 0),
+        "3rd straight road game": t["road"] & (t["road_streak"] >= 3),
+        "Weeknight game (Tue-Fri)": t["weekday"].between(1, 4),
+        "Late kickoff (9pm ET or later)": t["hour"] >= 21,
+        "Covered 3 straight": t["ats_last3"] >= 3,
+        "Failed to cover 3 straight": t["ats_last3"] <= -3,
+        "Line moved 2+ toward them": t["move"] >= 2,
+        "Line moved 2+ away from them": t["move"] <= -2,
+        "Home underdog": t["home"] & dog,
+        "Road favourite": t["road"] & fav,
+        "Underdog of 21+": t["line"] <= -21,
+        "Underdog of 1-3": t["line"].between(-3, -0.5),
+        "Underdog of 3.5-7": t["line"].between(-7, -3.5),
+        "Favourite of 1-3": t["line"].between(0.5, 3),
+        "Non-conference road dog": t["road"] & dog & ~t["conf_game"],
+        "Conference home dog": t["home"] & dog & t["conf_game"],
+        "Weeks 1-3": t["week"] <= 3,
+        "Week 10 or later": t["week"] >= 10,
+        "Group of 5 vs power, as underdog": ~t["team_major"] & t["opp_major"] & dog
+                                             & t["team_fbs"],
+    }
+    tiers = {"All FBS": t["team_fbs"],
+             "Power games": t["team_major"] & t["opp_major"],
+             "Group of 5 games": ~t["team_major"] & ~t["opp_major"]
+                                 & t["team_fbs"] & t["opp_fbs"]}
+    sides = {"any line": pd.Series(True, index=t.index), "as underdog": dog, "as favourite": fav}
+    spots = {}
+    for bn, bm in base.items():
+        for tn, tm in tiers.items():
+            for sn, sm in sides.items():
+                m = (bm & tm & sm).fillna(False).astype(bool)
+                spots[f"{bn} · {sn} · {tn}"] = m
+    return spots
+
+
+def _eh_game_frame(games):
+    """One row per game for totals, with both teams' context."""
+    t = _eh_team_rows(games)
+    g = games.copy()
+    hm = t.merge(g[["game_id", "home"]].rename(columns={"home": "team"}),
+                 on=["game_id", "team"])
+    am = t.merge(g[["game_id", "away"]].rename(columns={"away": "team"}),
+                 on=["game_id", "team"])
+    keep = ["game_id", "rest", "prev_margin", "ou_last3", "team_major", "team_fbs"]
+    x = hm[["season", "week", "game_id", "hour", "weekday", "conf_game",
+            "total_close", "game_total", "ou"] + keep[1:]].merge(
+        am[keep], on="game_id", suffixes=("_h", "_a"))
+    x["tmove"] = x["game_id"].map(
+        games.set_index("game_id")["total_close"] - games.set_index("game_id")["total_open"])
+    return x[x["total_close"].notna()].reset_index(drop=True)
+
+
+def _eh_totals_spots(x):
+    base = {
+        "Weeknight game (Tue-Fri)": x["weekday"].between(1, 4),
+        "Late kickoff (9pm ET or later)": x["hour"] >= 21,
+        "Noon kickoff or earlier": x["hour"] <= 12,
+        "Total moved up 3+": x["tmove"] >= 3,
+        "Total moved down 3+": x["tmove"] <= -3,
+        "Total 65 or more": x["total_close"] >= 65,
+        "Total 42 or less": x["total_close"] <= 42,
+        "Both teams' last 3 went Over": (x["ou_last3_h"] >= 3) & (x["ou_last3_a"] >= 3),
+        "Both teams' last 3 went Under": (x["ou_last3_h"] <= -3) & (x["ou_last3_a"] <= -3),
+        "A team is off a bye": (x["rest_h"] >= 13) | (x["rest_a"] >= 13),
+        "Short week for a team": (x["rest_h"] <= 5) | (x["rest_a"] <= 5),
+        "Conference game, week 10+": x["conf_game"] & (x["week"] >= 10),
+        "Weeks 1-3": x["week"] <= 3,
+        "A team is off a 28+ point win": (x["prev_margin_h"] >= 28) | (x["prev_margin_a"] >= 28),
+    }
+    fbs = x["team_fbs_h"] & x["team_fbs_a"]
+    tiers = {"All FBS": x["team_fbs_h"] | x["team_fbs_a"],
+             "Power games": x["team_major_h"] & x["team_major_a"],
+             "Group of 5 games": fbs & ~x["team_major_h"] & ~x["team_major_a"]}
+    spots = {}
+    for bn, bm in base.items():
+        for tn, tm in tiers.items():
+            spots[f"{bn} · {tn}"] = (bm & tm).fillna(False).astype(bool)
+    return spots
+
+
+def _eh_score(outcome, season, spots, flip=None, game_id=None):
+    """Grade every rule. outcome is +1/-1/0 for backing the spot.
+    A rule picks its own direction (back or fade) on the pick seasons,
+    then has to hold that direction on the check seasons. Rules that pick
+    the same games (a home dog's opponent is a road favourite) count once."""
+    y = outcome.to_numpy(dtype=float)
+    gids = None if game_id is None else pd.Series(game_id).to_numpy()
+    seen = set()
+    if flip is not None:
+        y = y * flip
+    s = season.to_numpy()
+    pick = (s >= EH_PICK_SEASONS[0]) & (s <= EH_PICK_SEASONS[1])
+    chk = (s >= EH_CHECK_SEASONS[0]) & (s <= EH_CHECK_SEASONS[1])
+    res = []
+    for name, m in spots.items():
+        mm = m.to_numpy()
+        if gids is not None:
+            key = hash(np.sort(gids[mm]).tobytes())
+            if key in seen:
+                continue
+            seen.add(key)
+        pw, pl = int((y[mm & pick] > 0).sum()), int((y[mm & pick] < 0).sum())
+        n = pw + pl
+        if n < EH_MIN_PICK:
+            continue
+        rate = pw / n
+        z = (rate - 0.5) / math.sqrt(0.25 / n)
+        d = 1 if rate >= 0.5 else -1
+        if d < 0:
+            pw, pl, rate = pl, pw, 1 - rate
+        cw, cl = int((d * y[mm & chk] > 0).sum()), int((d * y[mm & chk] < 0).sum())
+        nw = int((d * y[mm & ~pick & ~chk] > 0).sum())
+        nl = int((d * y[mm & ~pick & ~chk] < 0).sum())
+        cn = cw + cl
+        passed = (abs(z) >= EH_PICK_Z and rate >= EH_BREAKEVEN and cn >= EH_MIN_CHECK
+                  and cw / cn >= EH_BREAKEVEN)
+        res.append({"rule": name, "dir": d, "pick_w": pw, "pick_l": pl,
+                    "pick_rate": rate, "z": abs(z), "check_w": cw, "check_l": cl,
+                    "check_rate": cw / cn if cn else np.nan,
+                    "now_w": nw, "now_l": nl, "passed": bool(passed)})
+    return pd.DataFrame(res)
+
+
+def _eh_luck(outcome, season, game_id, spots, n=EH_SHUFFLES, seed=7):
+    """How many rules pass when every game's result is a coin flip.
+    Both sides of a game flip together, so the pairing is kept."""
+    rng = np.random.default_rng(seed)
+    ids = pd.Series(game_id).astype("int64").to_numpy()
+    uniq, inv = np.unique(ids, return_inverse=True)
+    counts = []
+    for _ in range(n):
+        f = rng.choice([-1.0, 1.0], size=len(uniq))[inv]
+        r = _eh_score(outcome, season, spots, flip=f, game_id=game_id)
+        counts.append(int(r["passed"].sum()) if not r.empty else 0)
+    return float(np.mean(counts)), int(np.max(counts))
+
+
+def _eh_run(progress=None):
+    cur = int(pd.Timestamp.now(tz="America/New_York").year)
+    seasons = list(range(EH_PICK_SEASONS[0], EH_CHECK_SEASONS[1] + 1))
+    if cur > EH_CHECK_SEASONS[1]:
+        seasons.append(cur)
+    frames = []
+    for i, yr in enumerate(seasons):
+        if progress:
+            progress(f"Loading {yr} games and lines ({i + 1}/{len(seasons)})")
+        frames.append(_eh_games([yr], cur=cur))
+    games = pd.concat(frames, ignore_index=True)
+    if progress:
+        progress("Testing spread spots")
+    t = _eh_team_rows(games)
+    # A game where both teams fit a spot is no bet.
+    ss = _eh_spread_spots(t)
+    for k, m in ss.items():
+        both = m.groupby(t["game_id"]).transform("sum") > 1
+        ss[k] = m & ~both
+    spr = _eh_score(t["ats"], t["season"], ss, game_id=t["game_id"])
+    spr_luck = _eh_luck(t["ats"], t["season"], t["game_id"], ss)
+    if progress:
+        progress("Testing totals spots")
+    x = _eh_game_frame(games)
+    ts = _eh_totals_spots(x)
+    tot = _eh_score(x["ou"], x["season"], ts, game_id=x["game_id"])
+    tot_luck = _eh_luck(x["ou"], x["season"], x["game_id"], ts)
+    return {"games": games, "spread": spr, "total": tot,
+            "spread_luck": spr_luck, "total_luck": tot_luck,
+            "n_games": int(len(games)), "seasons": seasons, "cur": cur}
+
+
+def _eh_save(r):
+    """Results to the edge_hunt tab, and the game table to edge_hunt_games
+    so the numbers can be rechecked outside the app."""
+    ok = True
+    try:
+        ws = _v401_sheet(tab=EH_TAB)
+        if ws is None:
+            return False
+        rows = []
+        for mk in ("spread", "total"):
+            d = r[mk]
+            if d is None or d.empty:
+                continue
+            for _, x in d.sort_values("z", ascending=False).iterrows():
+                side = ("Back" if x["dir"] > 0 else "Fade") if mk == "spread" else \
+                       ("Over" if x["dir"] > 0 else "Under")
+                rows.append([mk, side, x["rule"], x["pick_w"], x["pick_l"],
+                             round(x["pick_rate"], 4), round(x["z"], 2),
+                             x["check_w"], x["check_l"],
+                             round(x["check_rate"], 4) if pd.notna(x["check_rate"]) else "",
+                             x["now_w"], x["now_l"], "YES" if x["passed"] else ""])
+        head = [["market", "side", "rule", "pick_w", "pick_l", "pick_rate", "z",
+                 "check_w", "check_l", "check_rate", f"{r['cur']}_w", f"{r['cur']}_l",
+                 "passed"]]
+        meta = [["run_at", pd.Timestamp.now(tz="America/New_York").isoformat(),
+                 "games", r["n_games"], "spread_luck_avg", r["spread_luck"][0],
+                 "spread_luck_max", r["spread_luck"][1], "total_luck_avg",
+                 r["total_luck"][0], "total_luck_max", r["total_luck"][1], ""]]
+        body = meta + head + rows
+        ws.clear()
+        if ws.row_count < len(body) + 5:
+            ws.resize(rows=len(body) + 5, cols=max(ws.col_count, 13))
+        ws.update(body, "A1", value_input_option="RAW")
+    except Exception:
+        ok = False
+    try:
+        wg = _v401_sheet(tab=EH_GAMES_TAB)
+        if wg is not None:
+            g = r["games"][EH_GAME_COLS]
+            body = [EH_GAME_COLS] + g.astype(object).where(pd.notna(g), "").values.tolist()
+            wg.clear()
+            if wg.row_count < len(body) + 5 or wg.col_count < len(EH_GAME_COLS):
+                wg.resize(rows=len(body) + 5, cols=max(wg.col_count, len(EH_GAME_COLS)))
+            wg.update(body, "A1", value_input_option="RAW")
+    except Exception:
+        ok = False
+    return ok
+
+
+def _eh_render_table(d, market):
+    if d is None or d.empty:
+        st.info(f"{market}: not enough games.")
+        return
+    ok = d[d["passed"]].sort_values("check_rate", ascending=False)
+    if ok.empty:
+        return
+    show = pd.DataFrame({
+        "Bet": [("Back " if x > 0 else "Fade ") if market == "Spreads" else
+                ("Over · " if x > 0 else "Under · ") for x in ok["dir"]],
+        "Spot": ok["rule"].values,
+        f"{EH_PICK_SEASONS[0]}–{EH_PICK_SEASONS[1]}":
+            [f"{w}-{l} ({w / (w + l):.0%})" for w, l in zip(ok["pick_w"], ok["pick_l"])],
+        f"{EH_CHECK_SEASONS[0]}–{EH_CHECK_SEASONS[1]}":
+            [f"{w}-{l} ({w / (w + l):.0%})" for w, l in zip(ok["check_w"], ok["check_l"])],
+        "This year": [f"{w}-{l}" for w, l in zip(ok["now_w"], ok["now_l"])],
+    })
+    st.dataframe(show, hide_index=True, use_container_width=True)
+
+
+def _render_edge_hunt():
+    st.markdown("### Edge hunt")
+    st.write(
+        "Tests betting spots the model never looks at: byes and short weeks, "
+        "letdown and lookahead games, kickoff times, line moves and ATS streaks. "
+        "Every bet is graded against the closing line, which is close to what "
+        "you get on game day."
+    )
+    st.caption(
+        f"Each spot is picked on {EH_PICK_SEASONS[0]}–{EH_PICK_SEASONS[1]} and only "
+        f"counts if it also wins {EH_BREAKEVEN:.1%}+ on "
+        f"{EH_CHECK_SEASONS[0]}–{EH_CHECK_SEASONS[1]}, seasons it never saw. "
+        "Then the whole test is rerun with every result replaced by a coin flip, "
+        "to show how many spots pass by luck alone. Results save to the sheet."
+    )
+    if not st.button("Run edge hunt", type="primary", key="eh_run"):
+        return
+    with st.status("Loading past seasons (a few minutes the first time)…") as s:
+        try:
+            r = _eh_run(progress=lambda m: s.update(label=m))
+            s.update(label="Done", state="complete")
+        except Exception as e:
+            st.error(f"Edge hunt failed: {str(e)[:200]}")
+            return
+    saved = _eh_save(r)
+    st.caption(f"{r['n_games']:,} games, {r['seasons'][0]}–{r['seasons'][-1]}."
+               + ("" if saved else " Could not save to the sheet."))
+    for label, key, luck in (("Spreads", "spread", "spread_luck"),
+                             ("Totals", "total", "total_luck")):
+        d = r[key]
+        n_pass = int(d["passed"].sum()) if not d.empty else 0
+        avg, mx = r[luck]
+        st.markdown(f"**{label}:** {n_pass} of {len(d)} spots passed. "
+                    f"With coin-flip results, about {avg:.0f} pass (up to {mx}).")
+        if n_pass <= mx:
+            st.warning(f"{label}: no more spots passed than luck alone would give. "
+                       "Treat these as noise, not an edge.")
+        else:
+            st.success(f"{label}: more spots passed than luck explains. The ones "
+                       "below are worth tracking live before betting real money.")
+        _eh_render_table(d, label)
+
+
 def _render_more_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">ADVANCED</div>'
@@ -24963,6 +25455,9 @@ def _render_more_page():
 
     with st.expander("Opening-line test", expanded=False):
         _render_opening_line_test()
+
+    with st.expander("Edge hunt", expanded=False):
+        _render_edge_hunt()
 
     with st.expander("Totals lab", expanded=False):
         _render_totals_lab()
