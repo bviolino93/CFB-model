@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.15.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.16.0"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -7516,7 +7516,7 @@ _ge432_view = _ge432_alias.get(
     st.session_state.get("cfb_page", "Slate"),
     st.session_state.get("cfb_page", "Slate"),
 )
-_ge432_options = ["Home", "Slate", "Games", "Tracker", "More"]
+_ge432_options = ["Home", "Sharp", "Slate", "Games", "Tracker", "More"]
 
 # Keep the segmented nav synchronized with navigation triggered elsewhere.
 # Only resync when the page changed OUTSIDE this widget; otherwise a user's
@@ -25417,6 +25417,358 @@ def _render_edge_hunt():
         _eh_render_table(d, label)
 
 
+# ===== v4.16.0 Sharp check: 734's number against the sharp market =====
+# The model has no proven edge over the closing line, so this page does not
+# use it. It prices each game from the sharpest book in the feed (Pinnacle
+# first), takes the vig out, and asks one question: is 734's number and
+# price better than that? Every logged bet is then scored on closing value
+# (the same bet priced against the sharp line at kickoff) and on results.
+SH_SPORT = "americanfootball_ncaaf"
+SH_BOOKS = ("pinnacle", "lowvig", "betonlineag")   # sharpest first
+SH_BOOK_NAMES = {"pinnacle": "Pinnacle", "lowvig": "LowVig", "betonlineag": "BetOnline"}
+SH_TAB = "sharp_log"
+SH_MIN_EV = 0.015          # 1.5% expected return against the sharp price
+SH_DEFAULT_ODDS = -105     # 734's usual price
+SH_REAL_PER_DAY = SE_MAX_BETS_PER_DAY
+SH_COLS = ["logged_at", "game_date", "event_id", "kickoff_utc", "home", "away",
+           "market", "side", "label", "line", "odds", "sharp_book", "sharp_line",
+           "sharp_odds", "fair_p", "ev", "stake", "close_line", "close_odds",
+           "close_ev", "close_at", "home_score", "away_score", "result", "units"]
+
+
+def _sh_key():
+    try:
+        return str(st.secrets.get("ODDS_API_KEY") or "").strip() or None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _sh_fetch_odds(key):
+    """Spreads and totals from the sharp books. Two credits a call; cached
+    ten minutes so a free plan lasts the season."""
+    r = requests.get(
+        f"https://api.the-odds-api.com/v4/sports/{SH_SPORT}/odds",
+        params={"apiKey": key, "bookmakers": ",".join(SH_BOOKS),
+                "markets": "spreads,totals", "oddsFormat": "american"},
+        timeout=20)
+    r.raise_for_status()
+    return {"events": r.json(), "remaining": r.headers.get("x-requests-remaining"),
+            "at": pd.Timestamp.now(tz="UTC").isoformat()}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _sh_fetch_scores(key):
+    r = requests.get(f"https://api.the-odds-api.com/v4/sports/{SH_SPORT}/scores",
+                     params={"apiKey": key, "daysFrom": 3}, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _sh_market(ev):
+    """The sharpest book's spread and total for one event:
+    {"book", "spread": (home_line, home_odds, away_odds), "total": (line, over, under)}."""
+    books = {b.get("key"): b for b in ev.get("bookmakers") or []}
+    home, away = ev.get("home_team"), ev.get("away_team")
+    out = {"book": None, "spread": None, "total": None}
+    for bk in SH_BOOKS:
+        b = books.get(bk)
+        if not b:
+            continue
+        for m in b.get("markets") or []:
+            oc = {o.get("name"): o for o in m.get("outcomes") or []}
+            if m.get("key") == "spreads" and out["spread"] is None \
+                    and home in oc and away in oc:
+                out["spread"] = (float(oc[home]["point"]), float(oc[home]["price"]),
+                                 float(oc[away]["price"]))
+                out["book"] = out["book"] or bk
+            if m.get("key") == "totals" and out["total"] is None \
+                    and "Over" in oc and "Under" in oc:
+                out["total"] = (float(oc["Over"]["point"]), float(oc["Over"]["price"]),
+                                float(oc["Under"]["price"]))
+                out["book"] = out["book"] or bk
+    return out
+
+
+def _sh_implied(o):
+    o = float(o)
+    return 100.0 / (o + 100.0) if o > 0 else -o / (-o + 100.0)
+
+
+def _sh_no_vig(o1, o2):
+    a, b = _sh_implied(o1), _sh_implied(o2)
+    return a / (a + b)
+
+
+def _sh_cond(mu, line, kind, side_sign=1):
+    """Chance of winning given no push, which is what a two-way price says."""
+    w, p = _bc_probs(mu, line, kind, side_sign)
+    return w / max(1e-9, 1.0 - p)
+
+
+def _sh_solve_mu(p_target, line, kind):
+    """The expected home margin (or total) at which the sharp line is fair."""
+    lo, hi = (-70.0, 70.0) if kind == "SPREAD" else (10.0, 120.0)
+    for _ in range(50):
+        mid = 0.5 * (lo + hi)
+        if _sh_cond(mid, line, kind, 1) < p_target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _sh_price(mkt, market, side, line, odds):
+    """Price one 734 bet against the sharp market. side is HOME/AWAY or
+    OVER/UNDER; line is from that side's view. Returns (p_win, p_push, ev)."""
+    b, _ = _bc_payout(odds)
+    if market == "SPREAD":
+        if not mkt.get("spread"):
+            return None
+        hl, ho, ao = mkt["spread"]
+        mu_home = _sh_solve_mu(_sh_no_vig(ho, ao), hl, "SPREAD")
+        mu = mu_home if side == "HOME" else -mu_home
+        p, push = _bc_probs(mu, line, "SPREAD")
+    else:
+        if not mkt.get("total"):
+            return None
+        tl, oo, uo = mkt["total"]
+        mu = _sh_solve_mu(_sh_no_vig(oo, uo), tl, "TOTAL")
+        p, push = _bc_probs(mu, line, "TOTAL", 1 if side == "OVER" else -1)
+    return p, push, p * b - max(0.0, 1.0 - p - push)
+
+
+def _sh_sharp_side(mkt, market, side):
+    """The sharp book's line and price for the same side, for the log."""
+    if market == "SPREAD" and mkt.get("spread"):
+        hl, ho, ao = mkt["spread"]
+        return (hl, ho) if side == "HOME" else (-hl, ao)
+    if market == "TOTAL" and mkt.get("total"):
+        tl, oo, uo = mkt["total"]
+        return (tl, oo) if side == "OVER" else (tl, uo)
+    return (np.nan, np.nan)
+
+
+def _sh_load():
+    ws = _v401_sheet(tab=SH_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=SH_COLS)
+    try:
+        vals = ws.get_all_values()
+    except Exception:
+        return pd.DataFrame(columns=SH_COLS)
+    if not vals or vals[0][:1] != ["logged_at"]:
+        return pd.DataFrame(columns=SH_COLS)
+    d = pd.DataFrame(vals[1:], columns=vals[0])
+    for c in SH_COLS:
+        if c not in d.columns:
+            d[c] = ""
+    return d[SH_COLS]
+
+
+def _sh_save(d):
+    ws = _v401_sheet(tab=SH_TAB)
+    if ws is None:
+        return False
+    try:
+        body = [SH_COLS] + d[SH_COLS].astype(object).where(pd.notna(d[SH_COLS]), "") \
+            .astype(str).values.tolist()
+        if ws.row_count < len(body) + 5:
+            ws.resize(rows=len(body) + 50, cols=max(ws.col_count, len(SH_COLS)))
+        ws.update(body, "A1", value_input_option="RAW")
+        return True
+    except Exception:
+        return False
+
+
+def _sh_refresh(d, events, scores):
+    """Fill closing value for games not yet started (the last sharp price
+    seen before kickoff becomes the close) and grade finished games."""
+    if d.empty:
+        return d, False
+    d = d.copy()
+    now = pd.Timestamp.now(tz="UTC")
+    by_id = {e.get("id"): e for e in events or []}
+    sc = {s.get("id"): s for s in scores or []}
+    changed = False
+    for i, r in d.iterrows():
+        kick = pd.to_datetime(r["kickoff_utc"], utc=True, errors="coerce")
+        ev = by_id.get(r["event_id"])
+        if ev is not None and pd.notna(kick) and now < kick:
+            mkt = _sh_market(ev)
+            pr = _sh_price(mkt, r["market"], r["side"], float(r["line"]), float(r["odds"]))
+            if pr is not None:
+                cl, co = _sh_sharp_side(mkt, r["market"], r["side"])
+                if (str(r["close_line"]), str(r["close_odds"])) != (str(cl), str(co)):
+                    d.at[i, "close_line"], d.at[i, "close_odds"] = cl, co
+                    d.at[i, "close_ev"] = round(pr[2], 4)
+                    d.at[i, "close_at"] = now.isoformat()
+                    changed = True
+        s = sc.get(r["event_id"])
+        if s and s.get("completed") and not str(r["result"]).strip():
+            pts = {x.get("name"): float(x.get("score")) for x in s.get("scores") or []
+                   if x.get("score") not in (None, "")}
+            if r["home"] in pts and r["away"] in pts:
+                hs, as_ = pts[r["home"]], pts[r["away"]]
+                line = float(r["line"])
+                if r["market"] == "SPREAD":
+                    m = (hs - as_) if r["side"] == "HOME" else (as_ - hs)
+                    x = m + line
+                else:
+                    x = (hs + as_ - line) * (1 if r["side"] == "OVER" else -1)
+                b, _ = _bc_payout(r["odds"])
+                res = "WIN" if x > 0 else ("LOSS" if x < 0 else "PUSH")
+                d.at[i, "home_score"], d.at[i, "away_score"] = hs, as_
+                d.at[i, "result"] = res
+                d.at[i, "units"] = round(b if res == "WIN" else (-1.0 if res == "LOSS" else 0.0), 4)
+                changed = True
+    return d, changed
+
+
+def _sh_scorecard(d):
+    """Closing value first: it says whether the bets were good long before
+    the win-loss record can."""
+    if d.empty:
+        st.caption("Nothing logged yet.")
+        return
+    x = d.copy()
+    x["close_ev"] = pd.to_numeric(x["close_ev"], errors="coerce")
+    x["units"] = pd.to_numeric(x["units"], errors="coerce")
+    g = x[x["result"].isin(["WIN", "LOSS", "PUSH"])]
+    w, l = int((g["result"] == "WIN").sum()), int((g["result"] == "LOSS").sum())
+    cev = x["close_ev"].dropna()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Bets logged", f"{len(x)}")
+    c2.metric("Beat the close by", f"{cev.mean():+.1%}" if len(cev) else "–")
+    c3.metric("Record", f"{w}-{l}" + (f" ({g['units'].sum():+.1f}u)" if len(g) else ""))
+    if len(cev) >= 100:
+        t = cev.mean() / (cev.std(ddof=1) / math.sqrt(len(cev))) if cev.std(ddof=1) > 0 else 0
+        if cev.mean() > 0 and t >= 2:
+            st.success(f"Over {len(cev)} bets, 734's numbers beat the sharp close. "
+                       "That is a real edge.")
+        else:
+            st.warning(f"Over {len(cev)} bets, no clear edge against the sharp close yet.")
+    else:
+        st.caption(f"Closing value needs about 100 bets to be trusted; {len(cev)} so far. "
+                   "Positive means you got a better price than the sharp market's final one.")
+    show = x.sort_values("logged_at", ascending=False).head(25)
+    st.dataframe(pd.DataFrame({
+        "Date": show["game_date"], "Bet": show["label"],
+        "Edge": pd.to_numeric(show["ev"], errors="coerce").map(
+            lambda v: f"{v:+.1%}" if pd.notna(v) else ""),
+        "At close": show["close_ev"].map(lambda v: f"{v:+.1%}" if pd.notna(v) else ""),
+        "Result": show["result"], "Stake": show["stake"],
+    }), hide_index=True, use_container_width=True)
+
+
+def _sh_fmt_spread(v):
+    return "PK" if abs(v) < 1e-9 else f"{v:+g}"
+
+
+def _render_sharp_page():
+    st.markdown(
+        '<div class="mobile-page-head"><div class="mobile-page-kicker">734 VS THE SHARP MARKET</div>'
+        '<div class="mobile-page-title">Sharp check</div>'
+        '<div class="mobile-page-sub">Type 734\'s number. It is a bet only when 734 is '
+        'better than the sharp market\'s fair price.</div></div>',
+        unsafe_allow_html=True)
+    key = _sh_key()
+    if not key:
+        st.info("Add ODDS_API_KEY to the app's Streamlit secrets to turn this on. "
+                "The free plan at the-odds-api.com is enough.")
+        return
+    try:
+        feed = _sh_fetch_odds(key)
+    except Exception as e:
+        st.error(f"Could not load sharp lines: {str(e)[:160]}")
+        return
+    now = pd.Timestamp.now(tz="UTC")
+    events = [e for e in feed["events"]
+              if pd.to_datetime(e.get("commence_time"), utc=True, errors="coerce") > now
+              and _sh_market(e)["book"]]
+    events.sort(key=lambda e: e.get("commence_time") or "")
+    log = _sh_load()
+    try:
+        scores = _sh_fetch_scores(key) if not log.empty else []
+    except Exception:
+        scores = []
+    log, changed = _sh_refresh(log, feed["events"], scores)
+    if changed and _se_is_owner():
+        _sh_save(log)
+
+    if not events:
+        st.caption("No upcoming games with a sharp line right now.")
+    else:
+        def lab(e):
+            k = pd.to_datetime(e["commence_time"], utc=True).tz_convert("America/New_York")
+            return f"{e['away_team']} @ {e['home_team']} · {k.strftime('%a %-I:%M %p')}"
+        by_id = {e["id"]: e for e in events}
+        ev = by_id[st.selectbox("Game", list(by_id), format_func=lambda i: lab(by_id[i]),
+                                key="sh_game")]
+        mkt = _sh_market(ev)
+        home, away = ev["home_team"], ev["away_team"]
+        st.caption(f"Sharp book: {SH_BOOK_NAMES.get(mkt['book'], mkt['book'])}"
+                   + (f" · {home} {_sh_fmt_spread(mkt['spread'][0])}" if mkt["spread"] else "")
+                   + (f" · total {mkt['total'][0]:g}" if mkt["total"] else ""))
+        c1, c2 = st.columns(2)
+        hs = c1.number_input(f"734: {home} spread", value=float(mkt["spread"][0]) if mkt["spread"] else 0.0,
+                             step=0.5, format="%.1f", key=f"sh_hs_{ev['id']}")
+        tot = c2.number_input("734: total", value=float(mkt["total"][0]) if mkt["total"] else 50.0,
+                              step=0.5, format="%.1f", key=f"sh_t_{ev['id']}")
+        with st.expander("734 prices (if not -105)", expanded=False):
+            p1, p2, p3, p4 = st.columns(4)
+            o_h = p1.number_input(home[:12], value=SH_DEFAULT_ODDS, step=5, key=f"sh_oh_{ev['id']}")
+            o_a = p2.number_input(away[:12], value=SH_DEFAULT_ODDS, step=5, key=f"sh_oa_{ev['id']}")
+            o_o = p3.number_input("Over", value=SH_DEFAULT_ODDS, step=5, key=f"sh_oo_{ev['id']}")
+            o_u = p4.number_input("Under", value=SH_DEFAULT_ODDS, step=5, key=f"sh_ou_{ev['id']}")
+        cands = [("SPREAD", "HOME", float(hs), o_h, f"{home} {_sh_fmt_spread(hs)}"),
+                 ("SPREAD", "AWAY", -float(hs), o_a, f"{away} {_sh_fmt_spread(-hs)}"),
+                 ("TOTAL", "OVER", float(tot), o_o, f"Over {tot:g}"),
+                 ("TOTAL", "UNDER", float(tot), o_u, f"Under {tot:g}")]
+        rows = []
+        for mt, side, line, odds, label in cands:
+            pr = _sh_price(mkt, mt, side, line, odds)
+            if pr is None:
+                continue
+            p, push, evv = pr
+            be = 1.0 / (1.0 + _bc_payout(odds)[0])
+            rows.append((evv, mt, side, line, odds, label, p, push, be))
+        rows.sort(key=lambda r: -r[0])
+        today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+        n_real = int(((log["game_date"] == today) & (log["stake"] == "real")).sum()) \
+            if not log.empty else 0
+        for evv, mt, side, line, odds, label, p, push, be in rows:
+            bet = evv >= SH_MIN_EV
+            txt = (f"**{'BET' if bet else 'PASS'} · {label} ({odds:+.0f})** · "
+                   f"{p:.1%} to win" + (f", {push:.0%} push" if push >= 0.01 else "")
+                   + f" vs {be:.1%} needed · {evv:+.1%} expected")
+            (st.success if bet else st.caption)(txt)
+            if bet and _se_is_owner():
+                stake = "real" if n_real < SH_REAL_PER_DAY else "paper"
+                if st.button(f"Log {label}" + (" (paper: over today's 3)" if stake == "paper" else ""),
+                             key=f"sh_log_{ev['id']}_{side}"):
+                    sl, so = _sh_sharp_side(mkt, mt, side)
+                    k = pd.to_datetime(ev["commence_time"], utc=True)
+                    row = {"logged_at": pd.Timestamp.now(tz="America/New_York").isoformat(),
+                           "game_date": k.tz_convert("America/New_York").strftime("%Y-%m-%d"),
+                           "event_id": ev["id"], "kickoff_utc": k.isoformat(),
+                           "home": home, "away": away, "market": mt, "side": side,
+                           "label": label, "line": line, "odds": odds,
+                           "sharp_book": mkt["book"], "sharp_line": sl, "sharp_odds": so,
+                           "fair_p": round(p, 4), "ev": round(evv, 4), "stake": stake,
+                           "close_line": sl, "close_odds": so, "close_ev": round(evv, 4),
+                           "close_at": now.isoformat()}
+                    log = pd.concat([log, pd.DataFrame([row])], ignore_index=True)
+                    st.toast("Logged." if _sh_save(log) else "Could not save to the sheet.")
+        st.caption(f"A bet needs {SH_MIN_EV:.1%}+ expected against the sharp fair price. "
+                   f"Bet at most {SH_REAL_PER_DAY} a day; extra ones log as paper. "
+                   f"Lines refresh every 10 minutes"
+                   + (f" · {feed['remaining']} feed credits left." if feed.get("remaining") else "."))
+
+    st.markdown("#### Scorecard")
+    _sh_scorecard(log)
+
+
 def _render_more_page():
     st.markdown(
         '<div class="mobile-page-head"><div class="mobile-page-kicker">ADVANCED</div>'
@@ -28754,6 +29106,9 @@ if main_view == "Home":
 
 if main_view == "Tracker":
     _v401_render_official_tracker()
+    st.stop()
+if main_view == "Sharp":
+    _render_sharp_page()
     st.stop()
 if main_view == "More":
     _render_more_page()
