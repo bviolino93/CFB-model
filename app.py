@@ -44,7 +44,7 @@ from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 
 BASE_URL = "https://api.collegefootballdata.com"
-MODEL_VERSION = "4.16.0"  # base; selection params appended near V50 constants
+MODEL_VERSION = "4.16.1"  # base; selection params appended near V50 constants
 
 # Fully enclosed/domed stadiums. Outdoor weather adjustments are suppressed here.
 ENCLOSED_VENUES = {
@@ -18754,6 +18754,11 @@ SE_PROOF_BREAKEVEN = 110.0 / 210.0
 SE_PROOF_MIN_PICKS = 300
 SE_PROOF_Z = 2.0
 SE_MAX_BETS_PER_DAY = 3
+# Gaps this big were model misses in 2026, not edges: UNLV, UTSA, Houston,
+# North Texas and Wyoming came in 10-14 points off the line. The market is
+# never that wrong; the model is missing news (QB, injuries, coach).
+SE_MAX_GAP_SPREAD = 7.0
+SE_MAX_GAP_TOTAL = 8.0
 BC_BOOKS = ["734 Games", "DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN Bet", "Bovada",
             "BetRivers", "Bet365", "Fanatics", "William Hill (New Jersey)"]
 BC_NOT_LISTED = "Not in this list"
@@ -19000,6 +19005,23 @@ def _bc_check(r):
     # Data quality.
     if bool(r.get("fcs_fallback_used")) and str(r.get("fcs_fallback_used")).lower() not in ("false", "0", "nan"):
         fails.append("Pass: one team has too little data to price.")
+
+    # Guardrails from the 2026 record: huge gaps, and teams outside FBS
+    # (Nicholls, SE Louisiana, Lindenwood, Sacramento State went 1-5).
+    gap = _v3_num(r.get("raw_gap"))
+    lim = SE_MAX_GAP_TOTAL if mt == "TOTAL" else SE_MAX_GAP_SPREAD
+    if np.isfinite(gap) and gap > lim:
+        fails.append(f"Pass: the model is {gap:.1f} pts off the line. A gap that big "
+                     "usually means it is missing news (QB, injuries, coach).")
+    try:
+        fbs = _rc_fbs(_tot2_season_of(r.get("game_date")))
+    except Exception:
+        fbs = set()
+    if fbs:
+        outside = [t for t in (r.get("home_team"), r.get("away_team")) if str(t) not in fbs]
+        if outside:
+            fails.append(f"Pass: {outside[0]} is not an FBS team, so the model can't rate "
+                         "this game well.")
 
     # No proven edge, no bet. This comes first because it is the reason.
     proof = _se_edge_proof(mt, r)
