@@ -1,0 +1,109 @@
+name: College picks
+
+# Runs the college pick engine (cfb_picks.py) against live odds and
+# publishes:
+#   * the run's summary page (Actions tab -> latest "College picks" run)
+#   * the `picks` branch (history.json keeps every bet, graded from final
+#     scores; each run reads it back and adds to it)
+#   * the dashboard on GitHub Pages: https://bviolino93.github.io/CFB-model/
+#     (Settings -> Pages -> Source: GitHub Actions)
+#   * a comment on the open "Picks alerts" issue when new bets show up, so
+#     GitHub pushes it to your phone
+#
+# Separate from the Streamlit app (app.py); nothing here touches it.
+#
+# Needs repository secret ODDS_API_KEY (the same key as the NFL repo).
+# Optional repository variable MY_BOOKS (default "draftkings,fanduel").
+# ~4 Odds API credits a run (us + eu regions, spreads and totals).
+
+on:
+  schedule:
+    - cron: "0 22 * 8-12,1 0"    # Sunday 22:00 UTC, once next Saturday's lines are up
+    - cron: "0 20 * 8-12,1 2"    # Tuesday 20:00 UTC
+    - cron: "0 19 * 8-12,1 4"    # Thursday 19:00 UTC
+    - cron: "0 15 * 8-12,1 6"    # Saturday 15:00 UTC, before the noon games
+  workflow_dispatch:
+    inputs:
+      bankroll:
+        description: "Bankroll for stake sizing"
+        default: "1000"
+      test_alert:
+        description: "Send an alert even if no bets are new"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: picks
+  cancel-in-progress: false
+
+jobs:
+  picks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache college data
+        # Collapsed play-by-play per season; only the current season is
+        # re-downloaded (~1.5 GB on a cold cache, a few minutes).
+        uses: actions/cache@v4
+        with:
+          path: .cache_cfb
+          key: cfb-${{ github.run_id }}
+          restore-keys: cfb-
+      - run: pip install pandas numpy pyarrow requests scipy scikit-learn
+      - name: Restore bet history from the picks branch
+        run: |
+          mkdir -p site
+          git fetch -q --depth 1 origin picks && \
+            git show FETCH_HEAD:history.json > site/history.json || true
+      - name: Run picks
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
+        run: |
+          python cfb_picks.py --out site/index.html --json site/picks.json \
+            --history site/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
+          if [ "${{ inputs.test_alert }}" = "true" ] && [ ! -f alert.md ]; then
+            printf '**Test alert.** New college bets will show up like this.\n\nDashboard: https://bviolino93.github.io/CFB-model/\n' > alert.md
+          fi
+          [ -f alert.md ] && cat alert.md >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Publish to the picks branch
+        run: |
+          cd site
+          git init -q -b picks
+          git config user.name "picks-bot"
+          git config user.email "picks-bot@users.noreply.github.com"
+          git add -A
+          git commit -qm "Picks $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" picks
+      - name: Notify about new bets
+        if: hashFiles('alert.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh issue list --state open --search "Picks alerts in:title" \
+                --json number -q '.[0].number')
+          if [ -z "$n" ]; then
+            n=$(gh issue create --title "Picks alerts" --body \
+                  "Each college picks run comments here when it finds new bets." \
+                  | grep -o '[0-9]*$')
+          fi
+          { cat alert.md; echo; echo "@${{ github.repository_owner }}"; } \
+            > alert_body.md
+          gh issue comment "$n" --body-file alert_body.md
+      - uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        continue-on-error: true
