@@ -24146,11 +24146,42 @@ def _inj_save(df):
         return False
 
 
+# Automatic entries: a scheduled Claude job researches QB and key-injury
+# news before each slate and writes them here (branch injury-feed, so main
+# never changes). Same columns as the sheet; they go through the same
+# dedupe, so a hand entry for the same thing that is newer still wins.
+INJ_AUTO_URL = ("https://raw.githubusercontent.com/bviolino93/CFB-model/"
+                "injury-feed/injuries_auto.json")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _inj_auto_rows():
+    try:
+        r = requests.get(INJ_AUTO_URL, timeout=10)
+        if r.status_code != 200:
+            return []
+        rows = (r.json() or {}).get("rows") or []
+        return [x for x in rows if isinstance(x, dict) and str(x.get("team") or "").strip()]
+    except Exception:
+        return []
+
+
+def _inj_with_auto(df):
+    auto = pd.DataFrame(_inj_auto_rows())
+    if auto.empty:
+        return df
+    for c in INJ_COLS:
+        if c not in auto.columns:
+            auto[c] = ""
+    auto["note"] = "[auto] " + auto["note"].astype(str)
+    return pd.concat([df, auto[INJ_COLS]], ignore_index=True)
+
+
 def _inj_active(on_date):
     """{team_key: (points, note)} for entries still in force on a date.
     Different kinds of entry for one team add up (QB out + 3 OL out), but
     two entries for the same thing only count once: the newest wins."""
-    df = _inj_load()
+    df = _inj_with_auto(_inj_load())
     out = {}
     d = pd.to_datetime(str(on_date)[:10], errors="coerce")
     if not df.empty and pd.notna(d):
