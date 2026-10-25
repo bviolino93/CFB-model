@@ -58,3 +58,15 @@ def test_total_rules_pick_the_right_pattern():
     assert cfb_picks.total_rule(63.5, 3.0, sat_night, True)[:2] == ("Under", 0.545)
     assert cfb_picks.total_rule(63.5, 3.0, sat_noon, True)[:2] == ("Under", 0.535)
     assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True) is None
+
+
+def test_thin_model_spreads_dropped():
+    rows = pd.DataFrame([
+        {"home": "A", "market": "spreads", "sources": "combined"},
+        {"home": "B", "market": "spreads", "sources": "combined"},
+        {"home": "C", "market": "spreads", "sources": "market,combined"},
+        {"home": "D", "market": "totals", "sources": "trend"}])
+    ctx = {"A": {"spread": (0.6, {})}, "B": {"spread": (-1.4, {})},
+           "C": {"spread": (0.2, {})}, "D": {}}
+    out = cfb_picks.drop_thin_spreads(rows, ctx)
+    assert list(out.home) == ["B", "C", "D"]
