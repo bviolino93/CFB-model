@@ -19012,7 +19012,7 @@ def _bc_check(r):
     lim = SE_MAX_GAP_TOTAL if mt == "TOTAL" else SE_MAX_GAP_SPREAD
     if np.isfinite(gap) and gap > lim:
         fails.append(f"Pass: the model is {gap:.1f} pts off the line. A gap that big "
-                     "usually means it is missing news (QB, injuries, coach).")
+                     "usually means it is missing an injury or QB change, so it sits out.")
     try:
         fbs = _rc_fbs(_tot2_season_of(r.get("game_date")))
     except Exception:
