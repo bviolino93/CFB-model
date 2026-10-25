@@ -8,7 +8,8 @@ over every year):
 walk_forward()      points: a margin rating per team (home field fitted),
                     and an offense/defense points rating for totals.
 epa_walk_forward()  play-by-play: opponent-adjusted offense and defense
-                    EPA per play, success rate, pass and rush EPA, plays.
+                    EPA per play, success rate, pass and rush EPA, plays,
+                    possessions and points per possession.
 
 Every game gets the ratings as they stood before its week (weeks start on
 Tuesday), so the same code serves the backtest and next Saturday's games.
@@ -24,7 +25,7 @@ import pandas as pd
 from scipy.sparse import csr_matrix, hstack
 from scipy.sparse.linalg import lsqr
 
-STATS = ("epa", "sr", "pass_epa", "rush_epa", "plays")
+STATS = ("epa", "sr", "pass_epa", "rush_epa", "plays", "drv", "ppd")
 
 
 def _prep(games: pd.DataFrame) -> pd.DataFrame:

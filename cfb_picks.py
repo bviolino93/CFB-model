@@ -11,8 +11,8 @@ Same steps as the NFL picks:
      result distributions built from college games (bigger margins, fewer
      key numbers than the NFL)
   3. cfb_model's prediction of result-minus-line moves the fair line:
-     spreads always; totals only on lines seen 2+ days before kickoff,
-     where the backtest found the edge (they lose to the closing total)
+     spreads; totals move on TOTAL_RULES (patterns that held in every era,
+     checked against our own possessions x points-per-possession total)
   4. every DraftKings/FanDuel offer priced; bets that clear the EV bar are
      sized (quarter Kelly) and explained in football terms
 
@@ -47,7 +47,35 @@ BOOK_NAME = {"draftkings": "DraftKings", "fanduel": "FanDuel"}
 # with two games of play-by-play) from making a huge edge.
 SPREAD_CAP = 3.0
 TOTAL_CAP = 3.0
-TOTAL_MIN_LEAD_DAYS = 2.0
+# The efficiency model's totals don't beat the line (model overs went 47-60%
+# by season), so it only informs. Totals are bet on the patterns below.
+MODEL_MARKETS = {"spread"}
+
+# Totals patterns from totals_research.py: each held in 2012-16, 2017-21
+# and 2022-25, against opening and closing totals. (bet side, rule, chance
+# the bet side wins, plain-English reason). The chances are a little under
+# what history shows so stated edges stay conservative. The first rule that
+# matches a game applies. own_gap is our possession total minus the market
+# (cfb_model.possession_total): the over patterns only count when our own
+# count agrees, since without it they hit ~52%, a loser at -110. For the
+# 60+ under it made no difference against closing totals, so it's ignored.
+TOTAL_RULES = [
+    ("Over", lambda t, sp, night, conf, gap: sp >= 24 and t < 50 and gap >= 0, 0.60,
+     "a {fav}-point favorite with a total under 50, and our possession count "
+     "agrees: since 2015 the over has hit about 63% in games like this (135 "
+     "games). Big favorites keep scoring and low totals leave no room for it"),
+    ("Over", lambda t, sp, night, conf, gap: sp >= 21 and t < 55 and gap >= 0, 0.56,
+     "a {fav}-point favorite with a total under 55, and our possession count "
+     "agrees: since 2015 the over has hit about 56-58% in games like this "
+     "(500 games). Mismatches score more than low totals allow for"),
+    ("Under", lambda t, sp, night, conf, gap: t >= 60 and night and conf, 0.545,
+     "a conference game at night with a total of 60+: since 2017 the under has "
+     "hit about 55% in games like this (450 games). Books shade big totals up "
+     "for public over money"),
+    ("Under", lambda t, sp, night, conf, gap: t >= 60, 0.535,
+     "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
+     "Books shade big totals up for public over money"),
+]
 # College picks go through at a 3% edge (NFL: 2%): below ~1.5 points of
 # lean the backtest's picks ran about break-even.
 MIN_EV = 0.03
@@ -263,11 +291,13 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
                         f"{_fav(home, away, view)}: {_matchup(t, u, 'epa', ranks)}")
             if k == "elo":
                 return f"Elo has it {_fav(home, away, view)}"
-            # scores: fitted with a negative weight, so it pushes toward the
-            # side the scoreboard rates BELOW the market
-            return (f"{u}'s scores so far ({_fav(home, away, view)}) run ahead of "
-                    f"what the line already gives them, and teams like that have "
-                    f"tended to fall short of the spread")
+            # scores: fitted with a negative weight. When the line has moved
+            # far from a team's results, the market has usually been right
+            # and then some, so it pushes further the market's way.
+            return (f"the market ({_fav(home, away, fair_market)}) is far from what "
+                    f"the scores so far say ({_fav(home, away, view)}); when the "
+                    f"market strays that far from the scoreboard it has usually "
+                    f"been right, and then some")
         up = over == toward
         if k == "eff":
             # no number: the efficiency fit runs high on low totals and
@@ -277,10 +307,17 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
                     f"scoring than the total" + (f": {units}" if units else ""))
         return f"scoring so far, adjusted for opponents, puts it at {view:.1f}"
 
-    pro = sorted(((sign * v, k, view) for k, (v, view) in parts.items() if sign * v >= 0.2),
-                 reverse=True)
-    con = sorted(((-sign * v, k, view) for k, (v, view) in parts.items() if -sign * v >= 0.4),
-                 reverse=True)
+    def agrees(k, push, view):
+        # An opinion with a negative fitted weight pushes AWAY from what it
+        # says; only "scores" has a sentence for that, so the others are
+        # cited only when they say what they push.
+        return k == "scores" if spread and (push > 0) != (view > fair_market) \
+            else True
+
+    pro = sorted(((sign * v, k, view) for k, (v, view) in parts.items()
+                  if sign * v >= 0.2 and agrees(k, v, view)), reverse=True)
+    con = sorted(((-sign * v, k, view) for k, (v, view) in parts.items()
+                  if -sign * v >= 0.4 and agrees(k, v, view)), reverse=True)
     why = [call]
     if pro:
         why.append("Why: " + "; ".join(say(k, view, True) for _, k, view in pro) + ".")
@@ -293,6 +330,41 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
 # ----------------------------------------------------------------------
 # Pipeline
 # ----------------------------------------------------------------------
+def total_rule(total: float, abs_spread: float, kickoff, conference: bool,
+               own_gap: float = np.nan):
+    """The first TOTAL_RULES row matching a game, or None. A missing
+    possession total (own_gap NaN) fails the comparisons, so the over
+    patterns don't fire without it."""
+    night = pd.Timestamp(kickoff).tz_convert("America/New_York").hour >= 19
+    for side, rule, p, why in TOTAL_RULES:
+        if rule(total, abs_spread, night, bool(conference), own_gap):
+            return side, p, why
+    return None
+
+
+def own_total_text(r, home: str, away: str) -> str:
+    """Our possession-built total in words, or "" without the data."""
+    if pd.isna(r.get("poss_total")):
+        return ""
+    return (f"Our own count: about {r.poss:.0f} possessions a side, {home} "
+            f"scoring {r.ppd_home:.1f} points a possession and {away} "
+            f"{r.ppd_away:.1f}, which builds to about {r.poss_total:.0f}.")
+
+
+def rule_shift(tm, total: float, side: str, p: float) -> float:
+    """Smallest move of the fair total (in quarter points, toward the bet
+    side) at which the bet side wins with chance p, pushes aside, at the
+    market total itself."""
+    sign = 1 if side == "Over" else -1
+    for k in range(0, 41):
+        mu = total + sign * 0.25 * k
+        p_over, p_push = tm.probs(mu, total)
+        win = p_over if side == "Over" else 1 - p_over - p_push
+        if win / max(1e-9, 1 - p_push) >= p:
+            return mu - total
+    return sign * 10.0
+
+
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None):
     now = pd.Timestamp(now or datetime.now(timezone.utc))
@@ -309,7 +381,6 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     adj, ctx = [], {}
     for ev, gid in ids.items():
         f, r = fair[ev], upcoming.loc[gid]
-        lead = (pd.Timestamp(f.commence) - now) / pd.Timedelta(days=1)
         c = ctx.setdefault(f.home_team, {"row": r})
         for kind, mkt, cap in (("spread", f.market_margin, SPREAD_CAP),
                                ("total", f.market_total, TOTAL_CAP)):
@@ -320,10 +391,19 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             pts = float(np.clip(m.predict(frame, np.array([mkt]))[0], -cap, cap))
             c[kind] = (pts, m.parts(r, mkt))
             market = "spreads" if kind == "spread" else "totals"
-            src = "combined" if kind == "spread" or lead >= TOTAL_MIN_LEAD_DAYS \
-                else "combined_info"
+            src = "combined" if kind in MODEL_MARKETS else "combined_info"
             if abs(pts) >= 0.05:
                 adj.append(sel.Adjustment(f.home_team, market, pts, src))
+        if not (np.isnan(f.market_total) or np.isnan(f.market_margin)):
+            hit = total_rule(f.market_total, abs(f.market_margin), f.commence,
+                             r.get("conference_game", False),
+                             r.get("poss_total", np.nan) - f.market_total)
+            if hit:
+                side, p, why = hit
+                fav = round(abs(f.market_margin) * 2) / 2
+                c["trend"] = why.format(fav=f"{fav:g}")
+                adj.append(sel.Adjustment(f.home_team, "totals",
+                                          rule_shift(tm, f.market_total, side, p), "trend"))
     sel.apply_adjustments(fair, adj)
     pol = sel.Policy(min_ev=min_ev)
     priced = sel.price_offers(rows, fair, mm, tm, pol)
@@ -338,7 +418,12 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         for p in picks.itertuples():
             c = ctx.get(p.home, {})
             kind = "spread" if p.market == "spreads" else "total"
-            if kind in c and "combined" in str(p.sources).split(","):
+            srcs = str(p.sources).split(",")
+            if kind == "total" and "trend" in srcs and "trend" in c:
+                t = c["trend"]
+                own = own_total_text(c["row"], c["row"].home_team, c["row"].away_team)
+                why.append(f"{t[0].upper()}{t[1:]}." + (f" {own}" if own else ""))
+            elif kind in c and "combined" in srcs:
                 pts, parts = c[kind]
                 why.append(explain(p, c["row"], parts, ranks, pts, p.fair_market))
             else:

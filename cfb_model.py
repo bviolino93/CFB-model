@@ -52,6 +52,28 @@ def features(g: pd.DataFrame) -> pd.DataFrame:
         g[f"sum_{s}"] = g[f"h_off_{s}"] + g[f"a_def_{s}"] + g[f"a_off_{s}"] + g[f"h_def_{s}"]
     g["sum_plays"] = g.h_off_plays + g.a_off_plays + g.h_def_plays + g.a_def_plays
     g["elo_diff"] = g.home_pregame_elo - g.away_pregame_elo
+    return possession_total(g)
+
+
+def possession_total(g: pd.DataFrame) -> pd.DataFrame:
+    """Our own total, built up: possessions in the game (each offense's
+    possession rating against the other defense's, averaged) times each
+    offense's points per possession against that defense. The raw product
+    runs too far from average, so it is scaled to final scores with a line
+    fitted on earlier seasons only. Adds poss, ppd_home, ppd_away and
+    poss_total."""
+    g["poss"] = ((g.h_off_drv + g.a_def_drv) + (g.a_off_drv + g.h_def_drv)) / 2 - g.lg_drv
+    g["ppd_home"] = g.h_off_ppd + g.a_def_ppd - g.lg_ppd
+    g["ppd_away"] = g.a_off_ppd + g.h_def_ppd - g.lg_ppd
+    raw = g.poss * (g.ppd_home + g.ppd_away)
+    g["poss_total"] = np.nan
+    for s in sorted(g.season[raw.notna()].unique()):
+        tr = (g.season < s) & raw.notna() & g.points.notna()
+        if tr.sum() < 500:
+            continue
+        b = np.polyfit(raw[tr], g.points[tr], 1)
+        te = g.season == s
+        g.loc[te, "poss_total"] = np.polyval(b, raw[te])
     return g
 
 
