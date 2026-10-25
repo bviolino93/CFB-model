@@ -50,8 +50,11 @@ def test_grade_by_game_id():
 def test_total_rules_pick_the_right_pattern():
     sat_noon = "2026-10-31T16:00:00Z"
     sat_night = "2026-11-01T00:00:00Z"      # 8pm ET
-    assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False)[:2] == ("Over", 0.58)
-    assert cfb_picks.total_rule(52.5, 21.0, sat_noon, False)[:2] == ("Over", 0.545)
+    assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False, 2.0)[:2] == ("Over", 0.60)
+    assert cfb_picks.total_rule(52.5, 21.0, sat_noon, False, 0.0)[:2] == ("Over", 0.56)
+    # our possession total disagrees, or is missing: no over
+    assert cfb_picks.total_rule(52.5, 21.0, sat_noon, False, -1.0) is None
+    assert cfb_picks.total_rule(52.5, 21.0, sat_noon, False) is None
     assert cfb_picks.total_rule(63.5, 3.0, sat_night, True)[:2] == ("Under", 0.545)
     assert cfb_picks.total_rule(63.5, 3.0, sat_noon, True)[:2] == ("Under", 0.535)
     assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True) is None

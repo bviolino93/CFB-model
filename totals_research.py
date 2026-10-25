@@ -22,6 +22,13 @@ Findings (2026-10-25), which became cfb_picks.TOTAL_RULES:
     55 hit 55.9 / 57.3 / 56.2% vs the opener (59.0 / 54.3 / 53.9 vs the
     close); spread 24+ and total under 50, about 60%.
   * Night games lean under (~52.5% every era) but too little to bet alone.
+  * Our own total, possessions x points per possession (cfb_model.
+    possession_total), doesn't beat the line by itself (~50% on overs,
+    ~53% on unders against the close, the unders being mostly the 60+
+    pattern again). But it sorts the over pattern: when it also sits at or
+    over the total, spread 21+ / total under 55 hit 58.4% vs the opener and
+    55.8% vs the close (2015-25, ~500 games); when it disagrees, ~52%. For
+    the 60+ under it made no difference against the close.
   * Week, month, neutral site, pace and the points
     rating's view of the total showed nothing that held in every era. The
     efficiency model's totals (cfb_model) stayed near break-even.

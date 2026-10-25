@@ -11,7 +11,8 @@ Same steps as the NFL picks:
      result distributions built from college games (bigger margins, fewer
      key numbers than the NFL)
   3. cfb_model's prediction of result-minus-line moves the fair line:
-     spreads; totals move on TOTAL_RULES (patterns that held in every era)
+     spreads; totals move on TOTAL_RULES (patterns that held in every era,
+     checked against our own possessions x points-per-possession total)
   4. every DraftKings/FanDuel offer priced; bets that clear the EV bar are
      sized (quarter Kelly) and explained in football terms
 
@@ -53,22 +54,25 @@ MODEL_MARKETS = {"spread"}
 # Totals patterns from totals_research.py: each held in 2012-16, 2017-21
 # and 2022-25, against opening and closing totals. (bet side, rule, chance
 # the bet side wins, plain-English reason). The chances are a little under
-# what history shows (in brackets) so stated edges stay conservative.
-# The first rule that matches a game applies.
+# what history shows so stated edges stay conservative. The first rule that
+# matches a game applies. own_gap is our possession total minus the market
+# (cfb_model.possession_total): the over patterns only count when our own
+# count agrees, since without it they hit ~52%, a loser at -110. For the
+# 60+ under it made no difference against closing totals, so it's ignored.
 TOTAL_RULES = [
-    ("Over", lambda t, sp, night, conf: sp >= 24 and t < 50, 0.58,
-     "a {fav}-point favorite with a total under 50: since 2012 the over has hit "
-     "about 60% in games like this (270 games). Big favorites keep scoring and "
-     "low totals leave no room for it"),
-    ("Over", lambda t, sp, night, conf: sp >= 21 and t < 55, 0.545,
-     "a {fav}-point favorite with a total under 55: since 2012 the over has hit "
-     "about 56% in games like this (980 games). Mismatches score more than "
-     "low totals allow for"),
-    ("Under", lambda t, sp, night, conf: t >= 60 and night and conf, 0.545,
+    ("Over", lambda t, sp, night, conf, gap: sp >= 24 and t < 50 and gap >= 0, 0.60,
+     "a {fav}-point favorite with a total under 50, and our possession count "
+     "agrees: since 2015 the over has hit about 63% in games like this (135 "
+     "games). Big favorites keep scoring and low totals leave no room for it"),
+    ("Over", lambda t, sp, night, conf, gap: sp >= 21 and t < 55 and gap >= 0, 0.56,
+     "a {fav}-point favorite with a total under 55, and our possession count "
+     "agrees: since 2015 the over has hit about 56-58% in games like this "
+     "(500 games). Mismatches score more than low totals allow for"),
+    ("Under", lambda t, sp, night, conf, gap: t >= 60 and night and conf, 0.545,
      "a conference game at night with a total of 60+: since 2017 the under has "
      "hit about 55% in games like this (450 games). Books shade big totals up "
      "for public over money"),
-    ("Under", lambda t, sp, night, conf: t >= 60, 0.535,
+    ("Under", lambda t, sp, night, conf, gap: t >= 60, 0.535,
      "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
      "Books shade big totals up for public over money"),
 ]
@@ -326,13 +330,25 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
 # ----------------------------------------------------------------------
 # Pipeline
 # ----------------------------------------------------------------------
-def total_rule(total: float, abs_spread: float, kickoff, conference: bool):
-    """The first TOTAL_RULES row matching a game, or None."""
+def total_rule(total: float, abs_spread: float, kickoff, conference: bool,
+               own_gap: float = np.nan):
+    """The first TOTAL_RULES row matching a game, or None. A missing
+    possession total (own_gap NaN) fails the comparisons, so the over
+    patterns don't fire without it."""
     night = pd.Timestamp(kickoff).tz_convert("America/New_York").hour >= 19
     for side, rule, p, why in TOTAL_RULES:
-        if rule(total, abs_spread, night, bool(conference)):
+        if rule(total, abs_spread, night, bool(conference), own_gap):
             return side, p, why
     return None
+
+
+def own_total_text(r, home: str, away: str) -> str:
+    """Our possession-built total in words, or "" without the data."""
+    if pd.isna(r.get("poss_total")):
+        return ""
+    return (f"Our own count: about {r.poss:.0f} possessions a side, {home} "
+            f"scoring {r.ppd_home:.1f} points a possession and {away} "
+            f"{r.ppd_away:.1f}, which builds to about {r.poss_total:.0f}.")
 
 
 def rule_shift(tm, total: float, side: str, p: float) -> float:
@@ -380,7 +396,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 adj.append(sel.Adjustment(f.home_team, market, pts, src))
         if not (np.isnan(f.market_total) or np.isnan(f.market_margin)):
             hit = total_rule(f.market_total, abs(f.market_margin), f.commence,
-                             r.get("conference_game", False))
+                             r.get("conference_game", False),
+                             r.get("poss_total", np.nan) - f.market_total)
             if hit:
                 side, p, why = hit
                 fav = round(abs(f.market_margin) * 2) / 2
@@ -404,7 +421,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             srcs = str(p.sources).split(",")
             if kind == "total" and "trend" in srcs and "trend" in c:
                 t = c["trend"]
-                why.append(f"{t[0].upper()}{t[1:]}.")
+                own = own_total_text(c["row"], c["row"].home_team, c["row"].away_team)
+                why.append(f"{t[0].upper()}{t[1:]}." + (f" {own}" if own else ""))
             elif kind in c and "combined" in srcs:
                 pts, parts = c[kind]
                 why.append(explain(p, c["row"], parts, ranks, pts, p.fair_market))
