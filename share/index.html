@@ -16,7 +16,7 @@
 :root {
   --bg: #07090d; --panel: #10141b; --panel2: #151a23; --line: #232a36; --ink: #eef2f7; --muted: #8b95a5;
   --neon: #b6ff3b; --neon2: #3bffb0; --win: #3ddc84; --loss: #ff4d5e; --push: #8b95a5;
-  --nfl: #3b8bff; --cfb: #ff7a1a; --dk: #53d337; --fd: #1e90ff;
+  --nfl: #3b8bff; --cfb: #e8650c; --dk: #53d337; --fd: #1e90ff;
   --display: "Bebas Neue", Impact, "Arial Narrow", sans-serif;
 }
 * { box-sizing: border-box; }
@@ -130,7 +130,61 @@ details p { margin: 8px 0 2px; font-size: 14px; line-height: 1.55; color: #d5dbe
 footer { color: var(--muted); font-size: 12px; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 14px; line-height: 1.6; }
 footer a { color: var(--neon); text-decoration: none; }
 
+/* charts */
+.lg-nfl { --lg: var(--nfl); } .lg-cfb { --lg: var(--cfb); }
+.viz { background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px 12px; margin-bottom: 10px; }
+.viz .k { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.viz .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--lg, var(--neon)); }
+.legend i.ring { border-radius: 50%; border: 2px solid var(--muted); background: transparent; }
+.legend i.disc { border-radius: 50%; }
+.legend i.tick { width: 2px; height: 12px; border-radius: 1px; background: var(--ink); }
+.vrow { display: grid; grid-template-columns: minmax(0, 36%) 1fr var(--vw, 58px); gap: 10px; align-items: center;
+  min-height: 30px; padding: 0 6px; border-radius: 8px; cursor: default; }
+.vrow:hover, .vrow:focus-visible { background: rgba(255,255,255,.045); outline: none; }
+.vrow .l { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vrow .v { font-size: 12.5px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vrow .v small { font-weight: 500; color: var(--muted); font-size: 12px; }
+.vaxis { min-height: 18px; font-size: 11px; color: var(--muted); cursor: default; }
+.vaxis:hover { background: none; }
+.track { position: relative; align-self: stretch; }
+.track .g { position: absolute; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
+.track .g.zero { background: #3a4352; }
+.vaxis .track span { position: absolute; top: 2px; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
+.track .seg { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: var(--lg); opacity: .6; }
+.track .be { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--muted); background: var(--panel); }
+.track .mo { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--lg); box-shadow: 0 0 0 2px var(--panel); }
+.track .stack { position: absolute; top: 50%; height: 12px; margin-top: -6px; display: flex; gap: 2px; }
+.track .stack span { height: 100%; background: var(--lg); }
+.track .stack span:last-child { border-radius: 0 4px 4px 0; }
+.track .hb { position: absolute; top: 50%; height: 12px; margin-top: -6px; }
+.track .hb.up { background: var(--win); border-radius: 0 4px 4px 0; }
+.track .hb.down { background: var(--loss); border-radius: 4px 0 0 4px; }
+.track .hb.hit { background: var(--neon); border-radius: 0 4px 4px 0; }
+.track .hb.rail { background: #1f2631; border-radius: 4px; }
+.track .tk { position: absolute; top: 50%; width: 2px; height: 18px; margin: -9px 0 0 -1px; border-radius: 1px; background: var(--ink); box-shadow: 0 0 0 2px var(--panel); }
+.vrow:hover .mo, .vrow:focus-visible .mo { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--lg); }
+.vrow:hover .stack span, .vrow:hover .hb:not(.rail) { filter: brightness(1.15); }
+.duo { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.duo .viz { margin-bottom: 0; }
+.numbers { display: grid; gap: 10px; }
+.note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+#tip { position: fixed; z-index: 10; pointer-events: none; max-width: 280px; background: #0b0e13; border: 1px solid #303949;
+  border-radius: 10px; padding: 8px 10px; font-size: 12.5px; color: var(--muted); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+#tip div + div { margin-top: 3px; }
+#tip b { color: var(--ink); font-variant-numeric: tabular-nums; }
+#tip .h { color: var(--ink); font-weight: 700; margin-bottom: 4px; }
+#tip i { display: inline-block; width: 12px; height: 2px; margin-right: 6px; vertical-align: 3px; background: var(--lg, var(--ink)); }
+.chart .plot { position: relative; }
+.chart .hair { position: absolute; top: 6px; bottom: 0; width: 1px; background: #4a5466; pointer-events: none; }
+.chart .pt { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 2px var(--panel); }
+.chart .ylab { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 2px; }
+
 @media (max-width: 560px) {
+  .duo { grid-template-columns: 1fr; }
+  .vrow { grid-template-columns: minmax(0, 40%) 1fr var(--vw, 52px); gap: 8px; padding: 0 2px; }
   .logo { font-size: 68px; }
   .board { grid-template-columns: repeat(2, 1fr); }
   .tile .v { font-size: 34px; }
@@ -157,7 +211,11 @@ footer a { color: var(--neon); text-decoration: none; }
   </nav>
 
   <h2>On the board</h2>
+  <div id="edges"></div>
   <div id="upcoming"></div>
+
+  <h2>By the numbers</h2>
+  <div id="numbers" class="numbers"></div>
 
   <h2>Results</h2>
   <div id="results"></div>
@@ -171,6 +229,7 @@ footer a { color: var(--neon); text-decoration: none; }
     For entertainment. Bet responsibly.
   </footer>
 </main>
+<div id="tip" role="tooltip" hidden></div>
 <script>
 const SOURCES = [
   { key: "nfl", base: "/NFL-model/" },
@@ -232,9 +291,193 @@ function chart(values) {
   const last = values[values.length - 1], col = last >= 0 ? "var(--win)" : "var(--loss)";
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-label="Units over time">
     <defs><linearGradient id="cg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${last >= 0 ? "#3ddc84" : "#ff4d5e"}" stop-opacity=".3"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient></defs>
-    <line x1="0" x2="${w}" y1="${y(0)}" y2="${y(0)}" stroke="#2a3240" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+    <line x1="0" x2="${w}" y1="${y(0)}" y2="${y(0)}" stroke="#2a3240" vector-effect="non-scaling-stroke"/>
     <path d="${d} L${x(values.length - 1)} ${y(0)} L${x(0)} ${y(0)} Z" fill="url(#cg)"/>
     <path d="${d}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+// ---- charts ---------------------------------------------------------------
+// two-word mascots: "Duke Blue Devils" -> "Duke"
+const MASCOT2 = new Set(["Crimson", "Nittany", "Blue", "Wolf", "Scarlet", "Golden", "Tar", "Sun", "Red", "Fighting",
+  "Yellow", "Demon", "Mean", "Rainbow", "Ragin'", "Green", "Black", "Horned", "Thundering", "Big", "Mountain"]);
+function short(name, league) {
+  if (league === "nfl") return nick(name, league);
+  const w = String(name).split(" ");
+  if (w.length < 2) return name;
+  w.pop();
+  if (w.length > 1 && MASCOT2.has(w[w.length - 1])) w.pop();
+  return w.join(" ");
+}
+function shortBet(b) {
+  if (b.market === "totals") return `${b.pick[0]} ${b.point} ${short(b.away, b.league)}/${short(b.home, b.league)}`;
+  return `${short(b.pick, b.league)} ${b.market === "h2h" ? "ML" : fmtPoint(b.point)}`;
+}
+// what kind of bet it is, read off the reasoning so old bets sort too
+function betType(r) {
+  const w = r.why || "";
+  if (/point favorite with a total under/.test(w)) return "Big-favorite overs";
+  if (/total of 60\+/.test(w)) return "60+ unders";
+  if (/possession count puts/.test(w)) return "Possession-count unders";
+  if (/hasn't caught up/.test(w)) return "Slow-book lines";
+  if (/^News:/.test(w)) return "Injury news";
+  if (r.market === "h2h") return "Moneylines";
+  return r.market === "totals" ? "Model totals" : "Model spreads";
+}
+const breakEven = p => p < 0 ? -p / (100 - p) : 100 / (p + 100);
+const pct = x => (100 * x).toFixed(0) + "%";
+const LEAGUES = [["nfl", "NFL"], ["cfb", "College"]];
+
+let TIPS = [];
+const tipAttr = lines => `data-t="${TIPS.push(lines) - 1}" tabindex="0"`;
+function legend(items) {
+  return `<div class="legend">` + items.map(([cls, txt, lg]) =>
+    `<span class="${lg ? "lg-" + lg : ""}"><i class="${cls}"></i>${esc(txt)}</span>`).join("") + `</div>`;
+}
+function axisRow(ticks, fmt, vw) {
+  return `<div class="vrow vaxis" style="--vw:${vw}" aria-hidden="true"><span></span><div class="track">` +
+    ticks.map(([pos, v]) => `<span style="left:${pos}%">${fmt(v)}</span>`).join("") + `</div><span></span></div>`;
+}
+const grid = ticks => ticks.map(([pos, , z]) => `<i class="g${z ? " zero" : ""}" style="left:${pos}%"></i>`).join("");
+
+// model's win chance against the win rate the price needs, one row per pick
+function edgeChart(up) {
+  if (!up.length) return "";
+  const rows = up.map(r => ({ r, be: breakEven(r.price), wc: r.win_chance })).sort((a, b) => (b.wc - b.be) - (a.wc - a.be));
+  let lo = Math.floor(Math.min(...rows.map(x => Math.min(x.be, x.wc))) * 20) / 20;
+  let hi = Math.ceil(Math.max(...rows.map(x => Math.max(x.be, x.wc))) * 20) / 20;
+  if (hi - lo < 0.15) hi = lo + 0.15;
+  const X = v => (v - lo) / (hi - lo) * 100;
+  const ticks = []; for (let v = lo; v <= hi + 1e-9; v += 0.05) ticks.push([X(v), v]);
+  const leagues = new Set(up.map(r => r.league));
+  return `<div class="viz"><div class="k">The edge on each pick</div>
+    <div class="sub">How often the pick has to win to break even at its price, and how often the model thinks it wins. The gap is the edge.</div>
+    ${legend([["ring", "Needed to break even"], ...LEAGUES.filter(([k]) => leagues.has(k)).map(([k, n]) => ["disc", `Model (${n})`, k])])}
+    <div style="margin-top:6px">` + rows.map(({ r, be, wc }) => {
+      const a = Math.min(X(be), X(wc)), b = Math.max(X(be), X(wc));
+      return `<div class="vrow lg-${r.league}" ${tipAttr([[`${betText(r)} ${fmtPrice(r.price)}`], [pct(wc), "model's win chance"],
+          [pct(be), "needed at this price"], [signed(100 * (wc - be)) + " pts", "edge"], [units(r.stake).toFixed(1) + "u", `at ${r.book}`],
+          ["", `${r.away} @ ${r.home}`]], r.league)}>
+        <span class="l">${esc(shortBet(r))}</span>
+        <div class="track">${grid(ticks)}<i class="seg" style="left:${a}%;width:${b - a}%"></i>
+          <i class="be" style="left:${X(be)}%"></i><i class="mo" style="left:${X(wc)}%"></i></div>
+        <span class="v">${signed(100 * (wc - be))}<small> pts</small></span></div>`;
+    }).join("") + axisRow(ticks, pct, "58px") + `</div></div>`;
+}
+
+// stacked bars: units on the board by bet type, split by league
+function moneyChart(up) {
+  if (!up.length) return "";
+  const types = {};
+  for (const r of up) {
+    const t = types[betType(r)] ??= { nfl: 0, cfb: 0, n: 0 };
+    t[r.league] += units(r.stake); t.n++;
+  }
+  const rows = Object.entries(types).sort((a, b) => (b[1].nfl + b[1].cfb) - (a[1].nfl + a[1].cfb));
+  const max = Math.max(...rows.map(([, t]) => t.nfl + t.cfb));
+  const leagues = LEAGUES.filter(([k]) => up.some(r => r.league === k));
+  return `<div class="viz"><div class="k">Where the money is</div><div class="sub">Units on the board, by kind of bet</div>
+    ${leagues.length > 1 ? legend(leagues.map(([k, n]) => ["", n, k])) : ""}<div style="margin-top:6px">` +
+    rows.map(([name, t]) => {
+      const tot = t.nfl + t.cfb;
+      return `<div class="vrow" style="--vw:70px" ${tipAttr([[name], [tot.toFixed(1) + "u", `on ${t.n} bet${t.n > 1 ? "s" : ""}`],
+          ...leagues.filter(([k]) => t[k]).map(([k, n]) => [t[k].toFixed(1) + "u", n, k])])}>
+        <span class="l">${esc(name)}</span>
+        <div class="track"><span class="stack" style="left:0;width:${tot / max * 100}%">` +
+          leagues.filter(([k]) => t[k]).map(([k]) => `<span class="lg-${k}" style="flex:${t[k]}"></span>`).join("") +
+        `</span></div><span class="v">${tot.toFixed(1)}u <small>${t.n}</small></span></div>`;
+    }).join("") + `</div></div>`;
+}
+
+// diverging bars: units won or lost by bet type
+function recordChart(g) {
+  if (!g.length) return `<div class="viz"><div class="k">Record by kind of bet</div><div class="note">Fills in as games are graded.</div></div>`;
+  const types = {};
+  for (const r of g) {
+    const t = types[betType(r)] ??= { w: 0, l: 0, p: 0, u: 0 };
+    t[r.result[0]]++; t.u += units(r.profit || 0);
+  }
+  const rows = Object.entries(types).sort((a, b) => b[1].u - a[1].u);
+  const max = Math.max(1, ...rows.map(([, t]) => Math.abs(t.u)));
+  const rec = t => `${t.w}-${t.l}${t.p ? "-" + t.p : ""}`;
+  return `<div class="viz"><div class="k">Record by kind of bet</div><div class="sub">Units won or lost so far</div>
+    <div style="margin-top:6px">` + rows.map(([name, t]) => {
+      const w = Math.abs(t.u) / max * 50;
+      return `<div class="vrow" style="--vw:96px" ${tipAttr([[name], [signed(t.u) + "u", "profit"], [rec(t), "record"],
+          [t.w + t.l ? pct(t.w / (t.w + t.l)) : "—", "hit rate"]])}>
+        <span class="l">${esc(name)}</span>
+        <div class="track"><i class="g zero" style="left:50%"></i>
+          <span class="hb ${t.u >= 0 ? "up" : "down"}" style="${t.u >= 0 ? "left:50%" : `left:${50 - w}%`};width:${w}%"></span></div>
+        <span class="v ${t.u > 0 ? "pos" : t.u < 0 ? "neg" : ""}">${signed(t.u)}u <small>${rec(t)}</small></span></div>`;
+    }).join("") + `</div></div>`;
+}
+
+// did picks the model liked more win more? actual hit rate vs the model's average
+function calibChart(g) {
+  const done = g.filter(r => r.result !== "push" && r.win_chance);
+  if (!done.length) return "";
+  const buckets = [["Under 55%", 0, .55], ["55-60%", .55, .6], ["60% and up", .6, 2]].map(([name, a, b]) => {
+    const rs = done.filter(r => r.win_chance >= a && r.win_chance < b);
+    return { name, n: rs.length, w: rs.filter(r => r.result === "win").length,
+             exp: rs.reduce((s, r) => s + r.win_chance, 0) / (rs.length || 1) };
+  }).filter(b => b.n);
+  const ew = done.reduce((s, r) => s + r.win_chance, 0), aw = done.filter(r => r.result === "win").length;
+  const ticks = [0, .25, .5, .75, 1].map(v => [v * 100, v]);
+  return `<div class="viz"><div class="k">Is the model's confidence real?</div>
+    <div class="sub">It expected ${ew.toFixed(1)} wins from ${done.length} bets and got ${aw}. A handful of bets is mostly luck; this gets meaningful around 100.</div>
+    ${legend([["", "Actual hit rate"], ["tick", "Model's average win chance"]])}<div style="margin-top:6px">` +
+    buckets.map(b => `<div class="vrow" style="--vw:64px" ${tipAttr([[`Win chance ${b.name}`], [`${b.w} of ${b.n}`, "won"],
+        [pct(b.w / b.n), "actual"], [pct(b.exp), "model expected"]])}>
+      <span class="l">${esc(b.name)}</span>
+      <div class="track">${grid(ticks)}<span class="hb rail" style="left:0;width:100%"></span>
+        ${b.w ? `<span class="hb hit" style="left:0;width:${100 * b.w / b.n}%"></span>` : ""}<i class="tk" style="left:${100 * b.exp}%"></i></div>
+      <span class="v">${b.w}/${b.n}</span></div>`).join("") + axisRow(ticks, pct, "64px") + `</div></div>`;
+}
+
+const tip = document.getElementById("tip");
+function showTip(el) {
+  const lines = TIPS[el.dataset.t]; if (!lines) return;
+  tip.replaceChildren(...lines.map(([v, label, lg], i) => {
+    const d = document.createElement("div");
+    if (i === 0) { d.className = "h"; d.textContent = v; return d; }
+    if (lg) { d.className = "lg-" + lg; d.append(document.createElement("i")); }
+    if (v) { const b = document.createElement("b"); b.textContent = v; d.append(b, " "); }
+    d.append(label || "");
+    return d;
+  }));
+  tip.hidden = false;
+  const r = el.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+  const left = Math.max(8, Math.min(innerWidth - tw - 8, r.left + r.width / 2 - tw / 2));
+  tip.style.left = left + "px";
+  tip.style.top = (r.top - th - 8 > 8 ? r.top - th - 8 : r.bottom + 8) + "px";
+}
+const hideTip = () => { tip.hidden = true; };
+document.addEventListener("pointerover", e => { const el = e.target.closest?.("[data-t]"); el ? showTip(el) : hideTip(); });
+document.addEventListener("focusin", e => { const el = e.target.closest?.("[data-t]"); el ? showTip(el) : hideTip(); });
+document.addEventListener("focusout", hideTip);
+addEventListener("scroll", hideTip, { passive: true });
+
+// crosshair on the units chart
+function hookCurve(curve, bets) {
+  const plot = document.querySelector("#results .plot"); if (!plot) return;
+  const lo = Math.min(0, ...curve), hi = Math.max(0, ...curve), span = hi - lo || 1;
+  const hair = plot.querySelector(".hair"), dot = plot.querySelector(".pt");
+  const move = e => {
+    const box = plot.getBoundingClientRect(), pad = 6 / 600 * box.width;
+    const f = Math.max(0, Math.min(1, (e.clientX - box.left - pad) / (box.width - 2 * pad)));
+    const i = Math.round(f * (curve.length - 1)), x = pad + i / (curve.length - 1) * (box.width - 2 * pad);
+    const y = (120 - 6 - (curve[i] - lo) / span * 108) / 120 * box.height;
+    hair.style.left = x + "px"; dot.style.left = x + "px"; dot.style.top = y + "px";
+    dot.style.background = curve[i] >= 0 ? "var(--win)" : "var(--loss)";
+    hair.hidden = dot.hidden = false;
+    const b = bets[i - 1];
+    TIPS.curve = b ? [[`After bet ${i}`], [signed(curve[i]) + "u", "running total"],
+      [signed(units(b.profit || 0)) + "u", `${betText(b)} (${b.result})`, b.league]] : [["Start"], ["0u", ""]];
+    plot.dataset.t = "curve"; showTip(plot);
+    const r = plot.getBoundingClientRect();
+    tip.style.left = Math.max(8, Math.min(innerWidth - tip.offsetWidth - 8, r.left + x - tip.offsetWidth / 2)) + "px";
+  };
+  plot.addEventListener("pointermove", move);
+  plot.addEventListener("pointerleave", () => { hair.hidden = dot.hidden = true; hideTip(); });
 }
 
 async function load() {
@@ -321,6 +564,10 @@ function render() {
     <div class="tile"><div class="k">On the board</div><div class="v">${up.length}</div>
       <div class="s">${up.reduce((s, r) => s + units(r.stake), 0).toFixed(1)}u at risk</div></div>`;
 
+  TIPS = [];
+  document.getElementById("edges").innerHTML = edgeChart(up);
+  document.getElementById("numbers").innerHTML = (up.length ? `<div class="duo">${moneyChart(up)}${recordChart(g)}</div>` : recordChart(g)) + calibChart(g);
+
   // upcoming: best bet first, then by day
   const box = document.getElementById("upcoming");
   if (!up.length) {
@@ -343,7 +590,9 @@ function render() {
     rbox.innerHTML = `<div class="empty">Results show up here once games are graded.</div>`;
   } else {
     const recent = g.slice().reverse().slice(0, 25);
-    rbox.innerHTML = (curve.length > 2 ? `<div class="chart"><div class="k">Units over time</div>${chart(curve)}</div>` : "") +
+    rbox.innerHTML = (curve.length > 2 ? `<div class="chart"><div class="k">Units over time</div>
+      <div class="plot">${chart(curve)}<i class="hair" hidden></i><i class="pt" hidden></i></div>
+      <div class="ylab"><span>${g.length} bets, oldest first</span><span>Now ${signed(pu)}u</span></div></div>` : "") +
       recent.map(r => {
         const pr = r.profit != null ? units(r.profit) : 0;
         return `<div class="res"><div class="wl ${r.result}">${r.result[0].toUpperCase()}</div>
@@ -351,6 +600,7 @@ function render() {
           <div class="m">${r.league === "nfl" ? "NFL" : "CFB"} · ${esc(r.away)} @ ${esc(r.home)}${r.final ? " · Final " + esc(r.final) : ""}</div></div>
           <div class="p ${cls(pr)}">${signed(pr)}u</div></div>`;
       }).join("");
+    hookCurve(curve, g);
   }
 }
 
