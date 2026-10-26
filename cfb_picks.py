@@ -89,6 +89,9 @@ TOTAL_RULES = [
 ]
 # College picks go through at a 3% edge (NFL: 2%).
 MIN_EV = 0.03
+# Injury news is looked up for the picks and for games with an offer within
+# this much of MIN_EV (~15-25 games a week, ~15 cents each), not all ~60.
+NEWS_NEAR_MISS = 0.02
 # A spread the model alone argues for also needs at least this much lean
 # (model minus market, in points): in the 2017-25 backtest leans under 1
 # point won 50-52%, so a good price alone shouldn't carry them.
@@ -495,13 +498,17 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     starters = team_starters(g, cfb_data.current_season(now)) if news is not None else {}
     done = set()
     for _ in range(4):
-        if news is None or not len(picks):
+        # the picks plus near misses: any offer within NEWS_NEAR_MISS of the
+        # edge bar, so injury news can also turn a pass into a bet
+        near = bettable[bettable.ev >= min_ev - NEWS_NEAR_MISS]
+        cand = pd.concat([picks.reindex(columns=["event_id", "commence"]),
+                          near[["event_id", "commence"]]]).drop_duplicates("event_id")
+        if news is None or not len(cand):
             break
         games = [{"home": upcoming.loc[ids[e], "home_team"], "away": upcoming.loc[ids[e], "away_team"],
-                  "kickoff": c} for e, c in picks.drop_duplicates("event_id")[["event_id", "commence"]]
-                 .itertuples(index=False) if ids.get(e) in upcoming.index]
+                  "kickoff": c} for e, c in cand.itertuples(index=False) if ids.get(e) in upcoming.index]
         news.update(cfb_news.fetch(games, news, now))
-        qa = qb_adjustments(fair, {e: ids[e] for e in set(picks.event_id) if e in ids},
+        qa = qb_adjustments(fair, {e: ids[e] for e in set(cand.event_id) if e in ids},
                             upcoming, news, starters, done)
         if not qa:
             break
