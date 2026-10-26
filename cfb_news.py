@@ -3,7 +3,7 @@ College injury news for the games we bet.
 
 There's no free college injury feed, so before picks go out Claude reads
 the news (the Anthropic API's web search tool) for each game the model is
-about to bet and reports who is expected to start at quarterback and which
+about to bet, or nearly bet (cfb_picks.NEWS_NEAR_MISS), and reports who is expected to start at quarterback and which
 key players are out or doubtful. cfb_picks then:
 
   * takes NEW_QB_PTS (1 point) off a team whose backup QB is making his
