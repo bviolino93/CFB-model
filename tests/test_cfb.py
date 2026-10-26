@@ -105,6 +105,7 @@ def test_news_check_reads_claude_json_and_shows_injuries():
     assert rows[0] == {"team": "Texas", "name": "Arch Manning", "pos": "QB", "status": "Out",
                        "pts": None, "note": "Caldwell starting"}
     assert [r["name"] for r in rows] == ["Arch Manning", "Ryan Wingo"]
+    assert rows[1]["pts"] == -0.2       # a questionable starter's first miss (educated guess)
     assert cfb_news.injuries(news[key], "Oklahoma") == []
     picks = pd.DataFrame([{"game_id": 5, "commence": "2026-10-31T19:30:00Z"}])
     g = pd.DataFrame([{"game_id": 5, "home_team": "Texas", "away_team": "Oklahoma"}])
@@ -143,3 +144,16 @@ def test_only_a_backup_qbs_first_start_moves_the_line():
     # Michigan is away: the home margin goes UP a point, the total down one
     assert [(a.market, a.points) for a in adj] == [("spreads", 1.0), ("totals", -1.0)]
     assert cfb_picks.qb_adjustments(fair, {"e": 5}, upcoming, news, {}, done) == []
+
+
+def test_other_starters_count_once_and_are_capped():
+    import cfb_news
+    p = lambda st, **k: {"name": "X", "pos": "WR", "status": st, **k}
+    assert cfb_news.player_pts(p("out", starter=True, games_missed=0)) == -0.5
+    assert cfb_news.player_pts(p("questionable", starter=True, games_missed=0)) == -0.2
+    assert cfb_news.player_pts(p("out", starter=True, games_missed=2)) == 0.0   # in the ratings
+    assert cfb_news.player_pts(p("out", starter=False, games_missed=0)) == 0.0
+    assert cfb_news.player_pts(p("season")) == 0.0          # old news, no games_missed
+    assert cfb_news.player_pts({**p("out"), "pos": "QB"}) == 0.0
+    e = {"teams": [{"team": "Iowa State", "players": [p("out", games_missed=0)] * 5}]}
+    assert cfb_news.others_pts(e, "Iowa State") == -1.5
