@@ -111,24 +111,33 @@ def test_news_check_reads_claude_json_and_shows_injuries():
     assert len(cfb_picks.attach_news(picks, g, news).injuries[0]) == 2
 
 
-def test_qb_news_rules_out_model_bets_on_the_team_missing_its_qb():
+def test_only_a_backup_qbs_first_start_moves_the_line():
     import cfb_news
+    from selector import Fair
     kick = "2026-10-31T19:30:00Z"
-    news = {cfb_news.game_key("Texas", "Oklahoma", kick): {"checked": kick, "teams": [
-        {"team": "Texas", "regular_qb": "Arch Manning", "expected_qb": "Matthew Caldwell",
+    e = {"checked": kick, "teams": [
+        {"team": "Michigan", "regular_qb": "Bryce Underwood", "expected_qb": "Tommy Carr",
          "qb_status": "out", "players": []},
-        {"team": "Oklahoma", "regular_qb": "John Mateer", "expected_qb": "John Mateer",
-         "qb_status": "starting", "players": []}]}}
-    upcoming = pd.DataFrame([{"game_id": 5, "home_team": "Texas",
-                              "away_team": "Oklahoma"}]).set_index("game_id")
-    row = dict(event_id="e", home="Texas Longhorns", away="Oklahoma Sooners", commence=kick)
-    bettable = pd.DataFrame([
-        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "combined"},
-        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "market,combined"},
-        {**row, "market": "spreads", "pick": "Oklahoma Sooners", "sources": "combined"},
-        {**row, "market": "totals", "pick": "Over", "sources": "trend"},
-        {**row, "market": "totals", "pick": "Under", "sources": "trend"},
-    ])
-    why = cfb_picks.qb_vetoes(bettable, upcoming, {"e": 5}, news)
-    assert [bool(w) for w in why] == [True, False, False, True, False]
-    assert why[0] == "Texas's regular quarterback isn't expected to start"
+        {"team": "UCLA", "regular_qb": "Nico Iamaleava", "expected_qb": "Ty Dieffenbach",
+         "qb_status": "out", "players": []}]}
+    # Carr has never started: his first start costs Michigan a point
+    assert cfb_news.qb_change(e, "Michigan", ["Bryce Underwood"] * 7) == (-1.0, 0)
+    # Dieffenbach has started UCLA's last 3: priced in
+    ucla = ["Nico Iamaleava"] * 4 + ["Ty Dieffenbach"] * 3
+    assert cfb_news.qb_change(e, "UCLA", ucla) == (0.0, 3)
+    row = cfb_news.injuries(e, "UCLA", ucla)[0]
+    assert row["pts"] is None and row["note"] == "Dieffenbach 4th start, priced in"
+    assert cfb_news.injuries(e, "Michigan", ["Bryce Underwood"] * 7)[0]["pts"] == -1.0
+    # no news, or the regular starting: nothing
+    assert cfb_news.qb_change({}, "Michigan", ["Bryce Underwood"]) == (0.0, 0)
+
+    upcoming = pd.DataFrame([{"game_id": 5, "home_team": "Rutgers",
+                              "away_team": "Michigan"}]).set_index("game_id")
+    fair = {"e": Fair("Rutgers Scarlet Knights", "Michigan Wolverines", kick)}
+    news = {cfb_news.game_key("Rutgers", "Michigan", kick): e}
+    done = set()
+    adj = cfb_picks.qb_adjustments(fair, {"e": 5}, upcoming, news,
+                                   {"Michigan": ["Bryce Underwood"] * 7}, done)
+    # Michigan is away: the home margin goes UP a point, the total down one
+    assert [(a.market, a.points) for a in adj] == [("spreads", 1.0), ("totals", -1.0)]
+    assert cfb_picks.qb_adjustments(fair, {"e": 5}, upcoming, news, {}, done) == []

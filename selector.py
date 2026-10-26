@@ -59,7 +59,7 @@ BOOK_WEIGHT = {
 # "combined" is nfl_combined's prediction of the result vs the line, whose
 # weights are fitted walk-forward and shrunk hard toward zero, so it only
 # moves the line by what history says each factor is worth.
-ACTIVE_SOURCES = {"override", "wind", "combined", "ratings", "trend"}
+ACTIVE_SOURCES = {"override", "wind", "combined", "ratings", "trend", "injury"}
 
 
 # ----------------------------------------------------------------------

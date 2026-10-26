@@ -14,6 +14,8 @@ load_games()       one row per game (FBS at home or away) with final scores,
 load_pbp_games()   one row per offense per game: plays, EPA/play, success
                    rate, pass and rush EPA, outside garbage time; and
                    possessions and points per possession (all game).
+load_starters()    each offense's starting quarterback per game (the passer
+                   on most of its first three pass attempts).
 
 Lines run 2006-2025 (cfbfastR's betting file; opening lines from 2012, none
 for 2020 and about 60% of 2022-25). Play-by-play from 2014.
@@ -160,6 +162,27 @@ def _pbp_season(path: str) -> pd.DataFrame:
     return a.merge(_drives(raw), on=["game_id", "pos_team"], how="left")
 
 
+def _starters(path: str) -> pd.DataFrame:
+    """Each offense's starting QB per game: the passer on most of its first
+    three pass attempts (the passer with the most attempts would count a
+    starter benched mid-game as his backup's start)."""
+    d = pd.read_parquet(path, columns=["game_id", "pos_team", "passer_player_name",
+                                       "pass_attempt", "id_play"])
+    d = d[d.pass_attempt == 1].dropna(subset=["passer_player_name"])
+    d = d.assign(id_play=pd.to_numeric(d.id_play, errors="coerce")).sort_values("id_play")
+    first = d.groupby(["game_id", "pos_team"]).head(3)
+    return (first.groupby(["game_id", "pos_team"]).passer_player_name
+            .agg(lambda x: x.mode().iloc[0]).rename("starter").reset_index())
+
+
+def load_starters(season: int) -> pd.DataFrame:
+    """Starting QBs for one season (game_id, pos_team, starter), from the
+    file load_pbp_games writes alongside its own cache; empty if missing."""
+    path = os.path.join(CACHE_DIR, f"starters_{season}.parquet")
+    return pd.read_parquet(path) if os.path.exists(path) else pd.DataFrame(
+        columns=["game_id", "pos_team", "starter"])
+
+
 def load_pbp_games(seasons) -> pd.DataFrame:
     """Per-offense game stats, cached as a small file per season (the raw
     play-by-play is ~120 MB a season and is deleted once collapsed)."""
@@ -169,11 +192,13 @@ def load_pbp_games(seasons) -> pd.DataFrame:
         if y < PBP_FIRST:
             continue
         small = os.path.join(CACHE_DIR, f"pbp_games_v2_{y}.parquet")
-        stale = y >= cur and (not os.path.exists(small) or
+        qbs = os.path.join(CACHE_DIR, f"starters_{y}.parquet")
+        stale = y >= cur and (not os.path.exists(small) or not os.path.exists(qbs) or
                               time.time() - os.path.getmtime(small) > 12 * 3600)
         if stale or not os.path.exists(small):
             raw = _fetch(PBP_URL.format(season=y), f"pbp_{y}.parquet", 0)
             _pbp_season(raw).assign(season=y).to_parquet(small)
+            _starters(raw).to_parquet(qbs)
             os.remove(raw)
         out.append(pd.read_parquet(small))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()

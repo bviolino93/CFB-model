@@ -380,29 +380,40 @@ def drop_thin_spreads(bettable: pd.DataFrame, ctx: dict,
     return bettable[~thin]
 
 
-def qb_vetoes(bettable: pd.DataFrame, upcoming: pd.DataFrame, ids: dict,
-              news: dict) -> pd.Series:
-    """Why each bettable row is ruled out by quarterback news ("" if it
-    isn't): a model spread on a team whose regular QB won't start, or a
-    model over when either team's won't. The ratings behind those were built
-    with the regular QB throwing. Rows that rest on a book lagging the sharp
-    books ("market") stay: the sharp line already knows the news."""
-    out = []
-    for r in bettable.itertuples():
-        gid = ids.get(r.event_id)
-        why = ""
-        if gid in upcoming.index and "market" not in str(r.sources).split(","):
-            u = upcoming.loc[gid]
-            e = news.get(cfb_news.game_key(u.home_team, u.away_team, r.commence), {})
-            if r.market == "spreads":
-                school = u.home_team if r.pick == r.home else u.away_team
-                if cfb_news.qb_out(e, school):
-                    why = f"{school}'s regular quarterback isn't expected to start"
-            elif str(r.pick).lower() == "over":
-                why = next((f"{t}'s regular quarterback isn't expected to start"
-                            for t in (u.home_team, u.away_team) if cfb_news.qb_out(e, t)), "")
-        out.append(why)
-    return pd.Series(out, index=bettable.index, dtype=str)
+def team_starters(g: pd.DataFrame, season: int) -> dict:
+    """School -> its starting QBs this season, oldest first."""
+    st = cfb_data.load_starters(season)
+    if st.empty:
+        return {}
+    when = g.set_index("game_id").start_date
+    st = st.assign(when=st.game_id.map(when)).dropna(subset=["when"]).sort_values("when")
+    return st.groupby("pos_team").starter.apply(list).to_dict()
+
+
+def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
+                   starters: dict, done: set) -> list:
+    """Fair-line nudges for games whose news says a backup QB is making his
+    first start (cfb_news.qb_change): that team's margin and the total each
+    lose NEW_QB_PTS. Games in `done` are skipped (and added to it), so a
+    game is adjusted once however many times the news is checked."""
+    adj = []
+    for ev, gid in ids.items():
+        if gid not in upcoming.index or ev in done:
+            continue
+        u, f = upcoming.loc[gid], fair[ev]
+        e = news.get(cfb_news.game_key(u.home_team, u.away_team, f.commence))
+        if not e:
+            continue
+        done.add(ev)
+        for school, sign in ((u.home_team, 1), (u.away_team, -1)):
+            pts, _ = cfb_news.qb_change(e, school, starters.get(school, []))
+            if pts:
+                print(f"news: {school} starting a backup QB for the first time: "
+                      f"{pts:+.1f} on their margin and the total")
+                note = f"{school}'s backup QB"
+                adj += [sel.Adjustment(f.home_team, "spreads", sign * pts, "injury", note),
+                        sel.Adjustment(f.home_team, "totals", pts, "injury", note)]
+    return adj
 
 
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
@@ -455,8 +466,11 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                       & priced.book.isin(my_books)]
     bettable = drop_thin_spreads(bettable, ctx)
     picks = sel.select(bettable, bankroll, pol)
-    # Look up the news for the games picked; if it rules a pick out, pick
-    # again without it (and look up any new games that brings in).
+    # Look up the news for the games picked. A backup QB's first start
+    # moves that game's fair line, so price and pick again; repeat for any
+    # new games that brings in.
+    starters = team_starters(g, cfb_data.current_season(now)) if news is not None else {}
+    done = set()
     for _ in range(4):
         if news is None or not len(picks):
             break
@@ -464,12 +478,14 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                   "kickoff": c} for e, c in picks.drop_duplicates("event_id")[["event_id", "commence"]]
                  .itertuples(index=False) if ids.get(e) in upcoming.index]
         news.update(cfb_news.fetch(games, news, now))
-        why = qb_vetoes(bettable, upcoming, ids, news)
-        if not (why != "").any():
+        qa = qb_adjustments(fair, {e: ids[e] for e in set(picks.event_id) if e in ids},
+                            upcoming, news, starters, done)
+        if not qa:
             break
-        for r, w in zip(bettable[why != ""].itertuples(), why[why != ""]):
-            print(f"news: no {r.pick} {r.point:g} ({r.away} @ {r.home}): {w}")
-        bettable = bettable[why == ""]
+        sel.apply_adjustments(fair, qa)
+        priced = sel.price_offers(rows, fair, mm, tm, pol)
+        bettable = drop_thin_spreads(priced[priced.market.isin(["spreads", "totals"])
+                                            & priced.book.isin(my_books)], ctx)
         picks = sel.select(bettable, bankroll, pol)
     if len(picks):
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
@@ -485,12 +501,23 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             elif kind in c and "combined" in srcs:
                 pts, parts = c[kind]
                 why.append(explain(p, c["row"], parts, ranks, pts, p.fair_market))
+            elif "injury" in srcs:
+                why.append("")
             else:
                 fv = (f"put the total at {p.fair_market:.1f}" if p.market == "totals"
                       else f"make {p.home if p.fair_market >= 0 else p.away} a "
                            f"{abs(p.fair_market):.1f}-point favorite")
                 why.append(f"{BOOK_NAME.get(p.book, p.book)} hasn't caught up "
                            f"with the sharp books, which {fv}.")
+        # a backup QB's first start (qb_adjustments) gets its own sentence
+        qb = {a.home_team: a.note for f in fair.values()
+              for a in f.adjustments if a.source == "injury"}
+        why = [(w + " " if w else "") +
+               f"News: {qb[p.home]} makes his first start. Lines have overrated a team by "
+               f"about a point in that game, so it's priced a point worse (and the total "
+               f"a point lower)."
+               if p.home in qb and "injury" in str(p.sources).split(",") else w
+               for w, p in zip(why, picks.itertuples())]
         picks["why"] = why
         picks["game_id"] = [ids.get(e) for e in picks.event_id]
         picks["book"] = picks.book.map(lambda b: BOOK_NAME.get(b, b))
@@ -529,9 +556,12 @@ COLS = ["away", "home", "commence", "market", "pick", "point", "price",
         "book", "stake", "win_chance", "ev", "why", "game_id", "injuries"]
 
 
-def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict) -> pd.DataFrame:
+def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict,
+                starters: dict | None = None) -> pd.DataFrame:
     """Each pick's injury news (cfb_news) as an "injuries" list, both
-    teams, by school name. Shown only; it doesn't change the bet."""
+    teams, by school name, with the points a backup QB's first start
+    took off."""
+    starters = starters or {}
     s = g.set_index("game_id")
     out = []
     for p in picks.itertuples():
@@ -540,7 +570,8 @@ def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict) -> pd.DataFram
             continue
         r = s.loc[p.game_id]
         e = news.get(cfb_news.game_key(r.home_team, r.away_team, p.commence), {})
-        out.append(cfb_news.injuries(e, r.away_team) + cfb_news.injuries(e, r.home_team))
+        out.append(cfb_news.injuries(e, r.away_team, starters.get(r.away_team))
+                   + cfb_news.injuries(e, r.home_team, starters.get(r.home_team)))
     return picks.assign(injuries=out)
 
 
@@ -613,7 +644,8 @@ def main():
     os.makedirs(os.path.dirname(a.news) or ".", exist_ok=True)
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
-    picks = attach_news(picks, g, news) if len(picks) else picks.assign(injuries=[])
+    starters = team_starters(g, cfb_data.current_season(now))
+    picks = attach_news(picks, g, news, starters) if len(picks) else picks.assign(injuries=[])
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
