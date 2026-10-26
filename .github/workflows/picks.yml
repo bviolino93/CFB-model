@@ -13,6 +13,8 @@ name: College picks
 # Separate from the Streamlit app (app.py); nothing here touches it.
 #
 # Needs repository secret ODDS_API_KEY (the same key as the NFL repo).
+# Optional secret ANTHROPIC_API_KEY: Claude reads the injury news for the
+# games being bet (cfb_news.py, ~15 cents a game); skipped without it.
 # Optional repository variable MY_BOOKS (default "draftkings,fanduel").
 # ~4 Odds API credits a run (us + eu regions, spreads and totals).
 
@@ -59,15 +61,17 @@ jobs:
           path: .cache_cfb
           key: cfb-${{ github.run_id }}
           restore-keys: cfb-
-      - run: pip install pandas numpy pyarrow requests scipy scikit-learn
+      - run: pip install pandas numpy pyarrow requests scipy scikit-learn anthropic
       - name: Restore bet history from the picks branch
         run: |
           mkdir -p site
           git fetch -q --depth 1 origin picks && \
             git show FETCH_HEAD:history.json > site/history.json || true
+          git show FETCH_HEAD:news.json > site/news.json 2>/dev/null || true
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
         run: |
           python cfb_picks.py --out site/index.html --json site/picks.json \

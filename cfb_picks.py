@@ -35,6 +35,7 @@ import requests
 
 import cfb_data
 import cfb_model
+import cfb_news
 import ledger
 import selector as sel
 
@@ -482,7 +483,22 @@ def school_names(fair: dict, ids: dict, g: pd.DataFrame, history) -> dict:
 
 
 COLS = ["away", "home", "commence", "market", "pick", "point", "price",
-        "book", "stake", "win_chance", "ev", "why", "game_id"]
+        "book", "stake", "win_chance", "ev", "why", "game_id", "injuries"]
+
+
+def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict) -> pd.DataFrame:
+    """Each pick's injury news (cfb_news) as an "injuries" list, both
+    teams, by school name. Shown only; it doesn't change the bet."""
+    s = g.set_index("game_id")
+    out = []
+    for p in picks.itertuples():
+        if p.game_id not in s.index:
+            out.append([])
+            continue
+        r = s.loc[p.game_id]
+        e = news.get(cfb_news.game_key(r.home_team, r.away_team, p.commence), {})
+        out.append(cfb_news.injuries(e, r.away_team) + cfb_news.injuries(e, r.home_team))
+    return picks.assign(injuries=out)
 
 
 def render_html(picks, fair, made, bankroll, history, names) -> str:
@@ -529,6 +545,8 @@ def main():
                     help="appended to when this run finds new bets")
     ap.add_argument("--bankroll", type=float, default=1000.0)
     ap.add_argument("--books", default=os.environ.get("MY_BOOKS") or MY_BOOKS)
+    ap.add_argument("--news", default="site/news.json",
+                    help="injury news cache (cfb_news), kept on the picks branch")
     ap.add_argument("--lines-csv", default="")
     a = ap.parse_args()
     if a.lines_csv:
@@ -544,6 +562,24 @@ def main():
     now = datetime.now(timezone.utc)
     g = cfb_model.load_features()
     picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g)
+    if len(picks):
+        s = g.set_index("game_id")
+        games = [{"home": s.loc[i, "home_team"], "away": s.loc[i, "away_team"],
+                  "kickoff": c} for i, c in
+                 picks.drop_duplicates("game_id")[["game_id", "commence"]].itertuples(index=False)
+                 if i in s.index]
+        try:
+            with open(a.news) as fh:
+                cache = json.load(fh)
+        except (OSError, ValueError):
+            cache = {}
+        news = cfb_news.fetch(games, cache, now)
+        os.makedirs(os.path.dirname(a.news) or ".", exist_ok=True)
+        with open(a.news, "w") as fh:
+            json.dump(news, fh, indent=1)
+        picks = attach_news(picks, g, news)
+    else:
+        picks = picks.assign(injuries=[])
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
