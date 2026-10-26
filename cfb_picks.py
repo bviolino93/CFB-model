@@ -615,7 +615,7 @@ def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict,
 
 def render_html(picks, fair, made, bankroll, history, names) -> str:
     data = {
-        "title": "College Edge", "names": names,
+        "title": "Fieldline College", "names": names,
         "nav": {"href": "https://bviolino93.github.io/NFL-model/", "text": "NFL picks →"},
         "updated": made, "bankroll": bankroll,
         "picks": picks[COLS].to_dict("records") if len(picks) else [],

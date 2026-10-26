@@ -5179,7 +5179,7 @@ def _candidate_pass_fail(candidate_df, min_bets=150, min_positive_seasons=4):
 
 
 st.set_page_config(
-    page_title="Saturday Edge",
+    page_title="Fieldline College",
     page_icon="🏈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -5288,7 +5288,7 @@ st.markdown("""
   --line:rgba(148,163,184,.12);
   --text:#f8fafc;
   --muted:#8fa3ba;
-  --blue:#3b82f6;
+  --blue:#22c38e;
   --cyan:#38bdf8;
   --green:#22c55e;
   --yellow:#facc15;
@@ -5296,7 +5296,7 @@ st.markdown("""
 }
 .stApp{
   background:
-    radial-gradient(circle at 18% -4%, rgba(59,130,246,.18), transparent 30%),
+    radial-gradient(circle at 18% -4%, rgba(34,195,142,.18), transparent 30%),
     radial-gradient(circle at 88% 4%, rgba(56,189,248,.08), transparent 22%),
     linear-gradient(180deg,#071321 0%,#06111f 44%,#050d18 100%);
   color:var(--text);
@@ -5347,8 +5347,8 @@ h1,h2,h3{
   margin-top:12px;
   padding:5px 9px;
   border-radius:999px;
-  background:rgba(59,130,246,.11);
-  border:1px solid rgba(96,165,250,.22);
+  background:rgba(34,195,142,.11);
+  border:1px solid rgba(79,214,168,.22);
   color:#bfdbfe;
   font-size:.68rem;
   font-weight:800;
@@ -5389,8 +5389,8 @@ h1,h2,h3{
 .workflow-num{
   width:30px;height:30px;border-radius:10px;
   display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(180deg,rgba(59,130,246,.25),rgba(37,99,235,.12));
-  border:1px solid rgba(96,165,250,.28);
+  background:linear-gradient(180deg,rgba(34,195,142,.25),rgba(37,99,235,.12));
+  border:1px solid rgba(79,214,168,.28);
   color:#dbeafe;
   font-size:.76rem;font-weight:900;
 }
@@ -5435,7 +5435,7 @@ div[data-testid="stDownloadButton"] > button{
   border:1px solid rgba(255,255,255,.08)!important;
 }
 div[data-testid="stButton"] > button[kind="primary"]{
-  background:linear-gradient(135deg,#2563eb,#3b82f6)!important;
+  background:linear-gradient(135deg,#12a372,#22c38e)!important;
   box-shadow:0 10px 30px rgba(37,99,235,.24)!important;
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover{
@@ -5485,7 +5485,7 @@ div[data-testid="stMetric"]{
   position:absolute;
   inset:auto -60px -90px auto;
   width:180px;height:180px;border-radius:999px;
-  background:radial-gradient(circle,rgba(59,130,246,.16),transparent 66%);
+  background:radial-gradient(circle,rgba(34,195,142,.16),transparent 66%);
 }
 .result-hero.a{border-color:rgba(34,197,94,.32);box-shadow:0 18px 50px rgba(20,83,45,.16)}
 .result-hero.b{border-color:rgba(56,189,248,.30);box-shadow:0 18px 50px rgba(14,116,144,.13)}
@@ -5566,7 +5566,7 @@ div[data-testid="stMetric"]{
   border:1px solid rgba(148,163,184,.10);
 }
 .market-card:hover{
-  border-color:rgba(96,165,250,.20);
+  border-color:rgba(79,214,168,.20);
 }
 .market-grade{
   flex:0 0 auto;
@@ -6959,8 +6959,8 @@ div[data-baseweb="notification"][kind="positive"],
 /* info — neutral guidance */
 [data-testid="stAlert"]:has(svg[title="info"]),
 div[data-baseweb="notification"][kind="info"]{
-  background:linear-gradient(180deg,rgba(47,107,255,.13),rgba(47,107,255,.05))!important;
-  border-color:rgba(47,107,255,.32)!important;
+  background:linear-gradient(180deg,rgba(31,185,133,.13),rgba(31,185,133,.05))!important;
+  border-color:rgba(31,185,133,.32)!important;
 }
 /* warning — watch list / attention */
 [data-testid="stAlert"]:has(svg[title="warning"]),
@@ -7057,8 +7057,8 @@ div[class*="st-key-v420_slate_segment"] label p{
 }
 div[class*="st-key-ge432_topnav"] label:has(input:checked),
 div[class*="st-key-v420_slate_segment"] label:has(input:checked){
-  background:linear-gradient(180deg,#3b7bff,#2f6bff)!important;
-  box-shadow:0 6px 16px rgba(47,107,255,.34)!important;
+  background:linear-gradient(180deg,#2ccf98,#1fb985)!important;
+  box-shadow:0 6px 16px rgba(31,185,133,.34)!important;
 }
 div[class*="st-key-ge432_topnav"] label:has(input:checked) p,
 div[class*="st-key-v420_slate_segment"] label:has(input:checked) p{
@@ -7148,7 +7148,7 @@ div[class*="st-key-v420_run_slate"] button{
 .se-home-bet-rank{
   width:26px;height:26px;flex:0 0 26px;border-radius:8px;
   display:flex;align-items:center;justify-content:center;
-  background:rgba(47,107,255,.16);border:1px solid rgba(47,107,255,.26);
+  background:rgba(31,185,133,.16);border:1px solid rgba(31,185,133,.26);
   color:#7fb4ff;font-size:.72rem;font-weight:800;
 }
 .se-curve{
@@ -7180,9 +7180,9 @@ div[data-testid="stAlertContainer"] code{
 }
 .se-hero-bet{
   border-radius:17px;padding:15px 15px 8px;margin-bottom:4px;
-  background:linear-gradient(180deg,rgba(47,107,255,.17),rgba(12,26,44,.62));
-  border:1px solid rgba(47,107,255,.36);
-  box-shadow:0 14px 34px rgba(47,107,255,.17);
+  background:linear-gradient(180deg,rgba(31,185,133,.17),rgba(12,26,44,.62));
+  border:1px solid rgba(31,185,133,.36);
+  box-shadow:0 14px 34px rgba(31,185,133,.17);
 }
 .se-hero-bet-top{display:flex;align-items:center;gap:13px}
 .se-hero-logo{flex:0 0 auto;display:flex;align-items:center}
@@ -7210,7 +7210,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-mini-rank{
   width:20px;height:20px;flex:0 0 20px;border-radius:6px;
   display:flex;align-items:center;justify-content:center;
-  background:rgba(47,107,255,.16);border:1px solid rgba(47,107,255,.26);
+  background:rgba(31,185,133,.16);border:1px solid rgba(31,185,133,.26);
   color:#7fb4ff;font-size:.62rem;font-weight:800;
 }
 .se-mini-ev{margin-left:auto;color:#4ae0aa;font-size:.82rem;font-weight:800}
@@ -7274,7 +7274,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-why b{display:block;font-size:.76rem;color:#eef4fb;font-weight:800}
 .se-why small{display:block;font-size:.65rem;color:#8fa6bd;margin-top:3px;line-height:1.35}
 .se-why-rel{margin-left:7px;font-size:.52rem;font-weight:800;letter-spacing:.06em;
-  padding:1px 6px;border-radius:5px;background:rgba(47,107,255,.14);color:#7fb4ff}
+  padding:1px 6px;border-radius:5px;background:rgba(31,185,133,.14);color:#7fb4ff}
 .se-why-rel.thin{background:rgba(242,193,78,.14);color:#f2c14e}
 .se-asof{display:flex;align-items:baseline;gap:8px;margin:2px 0 8px;
   padding:9px 12px;border-radius:11px;
@@ -7318,7 +7318,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
   max-width:330px}
 .se-tock{display:flex;align-items:center;gap:13px;margin:2px 0 16px;
   padding:14px 16px;border-radius:15px;
-  background:linear-gradient(135deg,rgba(74,224,170,.16),rgba(47,107,255,.10));
+  background:linear-gradient(135deg,rgba(74,224,170,.16),rgba(31,185,133,.10));
   border:1px solid rgba(74,224,170,.34);
   box-shadow:0 10px 28px rgba(74,224,170,.13)}
 .se-tock.big{background:linear-gradient(135deg,rgba(242,193,78,.20),rgba(74,224,170,.12));
@@ -7369,7 +7369,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-proj-row span{flex:0 0 116px;font-size:.7rem;color:#9db4cb;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .se-proj-row i{height:9px;border-radius:99px;background:rgba(120,154,188,.34);display:block}
-.se-proj-row i.hi{background:linear-gradient(90deg,#2f6bff,#4ae0aa)}
+.se-proj-row i.hi{background:linear-gradient(90deg,#1fb985,#4ae0aa)}
 .se-proj-row b{font-size:.86rem;color:#eef4fb;font-weight:800;min-width:26px;text-align:right}
 .se-proj-cap{font-size:.58rem;letter-spacing:.11em;text-transform:uppercase;
   color:#63798f;margin-top:2px}
@@ -7377,14 +7377,14 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-home-bet-main{flex:1;min-width:0}
 .se-conv{margin-top:7px;height:4px;border-radius:99px;background:rgba(120,154,188,.14);overflow:hidden}
 .se-conv i{display:block;height:100%;border-radius:99px;
-  background:linear-gradient(90deg,#2f6bff,#4ae0aa)}
+  background:linear-gradient(90deg,#1fb985,#4ae0aa)}
 .se-home-bet.is-best{
-  border-color:rgba(47,107,255,.42)!important;
-  background:linear-gradient(180deg,rgba(47,107,255,.14),rgba(12,26,44,.6))!important;
-  box-shadow:0 8px 24px rgba(47,107,255,.16);
+  border-color:rgba(31,185,133,.42)!important;
+  background:linear-gradient(180deg,rgba(31,185,133,.14),rgba(12,26,44,.6))!important;
+  box-shadow:0 8px 24px rgba(31,185,133,.16);
 }
 .se-home-bet.is-best .se-home-bet-rank{
-  background:linear-gradient(180deg,#3b7bff,#2f6bff);color:#fff;border-color:transparent;
+  background:linear-gradient(180deg,#2ccf98,#1fb985);color:#fff;border-color:transparent;
 }
 .se-home-bet-main b{display:block;font-size:.94rem;color:#eef4fb;font-weight:800}
 .se-home-bet-main small{display:block;font-size:.68rem;color:#7f97ae;margin-top:2px}
@@ -7393,7 +7393,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .se-home-bet-num span{display:block;font-size:.5rem;letter-spacing:.12em;color:#63798f;text-transform:uppercase;margin-top:1px}
 .se-home-bet-tag{
   font-size:.55rem;letter-spacing:.09em;font-weight:800;color:#7fb4ff;
-  border:1px solid rgba(47,107,255,.34);border-radius:999px;padding:5px 9px;
+  border:1px solid rgba(31,185,133,.34);border-radius:999px;padding:5px 9px;
   white-space:nowrap;
 }
 .se-stat-strip{
@@ -7412,7 +7412,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .market-card.plain{padding:13px 15px!important}
 .market-card.plain .market-main{flex:1 1 auto;min-width:0}
 .market-grade.neutral{background:rgba(120,154,188,.10)!important;color:#7f97ae!important;border-color:rgba(120,154,188,.18)!important}
-.ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(47,107,255,.09);border:1px solid rgba(47,107,255,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
+.ge-shop{margin-top:9px;padding:8px 10px;border-radius:10px;background:rgba(31,185,133,.09);border:1px solid rgba(31,185,133,.20);color:#cfe0f5;font-size:.52rem;font-weight:800}
 .ge-shop b{color:#7fb4ff;font-size:.60rem}
 .ge-shop span{color:#7f97ae;font-weight:700}
 /* injury strip — amber when a key position is out, neutral otherwise */
@@ -7421,7 +7421,7 @@ div[class*="st-key-se_pair"] [data-testid="stVerticalBlock"]{width:100%}
 .ge-inj b{color:#f2c14e}
 .ge-wordmark{font-style:italic;line-height:1;white-space:nowrap}
 .ge-wordmark span{color:#f7fbff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
-.ge-wordmark strong{color:#388cff;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
+.ge-wordmark strong{color:#22c38e;font-size:1.08rem;font-weight:950;letter-spacing:.035em}
 .ge-brand-sub{margin-top:6px;color:#7590aa;font-size:.48rem;font-weight:900;letter-spacing:.17em}
 .ge-right{display:flex;align-items:center;gap:9px}
 .ge-cfb{color:#8ba4bd;font-size:.59rem;font-weight:950;letter-spacing:.13em}
@@ -7485,17 +7485,11 @@ st.markdown(
     <div class="ge433-header">
       <div class="ge431-brand">
         <div class="se-goalpost-logo" aria-hidden="true">
-          <svg viewBox="0 0 44 44" width="40" height="40" xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="1" width="42" height="42" rx="11" fill="#0b1b2d" stroke="#22405f" stroke-width="1.5"/>
-            <line x1="22" y1="34" x2="22" y2="22" stroke="#edf6ff" stroke-width="3" stroke-linecap="round"/>
-            <line x1="10" y1="22" x2="34" y2="22" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
-            <line x1="10" y1="22" x2="10" y2="11" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
-            <line x1="34" y1="22" x2="34" y2="11" stroke="#2f6bff" stroke-width="3" stroke-linecap="round"/>
-          </svg>
+          <svg width="40" height="40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#22c38e"/><stop offset="1" stop-color="#4fd6a8"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17263f"/><stop offset="1" stop-color="#0e1a2e"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#26354d" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#22c38e" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3a4a63" stroke-width="2.5" stroke-linecap="round"/></svg>
         </div>
         <div>
-          <div class="ge-wordmark"><span>SATURDAY</span> <strong>EDGE</strong></div>
-          <div class="ge-brand-sub">DATA DRIVEN. GAME READY.</div>
+          <div class="ge-wordmark"><span>FIELDLINE</span> <strong>COLLEGE</strong></div>
+          <div class="ge-brand-sub">FOOTBALL ANALYTICS</div>
         </div>
       </div>
       <div class="ge433-head-right">
@@ -8032,7 +8026,7 @@ def ios_save_button(label, csv_text, filename):
             style="
               width:100%;
               min-height:44px;
-              border:1px solid rgba(96,165,250,.28);
+              border:1px solid rgba(79,214,168,.28);
               border-radius:12px;
               background:linear-gradient(135deg,#0F2747,#12325B);
               color:#EAF2FF;
@@ -26469,7 +26463,7 @@ def _se_slate_map_svg(points, w=680, h=380):
         if p["bet"]:
             r = 5 + min(6.0, abs(p.get("ev", 0)) * 55)
             dots.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r+5:.1f}" fill="#2f6bff" opacity=".16"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r+5:.1f}" fill="#1fb985" opacity=".16"/>'
                 f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="#4ae0aa" opacity=".92"/>'
             )
         else:
@@ -27125,7 +27119,7 @@ def _se_card_text(df, day):
     if "bet_tier" in x.columns:
         x = x[x["bet_tier"].astype(str).str.upper() != "WATCH"]
     if x.empty:
-        return f"SATURDAY EDGE \u2014 {_label}\nNo qualifying bets today."
+        return f"FIELDLINE COLLEGE \u2014 {_label}\nNo qualifying bets today."
 
     try:
         x["_k"] = [_se_kick_dt(r, str(day)) for _, r in x.iterrows()]
@@ -27133,7 +27127,7 @@ def _se_card_text(df, day):
     except Exception:
         pass
 
-    lines = [f"SATURDAY EDGE \u2014 {_label}",
+    lines = [f"FIELDLINE COLLEGE \u2014 {_label}",
              "\u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low", ""]
     for r in x.to_dict("records"):
         _t = _se_kick_label(r, str(day))
@@ -27190,7 +27184,7 @@ def _se_window_banner(name, n_off, n_watch):
         ),
         "Midday": (
             '<linearGradient id="gM" x1="0" y1="0" x2="0" y2="1">'
-            '<stop offset="0%" stop-color="#1d3f6b"/><stop offset="100%" stop-color="#2f6bff"/>'
+            '<stop offset="0%" stop-color="#1d3f6b"/><stop offset="100%" stop-color="#1fb985"/>'
             '</linearGradient>',
             '<rect width="300" height="64" fill="url(#gM)" opacity=".55"/>'
             '<circle cx="246" cy="20" r="13" fill="#ffe08a"/>'
@@ -27261,18 +27255,18 @@ def _se_card_pdf(df, day):
     doc = SimpleDocTemplate(buf, pagesize=letter,
                             leftMargin=0.6*inch, rightMargin=0.6*inch,
                             topMargin=0.6*inch, bottomMargin=0.6*inch,
-                            title=f"Saturday Edge card {day}")
+                            title=f"Fieldline College card {day}")
     ss = getSampleStyleSheet()
     h1 = ParagraphStyle("h1", parent=ss["Title"], fontSize=17, spaceAfter=2,
                         textColor=colors.HexColor("#12233d"))
     sub = ParagraphStyle("sub", parent=ss["Normal"], fontSize=9,
                          textColor=colors.HexColor("#5a7086"), spaceAfter=14)
     wh = ParagraphStyle("wh", parent=ss["Heading2"], fontSize=11, spaceBefore=12,
-                        spaceAfter=5, textColor=colors.HexColor("#2f6bff"))
+                        spaceAfter=5, textColor=colors.HexColor("#1fb985"))
     note = ParagraphStyle("note", parent=ss["Normal"], fontSize=7.5,
                           textColor=colors.HexColor("#7a8a99"), spaceBefore=16)
 
-    story = [Paragraph("SATURDAY EDGE", h1),
+    story = [Paragraph("FIELDLINE COLLEGE", h1),
              Paragraph(f"Frozen card &middot; {day}", sub)]
 
     for wname in ("Early", "Midday", "Night", "Unscheduled"):
@@ -27941,7 +27935,7 @@ def _se_share_text(df, day, ml=None, min_stars=1):
         dl = pd.to_datetime(str(day)[:10]).strftime("%a %-m/%-d")
     except Exception:
         dl = str(day)
-    lines = [f"Saturday Edge · {dl}"]
+    lines = [f"Fieldline College · {dl}"]
     x = df.copy()
     if "_conf" not in x.columns:
         x["_conf"] = [_se_conf(r) for _, r in x.iterrows()]
@@ -28053,7 +28047,7 @@ def _se_card_summary_html(df, day):
     out = (
         '<style>'
         '.se-sum{position:relative;margin:4px 0 18px;padding:14px 14px 12px;border-radius:18px;'
-        'background:radial-gradient(120% 140% at 0% 0%,rgba(47,107,255,.22),transparent 55%),'
+        'background:radial-gradient(120% 140% at 0% 0%,rgba(31,185,133,.22),transparent 55%),'
         'radial-gradient(120% 140% at 100% 100%,rgba(74,224,170,.14),transparent 55%),'
         'rgba(10,22,38,.85);border:1px solid rgba(120,154,188,.18);overflow:hidden}'
         '.se-sum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}'
@@ -28377,8 +28371,8 @@ def _se_margin_curve_svg(mu, sigma, market, home, away, w=680, h=190):
     return f'''<svg viewBox="0 0 {w} {h}" width="100%" xmlns="http://www.w3.org/2000/svg" role="img">
   <defs>
     <linearGradient id="seFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2f6bff" stop-opacity=".42"/>
-      <stop offset="100%" stop-color="#2f6bff" stop-opacity=".04"/>
+      <stop offset="0%" stop-color="#1fb985" stop-opacity=".42"/>
+      <stop offset="100%" stop-color="#1fb985" stop-opacity=".04"/>
     </linearGradient>
   </defs>
   <polygon points="{area}" fill="url(#seFill)"/>
@@ -31072,8 +31066,8 @@ if True:
 st.divider()
 st.markdown(
     '<div class="se-footer">'
-    '<span class="se-footer-mark">SATURDAY <b>EDGE</b></span>'
-    '<span class="se-footer-sub">Data driven. Game ready.</span>'
+    '<span class="se-footer-mark">FIELDLINE <b>COLLEGE</b></span>'
+    '<span class="se-footer-sub">Football analytics.</span>'
     '<span class="se-footer-legal">'
     'For entertainment and research. This model has not been shown to beat the '
     'closing market \u2014 no edge is claimed. 21+ where legal. '

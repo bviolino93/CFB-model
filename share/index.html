@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Edge Picks</title>
+<title>Fieldline</title>
 <meta name="description" content="This week's NFL and college football picks, with the reasoning and the running record.">
-<meta property="og:title" content="Edge Picks">
+<meta property="og:title" content="Fieldline">
 <meta property="og:description" content="This week's NFL and college football picks, with the reasoning and the running record.">
-<meta name="theme-color" content="#07090d">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
+<meta name="theme-color" content="#0a1220">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJGaWVsZGxpbmUiPjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZmwtZyIgeDE9IjAiIHkxPSIxIiB4Mj0iMSIgeTI9IjAiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzIyYzM4ZSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzRmZDZhOCIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJmbC1iIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMTcyNjNmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMGUxYTJlIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3QgeD0iMSIgeT0iMSIgd2lkdGg9IjYyIiBoZWlnaHQ9IjYyIiByeD0iMTUiIGZpbGw9InVybCgjZmwtYikiIHN0cm9rZT0iIzI2MzU0ZCIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48cGF0aCBkPSJNMjAgMTQgVjUwIiBzdHJva2U9IiNlYWYwZjgiIHN0cm9rZS13aWR0aD0iNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTIwIDE2IEg0NiIgc3Ryb2tlPSIjZWFmMGY4IiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0yMCAzMiBINDAiIHN0cm9rZT0iIzIyYzM4ZSIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48cGF0aCBkPSJNMzAgNDQgVjUwIE0zOCA0NCBWNTAgTTQ2IDQ0IFY1MCIgc3Ryb2tlPSIjM2E0YTYzIiBzdHJva2Utd2lkdGg9IjIuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #07090d; --panel: #10141b; --panel2: #151a23; --line: #232a36; --ink: #eef2f7; --muted: #8b95a5;
-  --neon: #b6ff3b; --neon2: #3bffb0; --win: #3ddc84; --loss: #ff4d5e; --push: #8b95a5;
+  --bg: #0a1220; --panel: #111c2e; --panel2: #16233a; --line: #1f2d44; --ink: #eaf0f8; --muted: #8597b0;
+  --neon: #22c38e; --neon2: #4fd6a8; --win: #3ddc84; --loss: #ff4d5e; --push: #8597b0;
   --nfl: #3b8bff; --cfb: #e8650c; --dk: #53d337; --fd: #1e90ff;
   --display: "Bebas Neue", Impact, "Arial Narrow", sans-serif;
 }
@@ -25,7 +25,7 @@ body {
   margin: 0; color: var(--ink); min-height: 100vh;
   font: 15px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background:
-    radial-gradient(900px 420px at 50% -120px, rgba(182,255,59,.16), transparent 70%),
+    radial-gradient(900px 420px at 50% -120px, rgba(34,195,142,.16), transparent 70%),
     repeating-linear-gradient(90deg, transparent 0 79px, rgba(255,255,255,.025) 79px 80px),
     var(--bg);
   background-attachment: fixed;
@@ -34,15 +34,14 @@ main { max-width: 800px; margin: 0 auto; padding: 28px 16px 56px; }
 
 /* hero */
 .hero { text-align: center; padding: 8px 0 6px; }
-.logo { font-family: var(--display); font-size: 84px; line-height: .85; letter-spacing: .02em; margin: 0;
-  background: linear-gradient(180deg, #f4ffe0 0%, var(--neon) 55%, #6fbf12 100%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  filter: drop-shadow(0 0 22px rgba(182,255,59,.35)); }
+.brand { display: inline-flex; align-items: center; gap: 14px; }
+.logo { font: 700 52px/1 Inter, sans-serif; letter-spacing: -.04em; margin: 0; color: var(--ink); }
+.mascot { display: block; width: 58px; height: 58px; flex: 0 0 auto; }
 .tagline { margin: 6px 0 0; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
 .live { display: inline-flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 12.5px; color: var(--muted);
-  padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: rgba(16,20,27,.7); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--neon); box-shadow: 0 0 0 0 rgba(182,255,59,.7); animation: pulse 2s infinite; }
-@keyframes pulse { 70% { box-shadow: 0 0 0 9px rgba(182,255,59,0); } 100% { box-shadow: 0 0 0 0 rgba(182,255,59,0); } }
+  padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: rgba(17,28,46,.7); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--neon); box-shadow: 0 0 0 0 rgba(34,195,142,.7); animation: pulse 2s infinite; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 9px rgba(34,195,142,0); } 100% { box-shadow: 0 0 0 0 rgba(34,195,142,0); } }
 
 /* scoreboard */
 .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 26px 0 0; }
@@ -58,7 +57,7 @@ main { max-width: 800px; margin: 0 auto; padding: 28px 16px 56px; }
 .tabs { display: inline-flex; gap: 4px; margin: 26px 0 4px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; }
 .tabs button { border: 0; background: transparent; color: var(--muted); padding: 8px 16px; border-radius: 999px;
   font: 600 13px Inter, sans-serif; letter-spacing: .04em; cursor: pointer; transition: all .15s; }
-.tabs button[aria-pressed="true"] { background: var(--neon); color: #0b0f05; box-shadow: 0 0 18px rgba(182,255,59,.35); }
+.tabs button[aria-pressed="true"] { background: var(--neon); color: #04140e; box-shadow: 0 0 18px rgba(34,195,142,.35); }
 .tabs button:hover:not([aria-pressed="true"]) { color: var(--ink); }
 
 h2 { font-family: var(--display); font-size: 30px; letter-spacing: .04em; margin: 30px 0 10px; font-weight: 400;
@@ -69,7 +68,7 @@ h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg
 /* tickets */
 .ticket { position: relative; background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--line);
   border-radius: 16px; padding: 14px 16px 14px 20px; margin-bottom: 10px; overflow: hidden; transition: transform .15s, border-color .15s; }
-.ticket:hover { transform: translateY(-1px); border-color: #303949; }
+.ticket:hover { transform: translateY(-1px); border-color: #2c3c56; }
 .ticket::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--lg); }
 .ticket.nfl { --lg: var(--nfl); } .ticket.cfb { --lg: var(--cfb); }
 .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
@@ -85,8 +84,8 @@ h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg
 .match { margin-top: 4px; font-size: 13.5px; color: #c3cad6; }
 .match .at { color: var(--muted); margin: 0 4px; }
 .meter { margin-top: 12px; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-.bar { flex: 1; height: 7px; border-radius: 99px; background: #1f2631; overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--neon2), var(--neon)); box-shadow: 0 0 10px rgba(182,255,59,.5); }
+.bar { flex: 1; height: 7px; border-radius: 99px; background: #1c2a40; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--neon2), var(--neon)); box-shadow: 0 0 10px rgba(34,195,142,.5); }
 .meter b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .book { font-weight: 800; font-size: 11px; letter-spacing: .04em; padding: 3px 7px; border-radius: 6px; border: 1px solid currentColor; }
 .book.dk { color: var(--dk); } .book.fd { color: var(--fd); }
@@ -110,8 +109,8 @@ details[open] summary::before { transform: rotate(90deg); }
 details p { margin: 8px 0 2px; font-size: 14px; line-height: 1.55; color: #d5dbe4; }
 
 /* best bet */
-.best { border: 1px solid rgba(182,255,59,.55); box-shadow: 0 0 0 1px rgba(182,255,59,.15), 0 10px 40px -10px rgba(182,255,59,.35); }
-.best .ribbon { position: absolute; top: 12px; right: -34px; transform: rotate(35deg); background: var(--neon); color: #0b0f05;
+.best { border: 1px solid rgba(34,195,142,.55); box-shadow: 0 0 0 1px rgba(34,195,142,.15), 0 10px 40px -10px rgba(34,195,142,.35); }
+.best .ribbon { position: absolute; top: 12px; right: -34px; transform: rotate(35deg); background: var(--neon); color: #04140e;
   font: 800 10px Inter, sans-serif; letter-spacing: .14em; padding: 4px 40px; }
 .best .when { margin-right: 46px; }
 
@@ -163,7 +162,7 @@ footer a { color: var(--neon); text-decoration: none; }
 .track .hb.up { background: var(--win); border-radius: 0 4px 4px 0; }
 .track .hb.down { background: var(--loss); border-radius: 4px 0 0 4px; }
 .track .hb.hit { background: var(--neon); border-radius: 0 4px 4px 0; }
-.track .hb.rail { background: #1f2631; border-radius: 4px; }
+.track .hb.rail { background: #1c2a40; border-radius: 4px; }
 .track .tk { position: absolute; top: 50%; width: 2px; height: 18px; margin: -9px 0 0 -1px; border-radius: 1px; background: var(--ink); box-shadow: 0 0 0 2px var(--panel); }
 .vrow:hover .mo, .vrow:focus-visible .mo { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--lg); }
 .vrow:hover .stack span, .vrow:hover .hb:not(.rail) { filter: brightness(1.15); }
@@ -185,7 +184,7 @@ footer a { color: var(--neon); text-decoration: none; }
 .ticket.an { animation: rise .5s cubic-bezier(.2,.8,.2,1) backwards; }
 .an:not(.go), .an:not(.go) * { animation-play-state: paused !important; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
-#tip { position: fixed; z-index: 10; pointer-events: none; max-width: 280px; background: #0b0e13; border: 1px solid #303949;
+#tip { position: fixed; z-index: 10; pointer-events: none; max-width: 280px; background: #0b0e13; border: 1px solid #2c3c56;
   border-radius: 10px; padding: 8px 10px; font-size: 12.5px; color: var(--muted); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
 #tip div + div { margin-top: 3px; }
 #tip b { color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -198,7 +197,8 @@ footer a { color: var(--neon); text-decoration: none; }
 
 @media (max-width: 560px) {
   .vrow { grid-template-columns: minmax(0, 40%) 1fr var(--vw, 52px); gap: 8px; padding: 0 2px; }
-  .logo { font-size: 68px; }
+  .logo { font-size: 42px; }
+  .mascot { width: 48px; height: 48px; }
   .board { grid-template-columns: repeat(2, 1fr); }
   .tile .v { font-size: 34px; }
   .bet { font-size: 29px; }
@@ -210,8 +210,8 @@ footer a { color: var(--neon); text-decoration: none; }
 <body>
 <main>
   <header class="hero">
-    <h1 class="logo">EDGE</h1>
-    <p class="tagline">NFL + College Football Picks</p>
+    <div class="brand"><svg class="mascot" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#22c38e"/><stop offset="1" stop-color="#4fd6a8"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17263f"/><stop offset="1" stop-color="#0e1a2e"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#26354d" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eaf0f8" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#22c38e" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3a4a63" stroke-width="2.5" stroke-linecap="round"/></svg><h1 class="logo">Fieldline</h1></div>
+    <p class="tagline">Football Analytics · NFL + College</p>
     <div class="live"><span class="dot"></span><span id="updated">Loading picks…</span></div>
   </header>
 
