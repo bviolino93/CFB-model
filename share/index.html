@@ -98,7 +98,7 @@ h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg
 .pl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 4px 3px 8px; border-radius: 8px; background: rgba(255,255,255,.05); border: 1px solid var(--line); }
 .pl .pos { color: var(--muted); font-size: 11px; font-weight: 700; }
 .st { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 5px; border-radius: 5px; }
-.st.out, .st.ir { background: rgba(255,77,94,.18); color: #ff6b78; }
+.st.out, .st.ir, .st.benched { background: rgba(255,77,94,.18); color: #ff6b78; }
 .st.doubtful { background: rgba(255,140,60,.18); color: #ffa060; }
 .st.questionable { background: rgba(255,214,10,.16); color: #ffd60a; }
 .pl .pts { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 11.5px; }
@@ -167,7 +167,7 @@ footer a { color: var(--neon); text-decoration: none; }
     1u = 1% of bankroll. Win chance is the model's estimate. Prices are the best at DraftKings or FanDuel
     when the pick was made and may have moved since.
     Full detail: <a href="/NFL-model/">NFL dashboard</a> · <a href="/CFB-model/">college dashboard</a>.
-    NFL injuries come from the official injury report and IR lists, weighted by each player's recent snaps; the number is points off that team's projected margin. College picks don't use injury data.
+    NFL injuries come from the official injury report and IR lists, weighted by each player's recent snaps; the number is points off that team's projected margin. A quarterback change is priced through the starters' ratings, so it shows who is starting instead. College picks don't use injury data.
     For entertainment. Bet responsibly.
   </footer>
 </main>
@@ -267,12 +267,12 @@ function injuries(r) {
   if (!list.length) return "";
   const teams = [...new Set(list.map(x => x.team))];
   const initial = n => { const w = String(n).split(" "); return w.length > 1 ? w[0][0] + ". " + w.slice(1).join(" ") : n; };
-  const label = { out: "OUT", ir: "IR", doubtful: "DOUBT", questionable: "Q" };
+  const label = { out: "OUT", ir: "IR", doubtful: "DOUBT", questionable: "Q", benched: "BENCHED" };
   return `<div class="inj"><div class="k">🩹 Injuries the model is counting</div>` + teams.map(t =>
     `<div class="team"><span class="tn">${esc(t)}</span><div class="pls">` + list.filter(x => x.team === t).map(x => {
       const st = String(x.status).toLowerCase();
       return `<span class="pl">${esc(initial(x.name))} <span class="pos">${esc(x.pos)}</span>
-        <span class="st ${esc(st)}">${esc(label[st] || x.status)}</span><span class="pts">${signed(x.pts)}</span></span>`;
+        <span class="st ${esc(st)}">${esc(label[st] || x.status)}</span><span class="pts">${x.pts == null ? esc(x.note || "") : signed(x.pts)}</span></span>`;
     }).join("") + `</div></div>`).join("") + `</div>`;
 }
 
