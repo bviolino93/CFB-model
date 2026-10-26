@@ -5179,7 +5179,7 @@ def _candidate_pass_fail(candidate_df, min_bets=150, min_positive_seasons=4):
 
 
 st.set_page_config(
-    page_title="Saturday Edge",
+    page_title="Fieldline College",
     page_icon="🏈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -7485,11 +7485,11 @@ st.markdown(
     <div class="ge433-header">
       <div class="ge431-brand">
         <div class="se-goalpost-logo" aria-hidden="true">
-          <svg width="40" height="40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Big-nose guy logo"><defs><linearGradient id="bn-skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f3c4a8"/><stop offset="1" stop-color="#d98f72"/></linearGradient><linearGradient id="bn-ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d8ff7a"/><stop offset="1" stop-color="#6fbf12"/></linearGradient><clipPath id="bn-in"><circle cx="84" cy="80" r="68"/></clipPath></defs><circle cx="84" cy="80" r="74" fill="#0b0f16" stroke="url(#bn-ring)" stroke-width="6"/><g clip-path="url(#bn-in)"><circle cx="84" cy="80" r="68" fill="#111823"/><path d="M84 12 L84 148 M16 80 L152 80" stroke="#1a2230" stroke-width="2"/><g stroke="#b6ff3b" stroke-width="5" stroke-linecap="round" fill="none" opacity=".9"><path d="M48 38 L128 118"/><path d="M128 38 L48 118"/><circle cx="40" cy="30" r="9"/><circle cx="136" cy="30" r="9"/></g><path d="M40 160 C44 132 62 120 82 118 L108 118 C128 121 140 138 142 160 Z" fill="#f4f6f8" stroke="#07090d" stroke-width="4"/><path d="M60 136 L124 136" stroke="#b6ff3b" stroke-width="4"/></g><g stroke="#07090d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"><path d="M84 104 L84 120 L108 120 L108 104 Z" fill="#c98468"/><circle cx="98" cy="72" r="34" fill="url(#bn-skin)"/><g fill="#d6d9de"><circle cx="126" cy="54" r="8"/><circle cx="132" cy="66" r="8"/><circle cx="129" cy="79" r="7.5"/><circle cx="118" cy="44" r="7"/></g><path d="M74 52 C52 54 22 70 8 96 C0 112 10 128 30 124 C48 121 64 112 74 100 C82 90 84 66 74 52 Z" fill="url(#bn-skin)"/></g><path d="M22 108 C26 104 34 104 38 108" stroke="#07090d" stroke-width="3" fill="none" stroke-linecap="round"/><ellipse cx="30" cy="117" rx="6" ry="3" fill="#5a2a1e" transform="rotate(-12 30 117)"/><path d="M30 78 C40 70 52 66 62 66" stroke="#fff" stroke-opacity=".45" stroke-width="4" fill="none" stroke-linecap="round"/><path d="M74 64 L112 60 C114 70 108 76 98 76 C88 76 82 72 80 66 Z" fill="#07090d"/><path d="M86 66 L96 64" stroke="#b6ff3b" stroke-width="2.5" stroke-linecap="round"/><path d="M112 60 L128 58" stroke="#07090d" stroke-width="3.5" stroke-linecap="round"/><path d="M82 46 C92 42 104 42 112 46" stroke="#a8604a" stroke-width="2.5" fill="none" stroke-linecap="round"/><path d="M84 98 C90 101 98 100 102 95" stroke="#07090d" stroke-width="3" fill="none" stroke-linecap="round"/></svg>
+          <svg width="40" height="40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fieldline"><defs><linearGradient id="fl-g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#3bffb0"/><stop offset="1" stop-color="#b6ff3b"/></linearGradient><linearGradient id="fl-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#161c26"/><stop offset="1" stop-color="#0b0f15"/></linearGradient></defs><rect x="1" y="1" width="62" height="62" rx="15" fill="url(#fl-b)" stroke="#2a3240" stroke-width="1.5"/><path d="M20 14 V50" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 16 H46" stroke="#eef2f7" stroke-width="5" stroke-linecap="round"/><path d="M20 32 H40" stroke="#b6ff3b" stroke-width="5" stroke-linecap="round"/><path d="M30 44 V50 M38 44 V50 M46 44 V50" stroke="#3b4554" stroke-width="2.5" stroke-linecap="round"/></svg>
         </div>
         <div>
-          <div class="ge-wordmark"><span>SATURDAY</span> <strong>EDGE</strong></div>
-          <div class="ge-brand-sub">DATA DRIVEN. GAME READY.</div>
+          <div class="ge-wordmark"><span>FIELDLINE</span> <strong>COLLEGE</strong></div>
+          <div class="ge-brand-sub">FOOTBALL ANALYTICS</div>
         </div>
       </div>
       <div class="ge433-head-right">
@@ -27119,7 +27119,7 @@ def _se_card_text(df, day):
     if "bet_tier" in x.columns:
         x = x[x["bet_tier"].astype(str).str.upper() != "WATCH"]
     if x.empty:
-        return f"SATURDAY EDGE \u2014 {_label}\nNo qualifying bets today."
+        return f"FIELDLINE COLLEGE \u2014 {_label}\nNo qualifying bets today."
 
     try:
         x["_k"] = [_se_kick_dt(r, str(day)) for _, r in x.iterrows()]
@@ -27127,7 +27127,7 @@ def _se_card_text(df, day):
     except Exception:
         pass
 
-    lines = [f"SATURDAY EDGE \u2014 {_label}",
+    lines = [f"FIELDLINE COLLEGE \u2014 {_label}",
              "\u2605\u2605\u2605 high \u00b7 \u2605\u2605 medium \u00b7 \u2605 low", ""]
     for r in x.to_dict("records"):
         _t = _se_kick_label(r, str(day))
@@ -27255,7 +27255,7 @@ def _se_card_pdf(df, day):
     doc = SimpleDocTemplate(buf, pagesize=letter,
                             leftMargin=0.6*inch, rightMargin=0.6*inch,
                             topMargin=0.6*inch, bottomMargin=0.6*inch,
-                            title=f"Saturday Edge card {day}")
+                            title=f"Fieldline College card {day}")
     ss = getSampleStyleSheet()
     h1 = ParagraphStyle("h1", parent=ss["Title"], fontSize=17, spaceAfter=2,
                         textColor=colors.HexColor("#12233d"))
@@ -27266,7 +27266,7 @@ def _se_card_pdf(df, day):
     note = ParagraphStyle("note", parent=ss["Normal"], fontSize=7.5,
                           textColor=colors.HexColor("#7a8a99"), spaceBefore=16)
 
-    story = [Paragraph("SATURDAY EDGE", h1),
+    story = [Paragraph("FIELDLINE COLLEGE", h1),
              Paragraph(f"Frozen card &middot; {day}", sub)]
 
     for wname in ("Early", "Midday", "Night", "Unscheduled"):
@@ -27935,7 +27935,7 @@ def _se_share_text(df, day, ml=None, min_stars=1):
         dl = pd.to_datetime(str(day)[:10]).strftime("%a %-m/%-d")
     except Exception:
         dl = str(day)
-    lines = [f"Saturday Edge · {dl}"]
+    lines = [f"Fieldline College · {dl}"]
     x = df.copy()
     if "_conf" not in x.columns:
         x["_conf"] = [_se_conf(r) for _, r in x.iterrows()]
@@ -31066,8 +31066,8 @@ if True:
 st.divider()
 st.markdown(
     '<div class="se-footer">'
-    '<span class="se-footer-mark">SATURDAY <b>EDGE</b></span>'
-    '<span class="se-footer-sub">Data driven. Game ready.</span>'
+    '<span class="se-footer-mark">FIELDLINE <b>COLLEGE</b></span>'
+    '<span class="se-footer-sub">Football analytics.</span>'
     '<span class="se-footer-legal">'
     'For entertainment and research. This model has not been shown to beat the '
     'closing market \u2014 no edge is claimed. 21+ where legal. '
