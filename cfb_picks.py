@@ -76,9 +76,12 @@ TOTAL_RULES = [
      "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
      "Books shade big totals up for public over money"),
 ]
-# College picks go through at a 3% edge (NFL: 2%): below ~1.5 points of
-# lean the backtest's picks ran about break-even.
+# College picks go through at a 3% edge (NFL: 2%).
 MIN_EV = 0.03
+# A spread the model alone argues for also needs at least this much lean
+# (model minus market, in points): in the 2017-25 backtest leans under 1
+# point won 50-52%, so a good price alone shouldn't carry them.
+MIN_SPREAD_LEAN = 1.0
 
 # Odds API name -> schedule name where the school part differs.
 ALIASES = {
@@ -365,6 +368,17 @@ def rule_shift(tm, total: float, side: str, p: float) -> float:
     return sign * 10.0
 
 
+def drop_thin_spreads(bettable: pd.DataFrame, ctx: dict,
+                      min_lean: float = MIN_SPREAD_LEAN) -> pd.DataFrame:
+    """Drop spreads backed only by the model whose lean is under min_lean.
+    Spreads where a book is off the sharp consensus ("market") stay."""
+    lean = bettable.home.map(lambda h: abs(ctx.get(h, {}).get("spread", (0.0,))[0]))
+    src = bettable.sources.astype(str).str.split(",")
+    thin = ((bettable.market == "spreads") & ~src.map(lambda s: "market" in s)
+            & (lean < min_lean))
+    return bettable[~thin]
+
+
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None):
     now = pd.Timestamp(now or datetime.now(timezone.utc))
@@ -411,6 +425,7 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         return priced, fair, ids
     bettable = priced[priced.market.isin(["spreads", "totals"])
                       & priced.book.isin(my_books)]
+    bettable = drop_thin_spreads(bettable, ctx)
     picks = sel.select(bettable, bankroll, pol)
     if len(picks):
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)

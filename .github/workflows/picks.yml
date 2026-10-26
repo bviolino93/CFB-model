@@ -72,6 +72,8 @@ jobs:
         run: |
           python cfb_picks.py --out site/index.html --json site/picks.json \
             --history site/history.json --bankroll "${{ inputs.bankroll || '1000' }}"
+          # the shareable NFL + college page: https://bviolino93.github.io/CFB-model/share/
+          mkdir -p site/share && cp share/index.html site/share/
           if [ "${{ inputs.test_alert }}" = "true" ] && [ ! -f alert.md ]; then
             printf '**Test alert.** New college bets will show up like this.\n\nDashboard: https://bviolino93.github.io/CFB-model/\n' > alert.md
           fi
