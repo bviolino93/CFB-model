@@ -6,17 +6,12 @@ the news (the Anthropic API's web search tool) for each game the model is
 about to bet and reports who is expected to start at quarterback and which
 key players are out or doubtful. cfb_picks then:
 
-  * drops a model spread on a team whose regular quarterback won't start,
-    and a model over when either team's won't: the ratings behind them
-    were built with that quarterback throwing (cfb_picks.qb_vetoes)
-  * shows everything found on the pick as "Injuries" (friends page panel)
-
-For the record, the backtest didn't call for the drop: in 2014-25
-(starter = first passer in the play-by-play) college lines already priced
-QB changes (a new starter covered ~49% against the close in every era),
-and the model's spreads backing such a team won 58-64% (~140 games). Brian
-chose it as a safeguard against stale ratings (2026-10-26). Other injuries
-have no free history to test, so they're shown only.
+  * takes NEW_QB_PTS (1 point) off a team whose backup QB is making his
+    first start, and 1 point off the total; from a new QB's second start
+    on his games are already in the ratings and the line, so nothing
+    (Nico Iamaleava out for weeks: priced in)
+  * shows everything found on the pick as "Injuries" (friends page panel);
+    other injuries are shown only: there's no free history to test them
 
 Needs the ANTHROPIC_API_KEY repository secret; without it the check is
 skipped. Results are kept in news.json on the picks branch and reused for
@@ -37,8 +32,12 @@ MODEL = "claude-opus-5-5"
 REUSE_HOURS = 20
 BATCH = 4                   # games per request
 SEARCHES_PER_GAME = 3
-# statuses that mean a player won't (or likely won't) play
-OUT = {"out", "doubtful", "suspended", "ir", "season"}
+# Points off a team's margin (and off the total) when a backup QB makes his
+# first start. 2017-25, our fair line (open + model lean) overrated such
+# teams by 1.0 (t -2.0, ~1,070 games; -0.8 in 2017-21, -1.1 in 2022-25) and
+# totals came in ~1.0 under the open (t -2.5). From his second start on:
+# no gap (+0.5 and +0.7, not significant), so nothing.
+NEW_QB_PTS = -1.0
 
 SYSTEM = """You check college football injury and availability news for a \
 betting model. For each game you are given, search the web for the latest \
@@ -145,27 +144,58 @@ def _team(entry: dict, school: str) -> dict:
     return {}
 
 
+def _last(name) -> str:
+    return str(name or "").replace(".", "").split()[-1].lower() if str(name or "").strip() else ""
+
+
 def qb_out(entry: dict, school: str) -> bool:
     """True when the news says this team's regular quarterback won't start."""
     t = _team(entry, school)
     reg, exp = t.get("regular_qb"), t.get("expected_qb")
     if str(t.get("qb_status", "")).lower() in ("out", "doubtful"):
         return True
-    return bool(reg and exp and reg.split()[-1].lower() != exp.split()[-1].lower())
+    return bool(reg and exp and _last(reg) != _last(exp))
 
 
-def injuries(entry: dict, school: str) -> list[dict]:
+def qb_change(entry: dict, school: str, starters: list[str]) -> tuple[float, int]:
+    """(points on this team's margin, starts in a row so far) for the news's
+    expected starter. starters: the team's starting QBs this season, oldest
+    first (cfb_data.load_starters). Only a backup's FIRST start moves the
+    line (NEW_QB_PTS): from his second start on, his games are in the
+    ratings and the line, and history shows no further gap. A regular coming
+    back moves nothing either."""
+    if not qb_out(entry, school) or not starters:
+        return 0.0, 0
+    exp = _team(entry, school).get("expected_qb")
+    n = 0
+    while exp and n < len(starters) and _last(starters[-1 - n]) == _last(exp):
+        n += 1
+    regular = max(set(starters), key=starters.count)
+    if n == 0 and not (exp and _last(exp) == _last(regular)):
+        return NEW_QB_PTS, 0
+    return 0.0, n
+
+
+def _nth(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def injuries(entry: dict, school: str, starters: list[str] | None = None) -> list[dict]:
     """The friends page's injury rows for one team: {team, name, pos,
-    status, pts, note}. pts is None: the news is shown, not priced."""
+    status, pts, note}. pts is the points the QB change takes off this
+    team (None for everything else: shown, not priced)."""
     t = _team(entry, school)
     rows = []
     reg, exp = t.get("regular_qb"), t.get("expected_qb")
     if qb_out(entry, school) and reg:
+        pts, n = qb_change(entry, school, starters or [])
+        who = exp.split()[-1] if exp else "backup"
+        note = (f"{who} 1st start" if pts else
+                f"{who} {_nth(n + 1)} start, priced in" if n else f"{who} starting")
         rows.append({"team": school, "name": reg, "pos": "QB", "status": "Out",
-                     "pts": None,
-                     "note": f"{exp.split()[-1]} starting" if exp else "QB news"})
+                     "pts": pts or None, "note": note})
     for p in t.get("players", []):
-        if reg and str(p.get("name", "")).lower() == reg.lower():
+        if reg and _last(p.get("name")) == _last(reg):
             continue
         st = str(p.get("status", "")).lower()
         status = {"out": "Out", "doubtful": "Doubtful", "questionable": "Questionable",
@@ -175,4 +205,3 @@ def injuries(entry: dict, school: str) -> list[dict]:
                          "pos": p.get("pos", ""), "status": status, "pts": None,
                          "note": str(p.get("note") or "")[:40]})
     return rows[:6]
-
