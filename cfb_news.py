@@ -11,8 +11,10 @@ key players are out or doubtful. cfb_picks then:
     on his games are already in the ratings and the line, so nothing
     (Nico Iamaleava out for weeks: priced in)
   * takes OTHER_OUT_PTS (half a point) off a team for each other starter
-    out for the first time, 0.2 if questionable, at most 1.5: an educated
-    guess, since there's no free college injury history to test it
+    out for the first time, 0.2 if questionable, at most 1.5; on totals a
+    missing offensive starter lowers the total by as much and a missing
+    defender raises it (total_pts): educated guesses, since there's no free
+    college injury history to test them
   * shows everything found on the pick as "Injuries" (friends page panel)
 
 Needs the ANTHROPIC_API_KEY repository secret; without it the check is
@@ -28,6 +30,7 @@ import os
 import re
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 MODEL = "claude-opus-5-5"
@@ -215,6 +218,22 @@ def others_pts(entry: dict, school: str) -> float:
     """All of a team's non-QB injuries in points, capped at OTHER_CAP."""
     t = _team(entry, school)
     return max(OTHER_CAP, sum(player_pts(p) for p in t.get("players", [])))
+
+
+OFFENSE = {"RB", "WR", "TE", "OL"}
+DEFENSE = {"DL", "LB", "DB"}
+
+
+def total_pts(entry: dict, school: str) -> float:
+    """What a team's other missing starters do to the total (educated
+    guess, as OTHER_*): offensive starters lower it, defensive starters
+    raise it, each by the size player_pts gives, capped at 1.5 either way."""
+    t = _team(entry, school)
+    pts = 0.0
+    for p in t.get("players", []):
+        pos = str(p.get("pos", "")).upper()
+        pts += player_pts(p) if pos in OFFENSE else -player_pts(p) if pos in DEFENSE else 0.0
+    return float(np.clip(pts, OTHER_CAP, -OTHER_CAP))
 
 
 def _nth(n: int) -> str:
