@@ -122,11 +122,13 @@ def test_only_a_backup_qbs_first_start_moves_the_line():
          "qb_status": "out", "players": []}]}
     # Carr has never started: his first start costs Michigan a point
     assert cfb_news.qb_change(e, "Michigan", ["Bryce Underwood"] * 7) == (-1.0, 0)
-    # Dieffenbach has started UCLA's last 3: priced in
-    ucla = ["Nico Iamaleava"] * 4 + ["Ty Dieffenbach"] * 3
-    assert cfb_news.qb_change(e, "UCLA", ucla) == (0.0, 3)
+    # Dieffenbach has started UCLA's last 2 (names as the 2026 play-by-play
+    # writes them): priced in
+    ucla = ["Shotgun #9 N.Iamaleava"] * 5 + ["Shotgun #14 T.Dieffenbach",
+                                              ":25) Shotgun #14 T.Dieffenbach"]
+    assert cfb_news.qb_change(e, "UCLA", ucla) == (0.0, 2)
     row = cfb_news.injuries(e, "UCLA", ucla)[0]
-    assert row["pts"] is None and row["note"] == "Dieffenbach 4th start, priced in"
+    assert row["pts"] is None and row["note"] == "Dieffenbach 3rd start, priced in"
     assert cfb_news.injuries(e, "Michigan", ["Bryce Underwood"] * 7)[0]["pts"] == -1.0
     # no news, or the regular starting: nothing
     assert cfb_news.qb_change({}, "Michigan", ["Bryce Underwood"]) == (0.0, 0)

@@ -145,7 +145,12 @@ def _team(entry: dict, school: str) -> dict:
 
 
 def _last(name) -> str:
-    return str(name or "").replace(".", "").split()[-1].lower() if str(name or "").strip() else ""
+    """Last name, lowercase, for matching the news's "Ty Dieffenbach" to the
+    play-by-play's "T.Dieffenbach" (or "Shotgun #14 T.Dieffenbach")."""
+    s = re.sub(r"^.*#\d+\s*", "", str(name or ""))
+    words = [w for w in re.split(r"[.\s]+", s.lower())
+             if w and w not in ("jr", "sr", "ii", "iii", "iv")]
+    return re.sub(r"[^a-z'-]", "", words[-1]) if words else ""
 
 
 def qb_out(entry: dict, school: str) -> bool:
@@ -166,12 +171,13 @@ def qb_change(entry: dict, school: str, starters: list[str]) -> tuple[float, int
     back moves nothing either."""
     if not qb_out(entry, school) or not starters:
         return 0.0, 0
-    exp = _team(entry, school).get("expected_qb")
+    exp = _last(_team(entry, school).get("expected_qb"))
+    lasts = [_last(x) for x in starters]
     n = 0
-    while exp and n < len(starters) and _last(starters[-1 - n]) == _last(exp):
+    while exp and n < len(lasts) and lasts[-1 - n] == exp:
         n += 1
-    regular = max(set(starters), key=starters.count)
-    if n == 0 and not (exp and _last(exp) == _last(regular)):
+    regular = max(set(lasts), key=lasts.count)
+    if n == 0 and exp != regular:
         return NEW_QB_PTS, 0
     return 0.0, n
 
