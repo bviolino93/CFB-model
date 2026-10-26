@@ -90,6 +90,18 @@ h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg
 .meter b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .book { font-weight: 800; font-size: 11px; letter-spacing: .04em; padding: 3px 7px; border-radius: 6px; border: 1px solid currentColor; }
 .book.dk { color: var(--dk); } .book.fd { color: var(--fd); }
+.inj { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: rgba(255,77,94,.06); border: 1px solid rgba(255,77,94,.22); }
+.inj .k { font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #ff8a95; display: flex; align-items: center; gap: 6px; }
+.inj .team { display: grid; grid-template-columns: 78px 1fr; gap: 6px; align-items: start; margin-top: 8px; }
+.inj .pls { display: flex; flex-wrap: wrap; gap: 6px; }
+.inj .tn { font-family: var(--display); font-size: 17px; letter-spacing: .04em; color: var(--ink); padding-top: 3px; overflow-wrap: anywhere; }
+.pl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 4px 3px 8px; border-radius: 8px; background: rgba(255,255,255,.05); border: 1px solid var(--line); }
+.pl .pos { color: var(--muted); font-size: 11px; font-weight: 700; }
+.st { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 5px; border-radius: 5px; }
+.st.out, .st.ir { background: rgba(255,77,94,.18); color: #ff6b78; }
+.st.doubtful { background: rgba(255,140,60,.18); color: #ffa060; }
+.st.questionable { background: rgba(255,214,10,.16); color: #ffd60a; }
+.pl .pts { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 11.5px; }
 details { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
 summary { cursor: pointer; font-size: 12.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--neon); list-style: none; display: inline-flex; align-items: center; gap: 6px; }
 summary::-webkit-details-marker { display: none; }
@@ -155,6 +167,7 @@ footer a { color: var(--neon); text-decoration: none; }
     1u = 1% of bankroll. Win chance is the model's estimate. Prices are the best at DraftKings or FanDuel
     when the pick was made and may have moved since.
     Full detail: <a href="/NFL-model/">NFL dashboard</a> · <a href="/CFB-model/">college dashboard</a>.
+    NFL injuries come from the official injury report and IR lists, weighted by each player's recent snaps; the number is points off that team's projected margin. College picks don't use injury data.
     For entertainment. Bet responsibly.
   </footer>
 </main>
@@ -249,6 +262,20 @@ async function load() {
   render();
 }
 
+function injuries(r) {
+  const list = r.injuries || [];
+  if (!list.length) return "";
+  const teams = [...new Set(list.map(x => x.team))];
+  const initial = n => { const w = String(n).split(" "); return w.length > 1 ? w[0][0] + ". " + w.slice(1).join(" ") : n; };
+  const label = { out: "OUT", ir: "IR", doubtful: "DOUBT", questionable: "Q" };
+  return `<div class="inj"><div class="k">🩹 Injuries the model is counting</div>` + teams.map(t =>
+    `<div class="team"><span class="tn">${esc(t)}</span><div class="pls">` + list.filter(x => x.team === t).map(x => {
+      const st = String(x.status).toLowerCase();
+      return `<span class="pl">${esc(initial(x.name))} <span class="pos">${esc(x.pos)}</span>
+        <span class="st ${esc(st)}">${esc(label[st] || x.status)}</span><span class="pts">${signed(x.pts)}</span></span>`;
+    }).join("") + `</div></div>`).join("") + `</div>`;
+}
+
 function ticket(r, best) {
   const wc = Math.round(100 * r.win_chance);
   return `<article class="ticket ${r.league}${best ? " best" : ""}">
@@ -259,6 +286,7 @@ function ticket(r, best) {
       <div class="stake"><div class="u">${units(r.stake).toFixed(1)}u</div><div class="ul">STAKE</div></div></div>
     <div class="match">${esc(r.away)}<span class="at">@</span>${esc(r.home)}</div>
     <div class="meter"><span>Win chance</span><div class="bar"><i style="width:${Math.min(100, wc)}%"></i></div><b>${wc}%</b></div>
+    ${injuries(r)}
     ${r.why ? `<details><summary>Why this pick</summary><p>${esc(r.why)}</p></details>` : ""}
   </article>`;
 }
