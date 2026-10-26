@@ -169,7 +169,10 @@ def _starters(path: str) -> pd.DataFrame:
     d = pd.read_parquet(path, columns=["game_id", "pos_team", "passer_player_name",
                                        "pass_attempt", "id_play"])
     d = d[d.pass_attempt == 1].dropna(subset=["passer_player_name"])
-    d = d.assign(id_play=pd.to_numeric(d.id_play, errors="coerce")).sort_values("id_play")
+    # newer files sometimes carry play text in the name ("Shotgun #14 T.Dieffenbach")
+    d = d.assign(passer_player_name=d.passer_player_name.str.replace(r"^.*#\d+\s*", "", regex=True)
+                 .str.strip(),
+                 id_play=pd.to_numeric(d.id_play, errors="coerce")).sort_values("id_play")
     first = d.groupby(["game_id", "pos_team"]).head(3)
     return (first.groupby(["game_id", "pos_team"]).passer_player_name
             .agg(lambda x: x.mode().iloc[0]).rename("starter").reset_index())
