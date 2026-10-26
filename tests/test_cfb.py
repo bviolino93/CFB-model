@@ -58,6 +58,9 @@ def test_total_rules_pick_the_right_pattern():
     assert cfb_picks.total_rule(63.5, 3.0, sat_night, True)[:2] == ("Under", 0.545)
     assert cfb_picks.total_rule(63.5, 3.0, sat_noon, True)[:2] == ("Under", 0.535)
     assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True) is None
+    # our possession count 3+ under a sub-60 total: the count's own under
+    assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True, -3.5)[:2] == ("Under", 0.535)
+    assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True, 4.0) is None
 
 
 def test_thin_model_spreads_dropped():
@@ -157,3 +160,12 @@ def test_other_starters_count_once_and_are_capped():
     assert cfb_news.player_pts({**p("out"), "pos": "QB"}) == 0.0
     e = {"teams": [{"team": "Iowa State", "players": [p("out", games_missed=0)] * 5}]}
     assert cfb_news.others_pts(e, "Iowa State") == -1.5
+
+
+def test_missing_starters_move_the_total_by_side_of_the_ball():
+    import cfb_news
+    out = lambda pos: {"name": pos, "pos": pos, "status": "out", "starter": True, "games_missed": 0}
+    e = {"teams": [{"team": "Texas", "players": [out("RB"), out("WR"), out("DL")]}]}
+    assert cfb_news.total_pts(e, "Texas") == -0.5     # two offense down, one defense up
+    e = {"teams": [{"team": "Texas", "players": [out("WR")] * 5}]}
+    assert cfb_news.total_pts(e, "Texas") == -1.5

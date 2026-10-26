@@ -76,6 +76,16 @@ TOTAL_RULES = [
     ("Under", lambda t, sp, night, conf, gap: t >= 60, 0.535,
      "a total of 60+: since 2017 the under has hit about 54-55% (1,800 games). "
      "Books shade big totals up for public over money"),
+    # Our own count on its own (Brian's call, 2026-10-26). Only unders: when
+    # it sits 3+ under a total below 60 the under hit 53.5% against openers
+    # in 2017-25 (387 games, 45-65% by season) but 50% against closing
+    # totals; overs off the count alone ran 48-50%. At 53.5% it clears the
+    # 3% edge bar only at about -105 or better, so it bets rarely.
+    ("Under", lambda t, sp, night, conf, gap: gap <= -3, 0.535,
+     "our possession count puts this game {gap:.0f} points under the total: "
+     "when our count sits that far under, the under has hit about 53-54% "
+     "against early lines since 2017 (387 games), less against closing lines, "
+     "so only a good price gets it a bet"),
 ]
 # College picks go through at a 3% edge (NFL: 2%).
 MIN_EV = 0.03
@@ -419,6 +429,12 @@ def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
                 print(f"news: {school} missing starters for the first time: {other:+.1f}")
                 adj.append(sel.Adjustment(f.home_team, "spreads", sign * other, "injury",
                                           f"{school} is missing starters ({other:+.1f})"))
+            tot = cfb_news.total_pts(e, school)
+            if tot:
+                print(f"news: {school}'s missing starters move the total {tot:+.1f}")
+                adj.append(sel.Adjustment(f.home_team, "totals", tot, "injury",
+                                          f"{school}'s missing starters move the total "
+                                          f"{tot:+.1f}"))
     return adj
 
 
@@ -460,7 +476,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             if hit:
                 side, p, why = hit
                 fav = round(abs(f.market_margin) * 2) / 2
-                c["trend"] = why.format(fav=f"{fav:g}")
+                gap = r.get("poss_total", np.nan) - f.market_total
+                c["trend"] = why.format(fav=f"{fav:g}", gap=abs(gap) if gap == gap else 0)
                 adj.append(sel.Adjustment(f.home_team, "totals",
                                           rule_shift(tm, f.market_total, side, p), "trend"))
     sel.apply_adjustments(fair, adj)
@@ -528,7 +545,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             return ("News: " + "; ".join(notes) + ". A backup QB's first start is "
                     "priced a point worse (history: lines overrate that team by about "
                     "a point); other starters missing their first game, half a point "
-                    "each (an educated guess).")
+                    "each, and on totals a missing offensive starter lowers the total "
+                    "half a point, a missing defender raises it (educated guesses).")
         why = [" ".join(x for x in (w, news_text(p)) if x)
                for w, p in zip(why, picks.itertuples())]
         picks["why"] = why
