@@ -70,3 +70,65 @@ def test_thin_model_spreads_dropped():
            "C": {"spread": (0.2, {})}, "D": {}}
     out = cfb_picks.drop_thin_spreads(rows, ctx)
     assert list(out.home) == ["B", "C", "D"]
+
+
+def test_news_check_reads_claude_json_and_shows_injuries():
+    from types import SimpleNamespace as NS
+    import cfb_news
+    key = cfb_news.game_key("Texas", "Oklahoma", "2026-10-31T19:30:00Z")
+    reply = ("Found reports.\n```json\n" + __import__("json").dumps({"games": [{
+        "key": key, "teams": [
+            {"team": "Texas", "regular_qb": "Arch Manning", "expected_qb": "Matthew Caldwell",
+             "qb_status": "out", "players": [
+                 {"name": "Arch Manning", "pos": "QB", "status": "out", "note": "ankle"},
+                 {"name": "Ryan Wingo", "pos": "WR", "status": "questionable", "note": "hamstring"}]},
+            {"team": "Oklahoma", "regular_qb": "John Mateer", "expected_qb": "John Mateer",
+             "qb_status": "starting", "players": []}]}]}) + "\n```")
+    calls = []
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    calls.append(kw)
+                    return NS(stop_reason="end_turn", content=[NS(type="text", text=reply)])
+
+    games = [{"home": "Texas", "away": "Oklahoma", "kickoff": "2026-10-31T19:30:00Z"}]
+    now = pd.Timestamp("2026-10-29T12:00Z")
+    news = cfb_news.fetch(games, {}, now, client=Client)
+    assert len(calls) == 1 and calls[0]["tools"][0]["type"] == "web_search_20260209"
+    # reused within the day: no second lookup
+    cfb_news.fetch(games, news, now + pd.Timedelta(hours=5), client=Client)
+    assert len(calls) == 1
+    rows = cfb_news.injuries(news[key], "Texas")
+    assert rows[0] == {"team": "Texas", "name": "Arch Manning", "pos": "QB", "status": "Out",
+                       "pts": None, "note": "Caldwell starting"}
+    assert [r["name"] for r in rows] == ["Arch Manning", "Ryan Wingo"]
+    assert cfb_news.injuries(news[key], "Oklahoma") == []
+    picks = pd.DataFrame([{"game_id": 5, "commence": "2026-10-31T19:30:00Z"}])
+    g = pd.DataFrame([{"game_id": 5, "home_team": "Texas", "away_team": "Oklahoma"}])
+    assert len(cfb_picks.attach_news(picks, g, news).injuries[0]) == 2
+
+
+def test_qb_news_rules_out_model_bets_on_the_team_missing_its_qb():
+    import cfb_news
+    kick = "2026-10-31T19:30:00Z"
+    news = {cfb_news.game_key("Texas", "Oklahoma", kick): {"checked": kick, "teams": [
+        {"team": "Texas", "regular_qb": "Arch Manning", "expected_qb": "Matthew Caldwell",
+         "qb_status": "out", "players": []},
+        {"team": "Oklahoma", "regular_qb": "John Mateer", "expected_qb": "John Mateer",
+         "qb_status": "starting", "players": []}]}}
+    upcoming = pd.DataFrame([{"game_id": 5, "home_team": "Texas",
+                              "away_team": "Oklahoma"}]).set_index("game_id")
+    row = dict(event_id="e", home="Texas Longhorns", away="Oklahoma Sooners", commence=kick)
+    bettable = pd.DataFrame([
+        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "combined"},
+        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "market,combined"},
+        {**row, "market": "spreads", "pick": "Oklahoma Sooners", "sources": "combined"},
+        {**row, "market": "totals", "pick": "Over", "sources": "trend"},
+        {**row, "market": "totals", "pick": "Under", "sources": "trend"},
+    ])
+    why = cfb_picks.qb_vetoes(bettable, upcoming, {"e": 5}, news)
+    assert [bool(w) for w in why] == [True, False, False, True, False]
+    assert why[0] == "Texas's regular quarterback isn't expected to start"

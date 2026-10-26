@@ -167,7 +167,7 @@ footer a { color: var(--neon); text-decoration: none; }
     1u = 1% of bankroll. Win chance is the model's estimate. Prices are the best at DraftKings or FanDuel
     when the pick was made and may have moved since.
     Full detail: <a href="/NFL-model/">NFL dashboard</a> · <a href="/CFB-model/">college dashboard</a>.
-    NFL injuries come from the official injury report and IR lists, weighted by each player's recent snaps; the number is points off that team's projected margin. A quarterback change is priced through the starters' ratings, so it shows who is starting instead. College picks don't use injury data.
+    NFL injuries come from the official injury report and IR lists, weighted by each player's recent snaps; the number is points off that team's projected margin. A quarterback change is priced through the starters' ratings, so it shows who is starting instead. College injury news is read from the web before each run: the model won't back a team (or an over) whose regular quarterback isn't starting, and the rest is shown on the pick.
     For entertainment. Bet responsibly.
   </footer>
 </main>
@@ -268,7 +268,8 @@ function injuries(r) {
   const teams = [...new Set(list.map(x => x.team))];
   const initial = n => { const w = String(n).split(" "); return w.length > 1 ? w[0][0] + ". " + w.slice(1).join(" ") : n; };
   const label = { out: "OUT", ir: "IR", doubtful: "DOUBT", questionable: "Q", benched: "BENCHED" };
-  return `<div class="inj"><div class="k">🩹 Injuries the model is counting</div>` + teams.map(t =>
+  const head = r.league === "nfl" ? "Injuries the model is counting" : "Injury news";
+  return `<div class="inj"><div class="k">🩹 ${head}</div>` + teams.map(t =>
     `<div class="team"><span class="tn">${esc(t)}</span><div class="pls">` + list.filter(x => x.team === t).map(x => {
       const st = String(x.status).toLowerCase();
       return `<span class="pl">${esc(initial(x.name))} <span class="pos">${esc(x.pos)}</span>
