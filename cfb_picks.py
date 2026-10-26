@@ -392,10 +392,11 @@ def team_starters(g: pd.DataFrame, season: int) -> dict:
 
 def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
                    starters: dict, done: set) -> list:
-    """Fair-line nudges for games whose news says a backup QB is making his
-    first start (cfb_news.qb_change): that team's margin and the total each
-    lose NEW_QB_PTS. Games in `done` are skipped (and added to it), so a
-    game is adjusted once however many times the news is checked."""
+    """Fair-line nudges from the injury news (cfb_news): a backup QB's first
+    start takes NEW_QB_PTS off that team's margin and off the total; other
+    starters missing their first game take OTHER_* off the margin. Games in
+    `done` are skipped (and added to it), so a game is adjusted once however
+    many times the news is checked."""
     adj = []
     for ev, gid in ids.items():
         if gid not in upcoming.index or ev in done:
@@ -410,9 +411,14 @@ def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
             if pts:
                 print(f"news: {school} starting a backup QB for the first time: "
                       f"{pts:+.1f} on their margin and the total")
-                note = f"{school}'s backup QB"
+                note = f"{school}'s backup QB makes his first start"
                 adj += [sel.Adjustment(f.home_team, "spreads", sign * pts, "injury", note),
                         sel.Adjustment(f.home_team, "totals", pts, "injury", note)]
+            other = cfb_news.others_pts(e, school)
+            if other:
+                print(f"news: {school} missing starters for the first time: {other:+.1f}")
+                adj.append(sel.Adjustment(f.home_team, "spreads", sign * other, "injury",
+                                          f"{school} is missing starters ({other:+.1f})"))
     return adj
 
 
@@ -509,14 +515,21 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                            f"{abs(p.fair_market):.1f}-point favorite")
                 why.append(f"{BOOK_NAME.get(p.book, p.book)} hasn't caught up "
                            f"with the sharp books, which {fv}.")
-        # a backup QB's first start (qb_adjustments) gets its own sentence
-        qb = {a.home_team: a.note for f in fair.values()
-              for a in f.adjustments if a.source == "injury"}
-        why = [(w + " " if w else "") +
-               f"News: {qb[p.home]} makes his first start. Lines have overrated a team by "
-               f"about a point in that game, so it's priced a point worse (and the total "
-               f"a point lower)."
-               if p.home in qb and "injury" in str(p.sources).split(",") else w
+        # the injury news that moved a line gets its own sentence
+        inj = {}
+        for f in fair.values():
+            for a in f.adjustments:
+                if a.source == "injury":
+                    inj.setdefault((a.home_team, a.market), []).append(a.note)
+        def news_text(p):
+            notes = inj.get((p.home, p.market), [])
+            if not notes or "injury" not in str(p.sources).split(","):
+                return ""
+            return ("News: " + "; ".join(notes) + ". A backup QB's first start is "
+                    "priced a point worse (history: lines overrate that team by about "
+                    "a point); other starters missing their first game, half a point "
+                    "each (an educated guess).")
+        why = [" ".join(x for x in (w, news_text(p)) if x)
                for w, p in zip(why, picks.itertuples())]
         picks["why"] = why
         picks["game_id"] = [ids.get(e) for e in picks.event_id]
