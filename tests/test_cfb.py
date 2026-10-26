@@ -109,3 +109,26 @@ def test_news_check_reads_claude_json_and_shows_injuries():
     picks = pd.DataFrame([{"game_id": 5, "commence": "2026-10-31T19:30:00Z"}])
     g = pd.DataFrame([{"game_id": 5, "home_team": "Texas", "away_team": "Oklahoma"}])
     assert len(cfb_picks.attach_news(picks, g, news).injuries[0]) == 2
+
+
+def test_qb_news_rules_out_model_bets_on_the_team_missing_its_qb():
+    import cfb_news
+    kick = "2026-10-31T19:30:00Z"
+    news = {cfb_news.game_key("Texas", "Oklahoma", kick): {"checked": kick, "teams": [
+        {"team": "Texas", "regular_qb": "Arch Manning", "expected_qb": "Matthew Caldwell",
+         "qb_status": "out", "players": []},
+        {"team": "Oklahoma", "regular_qb": "John Mateer", "expected_qb": "John Mateer",
+         "qb_status": "starting", "players": []}]}}
+    upcoming = pd.DataFrame([{"game_id": 5, "home_team": "Texas",
+                              "away_team": "Oklahoma"}]).set_index("game_id")
+    row = dict(event_id="e", home="Texas Longhorns", away="Oklahoma Sooners", commence=kick)
+    bettable = pd.DataFrame([
+        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "combined"},
+        {**row, "market": "spreads", "pick": "Texas Longhorns", "sources": "market,combined"},
+        {**row, "market": "spreads", "pick": "Oklahoma Sooners", "sources": "combined"},
+        {**row, "market": "totals", "pick": "Over", "sources": "trend"},
+        {**row, "market": "totals", "pick": "Under", "sources": "trend"},
+    ])
+    why = cfb_picks.qb_vetoes(bettable, upcoming, {"e": 5}, news)
+    assert [bool(w) for w in why] == [True, False, False, True, False]
+    assert why[0] == "Texas's regular quarterback isn't expected to start"

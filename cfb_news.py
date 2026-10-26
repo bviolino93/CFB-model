@@ -2,17 +2,21 @@
 College injury news for the games we bet.
 
 There's no free college injury feed, so before picks go out Claude reads
-the news (the Anthropic API's web search tool) for each game we're betting
-and reports who is expected to start at quarterback and which key players
-are out or doubtful. It shows on each pick as "Injuries" (the friends page
-panel); it never changes a bet.
+the news (the Anthropic API's web search tool) for each game the model is
+about to bet and reports who is expected to start at quarterback and which
+key players are out or doubtful. cfb_picks then:
 
-Why only shown: college lines already price quarterback news. In 2014-25
-(starter = first passer in the play-by-play) a team starting a new QB
-covered ~49% against the close in every era, and the model's spreads
-backing such a team won more often than its others (58-64%, ~140 games),
-as did the totals patterns, so dropping picks on QB news would have cost
-winners. Other injuries have no free history to test.
+  * drops a model spread on a team whose regular quarterback won't start,
+    and a model over when either team's won't: the ratings behind them
+    were built with that quarterback throwing (cfb_picks.qb_vetoes)
+  * shows everything found on the pick as "Injuries" (friends page panel)
+
+For the record, the backtest didn't call for the drop: in 2014-25
+(starter = first passer in the play-by-play) college lines already priced
+QB changes (a new starter covered ~49% against the close in every era),
+and the model's spreads backing such a team won 58-64% (~140 games). Brian
+chose it as a safeguard against stale ratings (2026-10-26). Other injuries
+have no free history to test, so they're shown only.
 
 Needs the ANTHROPIC_API_KEY repository secret; without it the check is
 skipped. Results are kept in news.json on the picks branch and reused for
