@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edge Picks</title>
+<meta name="description" content="This week's NFL and college football picks, with the reasoning and the running record.">
+<meta property="og:title" content="Edge Picks">
+<meta property="og:description" content="This week's NFL and college football picks, with the reasoning and the running record.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #14171c; --muted: #5d6673; --line: #e3e6eb;
+  --accent: #1f6feb; --win: #1a7f37; --loss: #cf222e; --push: #8a8f98; --chip: #eef1f5;
+  --nfl: #0b4f9c; --cfb: #9a3412;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --card: #171b21; --ink: #e8ebef; --muted: #98a2b0; --line: #262c35;
+    --accent: #4c9aff; --win: #3fb950; --loss: #f85149; --push: #8b949e; --chip: #20262f;
+    --nfl: #6ea8fe; --cfb: #fb923c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 20px 16px 48px; }
+header h1 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
+header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.record { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 8px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.stat .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.stat .v { font-size: 22px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.pos { color: var(--win); } .neg { color: var(--loss); }
+.tabs { display: flex; gap: 6px; margin: 18px 0 6px; }
+.tabs button { flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  padding: 7px 14px; border-radius: 999px; font: inherit; font-size: 14px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 26px 0 8px; }
+.day { font-size: 14px; font-weight: 600; margin: 16px 0 6px; }
+.pick { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+.pick .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.pick .bet { font-weight: 650; font-size: 16px; }
+.pick .units { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.pick .meta { color: var(--muted); font-size: 13px; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.tag { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 5px; background: var(--chip); }
+.tag.nfl { color: var(--nfl); } .tag.cfb { color: var(--cfb); }
+details { margin-top: 6px; }
+summary { cursor: pointer; color: var(--accent); font-size: 13px; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+details p { margin: 6px 0 0; font-size: 14px; color: var(--ink); }
+.res { font-weight: 700; font-size: 12px; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.res.win { background: color-mix(in srgb, var(--win) 15%, transparent); color: var(--win); }
+.res.loss { background: color-mix(in srgb, var(--loss) 15%, transparent); color: var(--loss); }
+.res.push { background: var(--chip); color: var(--push); }
+.empty { color: var(--muted); background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 14px; font-size: 14px; }
+.note { color: var(--muted); font-size: 12.5px; margin-top: 28px; border-top: 1px solid var(--line); padding-top: 12px; }
+.note a { color: var(--accent); }
+@media (max-width: 420px) {
+  .record { gap: 8px; } .stat { padding: 10px; } .stat .v { font-size: 19px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Edge Picks</h1>
+    <p id="updated">Loading this week's picks…</p>
+  </header>
+
+  <section class="record" id="record" aria-label="Record"></section>
+
+  <nav class="tabs" aria-label="League">
+    <button data-f="all" aria-pressed="true">All</button>
+    <button data-f="nfl" aria-pressed="false">NFL</button>
+    <button data-f="cfb" aria-pressed="false">College</button>
+  </nav>
+
+  <h2>Upcoming picks</h2>
+  <div id="upcoming"></div>
+
+  <h2>Recent results</h2>
+  <div id="results"></div>
+
+  <p class="note">
+    Picks update automatically several times a week (NFL Thu/Sun/Mon, college Sun/Tue/Thu/Sat).
+    Units: 1u = 1% of bankroll. Win chance is the model's estimate; lines are the best price
+    at DraftKings or FanDuel when the pick was made and may have moved since.
+    Full detail: <a href="/NFL-model/">NFL dashboard</a> · <a href="/CFB-model/">college dashboard</a>.
+    For entertainment; bet responsibly.
+  </p>
+</main>
+<script>
+const SOURCES = [
+  { key: "nfl", label: "NFL", base: "/NFL-model/" },
+  { key: "cfb", label: "College", base: "/CFB-model/" },
+];
+const BANKROLL = 1000;           // stakes are logged against a $1,000 bankroll
+let FILTER = "all", DATA = { upcoming: [], graded: [], updated: {} };
+try { const f = localStorage.getItem("edge-filter"); if (f) FILTER = f; } catch (e) {}
+
+async function getJSON(url) {
+  const r = await fetch(url + "?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error(url + " " + r.status);
+  return r.json();
+}
+
+const fmtPrice = p => (p > 0 ? "+" : "") + Math.round(p);
+const fmtPoint = p => (p > 0 ? "+" : "") + (+p).toString();
+const units = stake => (stake / (BANKROLL / 100));
+
+function betText(b, league) {
+  const name = league === "nfl" ? b.pick.split(" ").slice(-1)[0] : b.pick;
+  if (b.market === "totals") return `${b.pick} ${b.point}`;
+  if (b.market === "h2h") return `${name} to win`;
+  return `${name} ${fmtPoint(b.point)}`;
+}
+function matchup(b) { return `${b.away} at ${b.home}`; }
+function kickoff(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+function dayKey(iso) {
+  return new Date(iso).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+async function load() {
+  const now = Date.now();
+  const out = { upcoming: [], graded: [], updated: {} };
+  await Promise.all(SOURCES.map(async src => {
+    let hist = null, picks = null;
+    try { hist = await getJSON(src.base + "history.json"); } catch (e) {}
+    try { picks = await getJSON(src.base + "picks.json"); } catch (e) {}
+    if (hist && hist.updated) out.updated[src.key] = hist.updated;
+    const seen = new Set();
+    const add = (b) => {
+      const id = [b.commence, b.home, b.market].join("|");
+      if (seen.has(id)) return; seen.add(id);
+      const row = { ...b, league: src.key };
+      if (b.result) out.graded.push(row);
+      else if (new Date(b.commence).getTime() > now && !b.pulled) out.upcoming.push(row);
+    };
+    (hist?.bets || []).forEach(add);
+    (picks?.picks || []).forEach(add);
+  }));
+  out.upcoming.sort((a, b) => a.commence.localeCompare(b.commence) || b.stake - a.stake);
+  out.graded.sort((a, b) => b.commence.localeCompare(a.commence));
+  DATA = out;
+  render();
+}
+
+function render() {
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-pressed", b.dataset.f === FILTER));
+  const keep = r => FILTER === "all" || r.league === FILTER;
+  const tag = r => `<span class="tag ${r.league}">${r.league === "nfl" ? "NFL" : "CFB"}</span>`;
+
+  // updated line
+  const ups = Object.values(DATA.updated).map(u => new Date(u)).filter(d => !isNaN(d));
+  const last = ups.length ? new Date(Math.max(...ups)) : null;
+  document.getElementById("updated").textContent = last
+    ? "Updated " + last.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "NFL and college football picks";
+
+  // record
+  const g = DATA.graded.filter(keep);
+  const w = g.filter(r => r.result === "win").length, l = g.filter(r => r.result === "loss").length,
+        p = g.filter(r => r.result === "push").length;
+  const staked = g.reduce((s, r) => s + (r.stake || 0), 0), profit = g.reduce((s, r) => s + (r.profit || 0), 0);
+  const roi = staked ? profit / staked : null;
+  const pu = units(profit);
+  const up = DATA.upcoming.filter(keep);
+  document.getElementById("record").innerHTML = `
+    <div class="stat"><div class="k">Record</div><div class="v">${w}–${l}${p ? "–" + p : ""}</div>
+      <div class="s">${g.length ? Math.round(100 * w / Math.max(1, w + l)) + "% wins" : "no results yet"}</div></div>
+    <div class="stat"><div class="k">Units</div><div class="v ${pu > 0 ? "pos" : pu < 0 ? "neg" : ""}">${pu > 0 ? "+" : pu < 0 ? "−" : ""}${Math.abs(pu).toFixed(1)}u</div>
+      <div class="s">${roi === null ? "—" : (roi >= 0 ? "+" : "−") + Math.abs(100 * roi).toFixed(1) + "% ROI"}</div></div>
+    <div class="stat"><div class="k">Open bets</div><div class="v">${up.length}</div>
+      <div class="s">${up.reduce((s, r) => s + units(r.stake), 0).toFixed(1)}u at risk</div></div>`;
+
+  // upcoming, grouped by day
+  const box = document.getElementById("upcoming");
+  if (!up.length) {
+    box.innerHTML = `<div class="empty">No open picks right now. New ones post after the next run.</div>`;
+  } else {
+    let html = "", cur = "";
+    for (const r of up) {
+      const d = dayKey(r.commence);
+      if (d !== cur) { html += `<div class="day">${esc(d)}</div>`; cur = d; }
+      html += `<article class="pick">
+        <div class="top"><div class="bet">${esc(betText(r, r.league))} <span style="font-weight:500;color:var(--muted)">(${fmtPrice(r.price)})</span></div>
+          <div class="units">${units(r.stake).toFixed(1)}u</div></div>
+        <div class="meta">${tag(r)}<span>${esc(matchup(r))}</span><span>${esc(kickoff(r.commence))}</span>
+          <span>${esc(r.book)}</span><span>${Math.round(100 * r.win_chance)}% to win</span></div>
+        ${r.why ? `<details><summary>Why this pick</summary><p>${esc(r.why)}</p></details>` : ""}
+      </article>`;
+    }
+    box.innerHTML = html;
+  }
+
+  // results
+  const rbox = document.getElementById("results");
+  const recent = g.slice(0, 25);
+  rbox.innerHTML = recent.length ? recent.map(r => `<article class="pick">
+      <div class="top"><div class="bet">${esc(betText(r, r.league))} <span style="font-weight:500;color:var(--muted)">(${fmtPrice(r.price)})</span></div>
+        <span class="res ${r.result}">${r.result.toUpperCase()} ${r.profit != null ? (r.profit >= 0 ? "+" : "") + units(r.profit).toFixed(1) + "u" : ""}</span></div>
+      <div class="meta">${tag(r)}<span>${esc(matchup(r))}</span>${r.final ? `<span>Final ${esc(r.final)}</span>` : ""}
+        <span>${esc(new Date(r.commence).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</span></div>
+    </article>`).join("")
+    : `<div class="empty">Results show up here once games are graded.</div>`;
+}
+
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => {
+  FILTER = b.dataset.f;
+  try { localStorage.setItem("edge-filter", FILTER); } catch (e) {}
+  render();
+}));
+load();
+setInterval(load, 10 * 60 * 1000);
+</script>
+</body>
+</html>
