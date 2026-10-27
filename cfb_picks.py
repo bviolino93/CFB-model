@@ -495,6 +495,13 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     # Look up the news for the games picked. A backup QB's first start
     # moves that game's fair line, so price and pick again; repeat for any
     # new games that brings in.
+    try:
+        with open(a.closes) as fh:
+            closes = json.load(fh)
+    except (OSError, ValueError):
+        closes = {}
+    with open(a.closes, "w") as fh:
+        json.dump(ledger.record_lines(closes, fair, now), fh, indent=1)
     starters = team_starters(g, cfb_data.current_season(now)) if news is not None else {}
     done = set()
     for _ in range(4):
@@ -659,6 +666,8 @@ def main():
     ap.add_argument("--books", default=os.environ.get("MY_BOOKS") or MY_BOOKS)
     ap.add_argument("--news", default="site/news.json",
                     help="injury news cache (cfb_news), kept on the picks branch")
+    ap.add_argument("--closes", default="site/closes.json",
+                    help="last consensus line seen before each game (for CLV)")
     ap.add_argument("--lines-csv", default="")
     a = ap.parse_args()
     if a.lines_csv:
