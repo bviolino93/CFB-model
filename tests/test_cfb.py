@@ -169,3 +169,29 @@ def test_missing_starters_move_the_total_by_side_of_the_ball():
     assert cfb_news.total_pts(e, "Texas") == -0.5     # two offense down, one defense up
     e = {"teams": [{"team": "Texas", "players": [out("WR")] * 5}]}
     assert cfb_news.total_pts(e, "Texas") == -1.5
+
+
+def test_last_line_before_kickoff_is_kept_as_the_close():
+    import ledger
+    f = Fair("Miami Hurricanes", "Florida State Seminoles", "2026-10-31T19:30:00Z")
+    f.market_margin, f.market_total = 7.0, 51.5
+    c = ledger.record_lines({}, {"a": f}, "2026-10-29T19:00Z")
+    k = "Florida State Seminoles|Miami Hurricanes|2026-10-31"
+    assert c[k]["spread"] == -7.0 and c[k]["total"] == 51.5
+    f.market_margin = 8.5
+    c = ledger.record_lines(c, {"a": f}, "2026-10-31T15:00Z")
+    assert c[k]["spread"] == -8.5
+    f.market_margin = 20.0                     # live line after kickoff
+    c = ledger.record_lines(c, {"a": f}, "2026-10-31T20:00Z")
+    assert c[k]["spread"] == -8.5
+
+
+def test_ledger_keeps_the_alerted_line():
+    from datetime import datetime, timezone
+    import ledger
+    bet = {"away": "A", "home": "H", "commence": "2026-10-31T19:30:00Z",
+           "market": "totals", "pick": "Over", "point": 50.5, "price": -110}
+    t = datetime(2026, 10, 29, tzinfo=timezone.utc)
+    h = ledger.merge([], [bet], t, "r1")
+    h = ledger.merge(h, [{**bet, "point": 52.0, "price": -105}], t, "r2")
+    assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == (52.0, 50.5, -110)

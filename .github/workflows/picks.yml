@@ -68,6 +68,7 @@ jobs:
           git fetch -q --depth 1 origin picks && \
             git show FETCH_HEAD:history.json > site/history.json || true
           git show FETCH_HEAD:news.json > site/news.json 2>/dev/null || true
+          git show FETCH_HEAD:closes.json > site/closes.json 2>/dev/null || true
       - name: Run picks
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}

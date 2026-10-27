@@ -47,10 +47,35 @@ def merge(history: list[dict], picks: list[dict], now: datetime,
         old = out.get(k)
         if old and pd.Timestamp(old["commence"]) <= pd.Timestamp(now):
             continue
+        # The line at first sight is the one the alert went out with, so
+        # it is the one closing-line value is measured from.
+        first = old or p
         out[k] = {**p, "first_seen": (old or {}).get("first_seen", run),
+                  "first_point": first.get("first_point", first["point"]),
+                  "first_price": first.get("first_price", first["price"]),
                   "last_seen": run, "result": None, "profit": None,
                   "pulled": False}
     return sorted(out.values(), key=lambda b: (b["commence"], b["home"]))
+
+
+def record_lines(closes: dict, fair: dict, now) -> dict:
+    """The consensus line for every game not yet started, overwritten each
+    run, so after kickoff it holds the last line seen before the game: the
+    closing line for CLV. Free college data has no 2026 closing lines, so
+    this is the only record of them. Keyed like bets: away|home|date."""
+    now = pd.Timestamp(now)
+    seen = now.isoformat()
+    for f in fair.values():
+        if pd.Timestamp(f.commence) <= now:
+            continue
+        k = f"{f.away_team}|{f.home_team}|{str(f.commence)[:10]}"
+        row = {"commence": f.commence, "seen": seen}
+        if f.market_margin == f.market_margin:      # not NaN
+            row["spread"] = round(-float(f.market_margin), 2)   # home side
+        if f.market_total == f.market_total:
+            row["total"] = round(float(f.market_total), 2)
+        closes[k] = {**closes.get(k, {}), **row}
+    return closes
 
 
 def payout(stake: float, price: float) -> float:
