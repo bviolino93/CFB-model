@@ -1,0 +1,114 @@
+name: Check one game
+
+# Runs a single college game through the model (cfb_game.py) against live
+# odds: the sharp line and the model's line, the best DraftKings/FanDuel
+# price for each side, and whether any of it is a bet. It doesn't place or
+# log bets; the scheduled College picks runs still do that.
+#
+# Two ways to start it:
+#   * the "Check a game" box on the Fieldline page
+#     (https://bviolino93.github.io/CFB-model/share/) opens a GitHub issue
+#     titled "Check: <team>"; submitting it starts this run. Only the repo
+#     owner's issues count.
+#   * Actions -> "Check one game" -> Run workflow, type a team.
+#
+# The report goes on the run's summary page and on the issue (or the
+# "Picks alerts" issue for a manual run), so it pushes to your phone, and
+# into checks.json on the `checks` branch, which the Fieldline page shows.
+# ~4 Odds API credits a run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      game:
+        description: "School or matchup, e.g. Ohio State, or Miami Florida State"
+        required: true
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: game-check
+  cancel-in-progress: false
+
+jobs:
+  game:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.issue.title, 'check:') &&
+       github.event.issue.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore the college data cache (the picks runs keep it fresh)
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache_cfb
+          key: cfb-${{ github.run_id }}
+          restore-keys: cfb-
+      - run: pip install pandas numpy pyarrow requests scipy scikit-learn anthropic
+      - name: Which game
+        id: q
+        env:
+          INPUT: ${{ inputs.game }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          if [ -n "$INPUT" ]; then q="$INPUT"; else q="${TITLE#*:}"; fi
+          q=$(printf '%s' "$q" | tr -d '\r\n' | sed 's/^ *//; s/ *$//')
+          echo "game=$q" >> "$GITHUB_OUTPUT"
+      - name: Restore the news cache and earlier checks
+        run: |
+          git fetch -q --depth 1 origin picks && \
+            git show FETCH_HEAD:news.json > news.json 2>/dev/null || true
+          git fetch -q --depth 1 origin checks && \
+            git show FETCH_HEAD:checks.json > checks.json 2>/dev/null || true
+      - name: Run the game
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
+          GAME: ${{ steps.q.outputs.game }}
+        run: |
+          python cfb_game.py "$GAME" --md game.md --checks checks.json \
+            --news news.json \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          cat game.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish to the checks branch
+        run: |
+          mkdir out && cp checks.json out/ && cd out
+          git init -q -b checks
+          git config user.name "picks-bot"
+          git config user.email "picks-bot@users.noreply.github.com"
+          git add -A
+          git commit -qm "Check $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" checks
+      - name: Reply on the issue
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body-file game.md
+            gh issue close "$ISSUE"
+            exit 0
+          fi
+          n=$(gh issue list --state open --search "Picks alerts in:title" \
+                --json number -q '.[0].number')
+          [ -n "$n" ] || exit 0
+          { cat game.md; echo; echo "@${{ github.repository_owner }}"; } > game_body.md
+          gh issue comment "$n" --body-file game_body.md
+      - name: Say so on the issue if it failed
+        if: failure() && github.event.issue.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --body \
+            "The check didn't finish. Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
