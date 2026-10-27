@@ -195,3 +195,43 @@ def test_ledger_keeps_the_alerted_line():
     h = ledger.merge([], [bet], t, "r1")
     h = ledger.merge(h, [{**bet, "point": 52.0, "price": -105}], t, "r2")
     assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == (52.0, 50.5, -110)
+
+
+def test_one_game_finds_schools():
+    import cfb_game
+    rows = pd.DataFrame([
+        {"event_id": "a", "home_team": "Miami (OH) RedHawks", "away_team": "Ohio Bobcats",
+         "commence_time": "2026-10-31T16:00:00Z"},
+        {"event_id": "b", "home_team": "Miami Hurricanes", "away_team": "Florida State Seminoles",
+         "commence_time": "2026-10-31T19:30:00Z"},
+        {"event_id": "c", "home_team": "Ohio State Buckeyes", "away_team": "Penn State Nittany Lions",
+         "commence_time": "2026-10-31T20:00:00Z"}])
+    names = {"Miami (OH) RedHawks": "Miami (OH)", "Miami Hurricanes": "Miami",
+             "Ohio Bobcats": "Ohio", "Ohio State Buckeyes": "Ohio State"}
+    assert cfb_game.find_event(rows, "Miami", names) == "b"
+    assert cfb_game.find_event(rows, "Ohio State", names) == "c"
+    assert cfb_game.find_event(rows, "Ohio", names) == "a"
+    assert cfb_game.find_event(rows, "Seminoles at Hurricanes", names) == "b"
+    assert cfb_game.find_event(rows, "Penn State", names) == "c"
+    assert cfb_game.find_event(rows, "Alabama", names) is None
+
+
+def test_one_game_report_and_checks_file(tmp_path):
+    import json
+    import cfb_game
+    d = {"league": "cfb", "found": True, "query": "Ohio State",
+         "checked": "2026-10-27T03:00:00+00:00", "title": "Penn State @ Ohio State",
+         "kickoff": "2026-10-31T20:00:00Z",
+         "lines": [{"market": "Total", "sharp": "45.5", "model": "45.5"}],
+         "offers": [{"market": "totals", "side": "Under 45.5", "price": -110,
+                     "book": "FanDuel", "win": 0.5, "ev": -0.045, "bet": False}],
+         "verdicts": [{"market": "Total", "bet": False, "head": "Pass",
+                       "text": "None of the totals patterns fits this game."}]}
+    md = cfb_game.to_md(d)
+    assert "| Under 45.5 | -110 | FanDuel | 50.0% | -4.5% |" in md
+    assert "**Total: Pass.**" in md
+    p = tmp_path / "checks.json"
+    cfb_game.save_check(str(p), d)
+    cfb_game.save_check(str(p), {**d, "checked": "2026-10-27T04:00:00+00:00"})
+    c = json.loads(p.read_text())["checks"]
+    assert len(c) == 1 and c[0]["checked"].startswith("2026-10-27T04")

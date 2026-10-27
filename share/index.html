@@ -204,6 +204,29 @@ footer a { color: var(--neon); text-decoration: none; }
   .bet { font-size: 29px; }
   h2 { font-size: 26px; }
 }
+
+/* check a game */
+.check { background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin-bottom: 10px; }
+.check form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.seg { display: inline-flex; padding: 3px; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; }
+.seg button { border: 0; background: transparent; color: var(--muted); padding: 6px 12px; border-radius: 999px; font: 700 12px Inter, sans-serif; letter-spacing: .06em; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--lg); color: #fff; }
+.check input { flex: 1 1 180px; min-width: 0; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; font: 500 15px Inter, sans-serif; }
+.check input:focus { outline: 2px solid var(--neon); outline-offset: 1px; }
+.check .go { border: 0; background: var(--neon); color: #04140e; border-radius: 10px; padding: 10px 16px; font: 800 13px Inter, sans-serif; letter-spacing: .06em; cursor: pointer; }
+.check .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.check .hint b { color: var(--ink); }
+.ck .head { font-family: var(--display); font-size: 26px; line-height: 1; letter-spacing: .02em; margin-top: 8px; }
+.ck .lines { display: grid; grid-template-columns: auto 1fr 1fr; gap: 4px 12px; font-size: 13px; margin-top: 10px; }
+.ck .lines .h { font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.ck .verdict { margin-top: 10px; font-size: 13.5px; line-height: 1.5; color: #d5dbe4; }
+.ck .verdict b { color: var(--ink); }
+.ck .verdict.yes b { color: var(--neon); }
+.ck table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.ck td, .ck th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.ck th { color: var(--muted); font-weight: 700; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; }
+.ck .ago { margin-left: auto; }
 @media (prefers-reduced-motion: reduce) { .dot, .an, .an * { animation: none !important; } .ticket { transition: none; } }
 </style>
 </head>
@@ -226,6 +249,21 @@ footer a { color: var(--neon); text-decoration: none; }
   <h2>On the board</h2>
   <div id="edges"></div>
   <div id="upcoming"></div>
+
+  <h2>Check a game</h2>
+  <div class="check">
+    <form id="checkForm" autocomplete="off">
+      <div class="seg" role="group" aria-label="League">
+        <button type="button" class="lg-nfl" data-l="nfl" aria-pressed="true">NFL</button>
+        <button type="button" class="lg-cfb" data-l="cfb" aria-pressed="false">COLLEGE</button>
+      </div>
+      <input id="checkGame" name="game" placeholder="Team, e.g. Chiefs" aria-label="Team or matchup" required>
+      <button class="go" type="submit">CHECK</button>
+    </form>
+    <div class="hint" id="checkHint">Runs one game through the model on demand. Opens GitHub with the request filled in: tap <b>Create</b> there.
+      The result lands here and in your GitHub notifications in about 2–5 minutes. Only the account owner can run checks.</div>
+  </div>
+  <div id="checks"></div>
 
   <h2>Results</h2>
   <div id="results"></div>
@@ -594,7 +632,75 @@ document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click
   ANIM = !REDUCED;
   try { localStorage.setItem("edge-filter", FILTER); } catch (e) {}
   render();
+  renderChecks();
 }));
+// ---- check one game: each repo's "Check one game" workflow runs when the
+// owner opens an issue titled "Check: <team>", and keeps its recent results
+// in checks.json on that repo's checks branch.
+const CHECK_REPO = { nfl: "bviolino93/NFL-model", cfb: "bviolino93/CFB-model" };
+let CHECKS = [], CHECK_LEAGUE = "nfl", CHECK_POLL = null;
+async function loadChecks() {
+  const all = [];
+  await Promise.all(Object.entries(CHECK_REPO).map(async ([lg, repo]) => {
+    try {
+      const j = await getJSON(`https://raw.githubusercontent.com/${repo}/checks/checks.json`);
+      (j.checks || []).forEach(c => all.push({ ...c, league: lg }));
+    } catch (e) {}
+  }));
+  all.sort((a, b) => String(b.checked).localeCompare(String(a.checked)));
+  CHECKS = all;
+  renderChecks();
+}
+function ago(iso) {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago";
+}
+function checkCard(c) {
+  const lg = c.league === "nfl" ? "NFL" : "CFB";
+  const top = `<div class="row1"><span class="badge">${lg}</span>${c.kickoff ? `<span>${esc(kick(c.kickoff))}</span>` : ""}
+    <span class="when ago">checked ${esc(ago(c.checked))}</span></div>`;
+  if (!c.found) {
+    return `<article class="ticket ck ${c.league}">${top}<div class="head">${esc(c.title)}</div>
+      <div class="verdict">You asked for “${esc(c.query)}”. ${esc(String(c.message || "").split("\n")[0])}</div></article>`;
+  }
+  const lines = (c.lines || []).length ? `<div class="lines"><span class="h"></span><span class="h">Sharp books</span><span class="h">Model</span>` +
+    c.lines.map(x => `<span class="h">${esc(x.market)}</span><span>${esc(x.sharp)}</span><span>${esc(x.model)}</span>`).join("") + `</div>` : "";
+  const verdicts = (c.verdicts || []).map(v => `<div class="verdict${v.bet ? " yes" : ""}"><b>${esc(v.market)}: ${esc(v.head)}.</b> ${esc(v.text)}</div>`).join("")
+    || (c.message ? `<div class="verdict">${esc(c.message)}</div>` : "");
+  const offers = (c.offers || []).length ? `<details><summary>Best prices at your books</summary><table>
+    <tr><th>Side</th><th>Price</th><th>Book</th><th>Win</th><th>Edge</th></tr>` +
+    c.offers.map(o => `<tr><td>${esc(o.side)}${o.bet ? " ✅" : ""}</td><td>${fmtPrice(o.price)}</td><td>${bookTag(o.book)}</td>
+      <td>${(100 * o.win).toFixed(1)}%</td><td class="${o.ev > 0 ? "pos" : "neg"}">${signed(100 * o.ev)}%</td></tr>`).join("") +
+    `</table></details>` : "";
+  return `<article class="ticket ck ${c.league}">${top}<div class="head">${esc(c.title)}</div>${lines}${verdicts}
+    ${c.note ? `<div class="verdict" style="color:var(--muted)">${esc(c.note)}</div>` : ""}${offers}</article>`;
+}
+function renderChecks() {
+  const keep = c => (FILTER === "all" || c.league === FILTER) &&
+    (c.kickoff ? new Date(c.kickoff) > Date.now() : Date.now() - new Date(c.checked) < 864e5);
+  const list = CHECKS.filter(keep).slice(0, 4);
+  document.getElementById("checks").innerHTML = list.map(checkCard).join("");
+}
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+  CHECK_LEAGUE = b.dataset.l;
+  document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  document.getElementById("checkGame").placeholder = CHECK_LEAGUE === "nfl" ? "Team, e.g. Chiefs" : "School, e.g. Ohio State";
+}));
+document.getElementById("checkForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const q = document.getElementById("checkGame").value.trim();
+  if (!q) return;
+  const body = "Started from the Check a game box on the Fieldline page. Submitting this runs the game through the " +
+    "model; the result is posted here and on the page, then the issue closes.";
+  const url = `https://github.com/${CHECK_REPO[CHECK_LEAGUE]}/issues/new?title=${encodeURIComponent("Check: " + q)}&body=${encodeURIComponent(body)}`;
+  window.open(url, "_blank", "noopener");
+  document.getElementById("checkHint").innerHTML = `Checking <b>${esc(q)}</b>: tap <b>Create</b> on GitHub. This page looks for the result every 30 seconds for the next 10 minutes.`;
+  clearInterval(CHECK_POLL);
+  let n = 0;
+  CHECK_POLL = setInterval(() => { loadChecks(); if (++n >= 20) clearInterval(CHECK_POLL); }, 30000);
+});
+loadChecks();
+setInterval(loadChecks, 10 * 60 * 1000);
 load();
 setInterval(load, 10 * 60 * 1000);
 setInterval(render, 60 * 1000);   // keep the countdowns fresh

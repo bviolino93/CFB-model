@@ -442,9 +442,13 @@ def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
 
 
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
-                now=None, g: pd.DataFrame | None = None, news: dict | None = None):
+                now=None, g: pd.DataFrame | None = None, news: dict | None = None,
+                out: dict | None = None):
     """news: the injury news cache (cfb_news), or None to skip the check.
-    It's updated in place with whatever this run looks up."""
+    It's updated in place with whatever this run looks up. out, if given,
+    gets every priced offer ("priced") and the model's working ("ctx"),
+    for the one-game check (cfb_game.py)."""
+    out = {} if out is None else out
     now = pd.Timestamp(now or datetime.now(timezone.utc))
     kick = pd.to_datetime(rows["commence_time"], utc=True, errors="coerce")
     rows = rows[(kick > now) & (kick < week_end(now))]
@@ -486,6 +490,7 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     sel.apply_adjustments(fair, adj)
     pol = sel.Policy(min_ev=min_ev)
     priced = sel.price_offers(rows, fair, mm, tm, pol)
+    out.update(priced=priced, ctx=ctx, ranks=ranks)
     if priced.empty:
         return priced, fair, ids
     bettable = priced[priced.market.isin(["spreads", "totals"])
@@ -495,13 +500,6 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     # Look up the news for the games picked. A backup QB's first start
     # moves that game's fair line, so price and pick again; repeat for any
     # new games that brings in.
-    try:
-        with open(a.closes) as fh:
-            closes = json.load(fh)
-    except (OSError, ValueError):
-        closes = {}
-    with open(a.closes, "w") as fh:
-        json.dump(ledger.record_lines(closes, fair, now), fh, indent=1)
     starters = team_starters(g, cfb_data.current_season(now)) if news is not None else {}
     done = set()
     for _ in range(4):
@@ -524,6 +522,7 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         bettable = drop_thin_spreads(priced[priced.market.isin(["spreads", "totals"])
                                             & priced.book.isin(my_books)], ctx)
         picks = sel.select(bettable, bankroll, pol)
+    out["priced"] = priced
     if len(picks):
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
         why = []
@@ -688,6 +687,14 @@ def main():
     except (OSError, ValueError):
         news = {}
     picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g, news=news)
+    try:
+        with open(a.closes) as fh:
+            closes = json.load(fh)
+    except (OSError, ValueError):
+        closes = {}
+    os.makedirs(os.path.dirname(a.closes) or ".", exist_ok=True)
+    with open(a.closes, "w") as fh:
+        json.dump(ledger.record_lines(closes, fair, now), fh, indent=1)
     os.makedirs(os.path.dirname(a.news) or ".", exist_ok=True)
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
