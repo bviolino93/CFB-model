@@ -203,12 +203,15 @@ def qb_change(entry: dict, school: str, starters: list[str]) -> tuple[float, int
 
 def player_pts(p: dict) -> float:
     """Points one non-QB injury takes off his team (OTHER_*): only a
-    starter, only the first game he misses. A missing games_missed counts
-    as a first miss unless he's out for the season."""
-    if str(p.get("pos", "")).upper() == "QB" or p.get("starter") is False:
+    confirmed starter (not a kicker or punter), and only the first game he
+    misses. An unknown games_missed doesn't count: injury lists carry
+    week-old "out, no timetable" entries for players already missing, and
+    those absences are in the ratings and the line."""
+    pos = str(p.get("pos", "")).upper()
+    if pos in ("QB", "K", "P", "LS") or p.get("starter") is not True:
         return 0.0
     st, missed = str(p.get("status", "")).lower(), p.get("games_missed")
-    if missed not in (None, 0) or (missed is None and st == "season"):
+    if missed != 0:
         return 0.0
     return {"out": OTHER_OUT_PTS, "doubtful": OTHER_OUT_PTS, "suspended": OTHER_OUT_PTS,
             "season": OTHER_OUT_PTS, "questionable": OTHER_Q_PTS}.get(st, 0.0)
