@@ -84,7 +84,8 @@ def test_news_check_reads_claude_json_and_shows_injuries():
             {"team": "Texas", "regular_qb": "Arch Manning", "expected_qb": "Matthew Caldwell",
              "qb_status": "out", "players": [
                  {"name": "Arch Manning", "pos": "QB", "status": "out", "note": "ankle"},
-                 {"name": "Ryan Wingo", "pos": "WR", "status": "questionable", "note": "hamstring"}]},
+                 {"name": "Ryan Wingo", "pos": "WR", "status": "questionable", "note": "hamstring",
+                  "starter": True, "games_missed": 0}]},
             {"team": "Oklahoma", "regular_qb": "John Mateer", "expected_qb": "John Mateer",
              "qb_status": "starting", "players": []}]}]}) + "\n```")
     calls = []
@@ -158,7 +159,12 @@ def test_other_starters_count_once_and_are_capped():
     assert cfb_news.player_pts(p("out", starter=False, games_missed=0)) == 0.0
     assert cfb_news.player_pts(p("season")) == 0.0          # old news, no games_missed
     assert cfb_news.player_pts({**p("out"), "pos": "QB"}) == 0.0
-    e = {"teams": [{"team": "Iowa State", "players": [p("out", games_missed=0)] * 5}]}
+    # week-old "out, no timetable" list entries with nothing on starter or
+    # games missed (Kent State, Oct 2026) are already in the line
+    assert cfb_news.player_pts(p("out", starter=None, games_missed=None)) == 0.0
+    assert cfb_news.player_pts(p("out", starter=True, games_missed=None)) == 0.0
+    assert cfb_news.player_pts({**p("out", starter=True, games_missed=0), "pos": "K"}) == 0.0
+    e = {"teams": [{"team": "Iowa State", "players": [p("out", starter=True, games_missed=0)] * 5}]}
     assert cfb_news.others_pts(e, "Iowa State") == -1.5
 
 
