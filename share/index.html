@@ -365,12 +365,12 @@ function shortBet(b) {
 // what kind of bet it is, read off the reasoning so old bets sort too
 function betType(r) {
   const w = r.why || "";
+  if (r.market === "h2h") return "Underdog moneylines";
   if (/point favorite with a total under/.test(w)) return "Big-favorite overs";
   if (/total of 60\+/.test(w)) return "60+ unders";
   if (/possession count puts/.test(w)) return "Possession-count unders";
   if (/hasn't caught up/.test(w)) return "Slow-book lines";
   if (/^News:/.test(w)) return "Injury news";
-  if (r.market === "h2h") return "Moneylines";
   return r.market === "totals" ? "Model totals" : "Model spreads";
 }
 const breakEven = p => p < 0 ? -p / (100 - p) : 100 / (p + 100);

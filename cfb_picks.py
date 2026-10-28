@@ -97,6 +97,18 @@ NEWS_NEAR_MISS = 0.02
 # point won 50-52%, so a good price alone shouldn't carry them.
 MIN_SPREAD_LEAN = 1.0
 
+# Underdog moneylines (Brian, 2026-10-28). moneyline_research.py, every
+# book's closing moneyline 2012-25: dogs past +400 lose 25-45% (the
+# consensus overrates them), the model's lean barely moves a moneyline
+# and its dog calls don't win. The best price on the board for a +300-or-
+# shorter dog, when it beat the de-vigged consensus, returned +7% in
+# 2012-21 but lost in 2022-25. So: priced off the moneyline market, moved
+# by the same spread adjustments as the spreads, bet only when DraftKings
+# or FanDuel pay more than that is worth. Small, separate stakes.
+DOG_MAX_PRICE = 300           # +300 or shorter
+DOG_MAX_BETS = 3              # the best few each week
+DOG_MAX_STAKE = 0.01          # of bankroll per dog ($10 on $1,000)
+
 # Odds API name -> schedule name where the school part differs.
 ALIASES = {
     "appalachian state": "app state", "hawaii": "hawaii", "umass": "massachusetts",
@@ -161,7 +173,7 @@ def outcome_models(g: pd.DataFrame):
 
 def fetch_rows(key: str, regions: str = "us,eu") -> pd.DataFrame:
     r = requests.get(ODDS_URL, params={
-        "apiKey": key, "regions": regions, "markets": "spreads,totals",
+        "apiKey": key, "regions": regions, "markets": "spreads,totals,h2h",
         "oddsFormat": "american"}, timeout=30)
     r.raise_for_status()
     print(f"odds: {len(r.json())} college events, credits left "
@@ -274,7 +286,7 @@ def _fav(home, away, m):
 
 
 def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
-            fair_market: float) -> str:
+            fair_market: float, call_out: bool = True) -> str:
     """The model's case for a bet in football terms: what it expects, then
     each opinion behind it (cfb_model.LineModel) that pushes our way, with
     the matchup that drives the efficiency numbers, and the biggest one
@@ -335,7 +347,7 @@ def explain(p, row: pd.Series, parts: dict, ranks: Ranks, adj: float,
                   if sign * v >= 0.2 and agrees(k, v, view)), reverse=True)
     con = sorted(((-sign * v, k, view) for k, (v, view) in parts.items()
                   if -sign * v >= 0.4 and agrees(k, v, view)), reverse=True)
-    why = [call]
+    why = [call] if call_out else []
     if pro:
         why.append("Why: " + "; ".join(say(k, view, True) for _, k, view in pro) + ".")
     if con:
@@ -441,6 +453,66 @@ def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
     return adj
 
 
+def dog_offers(priced: pd.DataFrame, my_books, min_ev: float) -> pd.DataFrame:
+    """Underdog moneylines at my books: a dog at the sharp books (the
+    market spread has the other team favoured), +100 to DOG_MAX_PRICE,
+    clearing min_ev."""
+    if priced.empty:
+        return priced
+    d = priced[(priced.market == "h2h") & priced.book.isin(my_books)
+               & (priced.price >= 100) & (priced.price <= DOG_MAX_PRICE)
+               & (priced.ev >= min_ev)]
+    return d[(d.pick == d.home) != (d.fair_market >= 0)]
+
+
+def underdogs(priced, my_books, bankroll, pol) -> pd.DataFrame:
+    """The best DOG_MAX_BETS underdogs, quarter Kelly capped at
+    DOG_MAX_STAKE of the bankroll."""
+    d = dog_offers(priced, my_books, pol.min_ev).copy()
+    if d.empty:
+        return d
+    d = (d.sort_values("ev", ascending=False)
+          .drop_duplicates(["event_id", "pick"]).head(DOG_MAX_BETS))
+    d["stake"] = (np.minimum(d.kelly * pol.kelly_mult, DOG_MAX_STAKE)
+                  * bankroll).round(2)
+    return d.reset_index(drop=True)
+
+
+def explain_dog(p, c: dict, ranks) -> str:
+    """An underdog moneyline: what the price needs, what we make it, and
+    the football behind it when the model moved the line its way."""
+    row = c.get("row")
+    names = ({p.home: row.home_team, p.away: row.away_team}
+             if row is not None else {})
+    me = names.get(p.pick, p.pick)
+    book = BOOK_NAME.get(p.book, p.book)
+    need = sel.american_to_prob(p.price)
+    why = [f"{book} pays {int(p.price):+d} on {me}, which needs a {need:.0%} "
+           f"win chance; we make it {p.win_chance:.0%}."]
+    sign = 1 if p.pick == p.home else -1
+    srcs = str(p.sources).split(",")
+    if "spread" in c and "combined" in srcs and sign * c["spread"][0] > 0:
+        pts, parts = c["spread"]
+        mine = sign * (p.fair_market + pts)
+        dog_by = abs(p.fair_market)
+        why.append(f"The market has them as {dog_by:.1f}-point underdogs; "
+                   + (f"the model has {me} winning by {mine:.1f}."
+                      if mine >= 0 else
+                      f"the model has them losing by only {-mine:.1f}."))
+        rest = explain(p._replace(market="spreads", point=dog_by), row, parts,
+                       ranks, pts, p.fair_market, call_out=False)
+        if rest:
+            why.append(rest)
+    if "market" in srcs:
+        q = (p.ev_market + 1 - p.p_push) / (sel.payout(p.price) + 1)
+        q /= max(1e-9, 1 - p.p_push)
+        fair_odds = 100 * (1 - q) / q if q < 0.5 else -100 * q / (1 - q)
+        why.append(f"{'Also, the' if len(why) > 1 else 'The'} sharp books' "
+                   f"moneylines make {me} worth about {fair_odds:+.0f}, so "
+                   f"{book} is paying more than the market thinks they're worth.")
+    return " ".join(why)
+
+
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None, news: dict | None = None,
                 out: dict | None = None):
@@ -505,7 +577,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     for _ in range(4):
         # the picks plus near misses: any offer within NEWS_NEAR_MISS of the
         # edge bar, so injury news can also turn a pass into a bet
-        near = bettable[bettable.ev >= min_ev - NEWS_NEAR_MISS]
+        near = pd.concat([bettable[bettable.ev >= min_ev - NEWS_NEAR_MISS],
+                          dog_offers(priced, my_books, min_ev - NEWS_NEAR_MISS)])
         cand = pd.concat([picks.reindex(columns=["event_id", "commence"]),
                           near[["event_id", "commence"]]]).drop_duplicates("event_id")
         if news is None or not len(cand):
@@ -523,11 +596,19 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                                             & priced.book.isin(my_books)], ctx)
         picks = sel.select(bettable, bankroll, pol)
     out["priced"] = priced
+    dogs = underdogs(priced, my_books, bankroll, pol)
+    if len(dogs):
+        picks = pd.concat([picks, dogs], ignore_index=True)
+        # a moneyline has no point; None, not NaN, so picks.json stays JSON
+        picks["point"] = picks.point.astype(object).where(picks.market != "h2h", None)
     if len(picks):
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
         why = []
         for p in picks.itertuples():
             c = ctx.get(p.home, {})
+            if p.market == "h2h":
+                why.append(explain_dog(p, c, ranks))
+                continue
             kind = "spread" if p.market == "spreads" else "total"
             srcs = str(p.sources).split(",")
             if kind == "total" and "trend" in srcs and "trend" in c:
@@ -552,7 +633,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 if a.source == "injury":
                     inj.setdefault((a.home_team, a.market), []).append(a.note)
         def news_text(p):
-            notes = inj.get((p.home, p.market), [])
+            mk = "spreads" if p.market == "h2h" else p.market
+            notes = inj.get((p.home, mk), [])
             if not notes or "injury" not in str(p.sources).split(","):
                 return ""
             return ("News: " + "; ".join(notes) + ". A backup QB's first start is "
@@ -645,8 +727,9 @@ def render_alert(bets: list[dict], names: dict) -> str:
     for b in bets:
         kick = pd.to_datetime(b["commence"], utc=True).tz_convert(
             "America/New_York").strftime("%a %-I:%M %p ET")
-        pick = n(b["pick"]) if b["market"] == "spreads" else b["pick"]
-        pt = f"{b['point']:+g}" if b["market"] == "spreads" else f"{b['point']:g}"
+        pick = n(b["pick"]) if b["market"] != "totals" else b["pick"]
+        pt = ("to win" if b["market"] == "h2h" else f"{b['point']:+g}"
+              if b["market"] == "spreads" else f"{b['point']:g}")
         out.append(f"- **{pick} {pt} ({int(b['price']):+d})** at {b['book']}, "
                    f"${b['stake']:,.2f} ({b['win_chance'] * 100:.0f}% to win) · "
                    f"{n(b['away'])} @ {n(b['home'])}, {kick}")

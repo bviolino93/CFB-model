@@ -235,3 +235,47 @@ def test_one_game_report_and_checks_file(tmp_path):
     cfb_game.save_check(str(p), {**d, "checked": "2026-10-27T04:00:00+00:00"})
     c = json.loads(p.read_text())["checks"]
     assert len(c) == 1 and c[0]["checked"].startswith("2026-10-27T04")
+
+
+def _dog_rows():
+    rows = []
+    for i, (price, ev, fair) in enumerate([(150, 0.05, -3.0), (180, 0.08, -4.0),
+                                           (450, 0.20, -10.0), (130, 0.02, -2.0),
+                                           (120, 0.04, -2.5), (110, 0.035, -1.5)]):
+        rows.append({"event_id": f"e{i}", "home": f"H{i}", "away": "A",
+                     "market": "h2h", "pick": f"H{i}", "price": price, "ev": ev,
+                     "fair_market": fair, "kelly": 0.2, "book": "draftkings",
+                     "point": None})
+    rows.append({**rows[0], "book": "pinnacle", "ev": 0.5})          # not my book
+    rows.append({**rows[1], "pick": "A", "price": 105, "ev": 0.3})   # favourite
+    return pd.DataFrame(rows)
+
+
+def test_underdogs_best_few_short_dogs_at_my_books():
+    import selector as sel
+    d = cfb_picks.underdogs(_dog_rows(), ["draftkings"], 1000, sel.Policy(min_ev=0.03))
+    assert list(d.pick) == ["H1", "H0", "H4"]
+    assert (d.stake == 10.0).all()
+
+
+def test_underdog_reason_and_grade():
+    import ledger
+    p = pd.DataFrame([{"home": "Purdue Boilermakers", "away": "Iowa Hawkeyes",
+                       "pick": "Purdue Boilermakers", "market": "h2h", "point": None,
+                       "price": 170, "book": "draftkings", "win_chance": 0.38,
+                       "fair_market": -4.0, "sources": "market", "ev_market": 0.03,
+                       "p_push": 0.0}]).itertuples().__next__()
+    row = pd.Series({"home_team": "Purdue", "away_team": "Iowa"})
+    why = cfb_picks.explain_dog(p, {"row": row}, None)
+    assert why.startswith("DraftKings pays +170 on Purdue, which needs a 37%")
+    assert "sharp books' moneylines make Purdue worth about +162" in why
+    b = {"market": "h2h", "pick": "H", "home": "H", "away": "A", "point": None}
+    assert ledger.grade_one(b, 21, 17) == "win" and ledger.grade_one(b, 17, 21) == "loss"
+
+
+def test_close_keeps_the_moneyline_chance():
+    import ledger
+    f = Fair("Miami Hurricanes", "Florida State Seminoles", "2026-10-31T19:30:00Z")
+    f.market_margin, f.market_total, f.market_p_home = 7.0, 51.5, 0.7
+    c = ledger.record_lines({}, {"a": f}, "2026-10-29T19:00Z")
+    assert c["Florida State Seminoles|Miami Hurricanes|2026-10-31"]["p_home"] == 0.7
