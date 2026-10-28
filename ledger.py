@@ -74,6 +74,9 @@ def record_lines(closes: dict, fair: dict, now) -> dict:
             row["spread"] = round(-float(f.market_margin), 2)   # home side
         if f.market_total == f.market_total:
             row["total"] = round(float(f.market_total), 2)
+        p = getattr(f, "market_p_home", float("nan"))
+        if p == p:
+            row["p_home"] = round(float(p), 4)    # de-vigged moneyline
         closes[k] = {**closes.get(k, {}), **row}
     return closes
 
@@ -91,7 +94,7 @@ def grade_one(b: dict, home_score: float, away_score: float) -> str:
     else:
         mine, theirs = ((home_score, away_score) if b["pick"] == b["home"]
                         else (away_score, home_score))
-        diff = mine - theirs + (b["point"] or 0)
+        diff = mine - theirs + (0 if b["market"] == "h2h" else b["point"] or 0)
     return "win" if diff > 0 else "loss" if diff < 0 else "push"
 
 
