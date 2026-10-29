@@ -75,9 +75,10 @@ def test_thin_model_spreads_dropped():
     assert list(out.home) == ["B", "C", "D"]
 
 
-def test_news_check_reads_claude_json_and_shows_injuries():
+def test_news_check_reads_claude_json_and_shows_injuries(monkeypatch):
     from types import SimpleNamespace as NS
     import cfb_news
+    monkeypatch.setattr(cfb_news, "ALREADY_SPENT", {})
     key = cfb_news.game_key("Texas", "Oklahoma", "2026-10-31T19:30:00Z")
     reply = ("Found reports.\n```json\n" + __import__("json").dumps({"games": [{
         "key": key, "teams": [
@@ -166,11 +167,15 @@ def test_news_lookups_stay_near_kickoff_and_capped():
                     return NS(stop_reason="end_turn", content=[NS(type="text", text="none")], usage=usage)
 
     cfb_news._spent.update(dict.fromkeys(cfb_news._spent, 0))
-    now = pd.Timestamp("2026-10-29T12:00Z")
-    far = [{"home": "A", "away": "B", "kickoff": "2026-11-05T19:30:00Z"}]   # a week out
+    now = pd.Timestamp("2026-11-29T12:00Z")
+    # October 2026 is paused (already over budget before the guard)
+    assert cfb_news.fetch([{"home": "A", "away": "B", "kickoff": "2026-10-31T19:30:00Z"}], {},
+                          pd.Timestamp("2026-10-29T12:00Z"), client=Client)["_budget"]["usd"] == 49.0
+    assert calls == []
+    far = [{"home": "A", "away": "B", "kickoff": "2026-12-05T19:30:00Z"}]   # a week out
     cfb_news.fetch(far, {}, now, client=Client)
     assert calls == []
-    soon = [{"home": f"H{i}", "away": f"A{i}", "kickoff": f"2026-10-31T{i:02d}:30:00Z"} for i in range(20)]
+    soon = [{"home": f"H{i}", "away": f"A{i}", "kickoff": f"2026-11-30T{i:02d}:30:00Z"} for i in range(20)]
     cfb_news.fetch(soon, {}, now, client=Client)
     assert cfb_news._spent["games"] == cfb_news.MAX_LOOKUPS          # soonest 15, then stop
     assert calls[0]["model"] == "claude-sonnet-5-5" and calls[0]["output_config"]["effort"] == "low"
@@ -180,12 +185,12 @@ def test_news_lookups_stay_near_kickoff_and_capped():
     assert round(cfb_news.cost(), 2) == round(n * (0.2 + 0.02 + 0.03), 2)
     cfb_news._spent.update(dict.fromkeys(cfb_news._spent, 0))
     # the month's running total stops lookups at the budget, and resets next month
-    full = {"_budget": {"month": "2026-10", "usd": cfb_news.MONTHLY_BUDGET}}
+    full = {"_budget": {"month": "2026-11", "usd": cfb_news.MONTHLY_BUDGET}}
     n = len(calls)
     out = cfb_news.fetch(soon[:4], full, now, client=Client)
     assert len(calls) == n and out["_budget"]["usd"] == cfb_news.MONTHLY_BUDGET
-    out = cfb_news.fetch(soon[:4], full, pd.Timestamp("2026-11-01T00:00Z"), client=Client)
-    assert len(calls) == n + 1 and out["_budget"] == {"month": "2026-11", "usd": 0.25}
+    out = cfb_news.fetch(soon[:4], full, pd.Timestamp("2026-12-01T00:00Z"), client=Client)
+    assert len(calls) == n + 1 and out["_budget"] == {"month": "2026-12", "usd": 0.25}
     cfb_news._spent.update(dict.fromkeys(cfb_news._spent, 0))
 
 

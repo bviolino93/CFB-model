@@ -46,6 +46,9 @@ MAX_LOOKUPS = 15            # games looked up per run (per process), soonest fir
 # rest of the month once the running total in news.json ("_budget") reaches
 # this, leaving room for one-game checks; a Console spend limit backs it up.
 MONTHLY_BUDGET = 40.0
+# Spend from before the running total existed: October 2026 was already at
+# ~$49 (Brian), so lookups pause for the rest of it and restart November 1.
+ALREADY_SPENT = {"2026-10": 49.0}
 # $ per million tokens (Sonnet 5.5) and per search, for the cost line in the log
 PRICE = {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5, "search": 0.01}
 NEWS_VERSION = 2            # bump when the questions asked change; older entries are looked up again
@@ -154,7 +157,8 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
     now = pd.Timestamp(now or datetime.now(timezone.utc))
     month = f"{now:%Y-%m}"
     budget = (cache or {}).get("_budget", {})
-    spent = budget.get("usd", 0.0) if budget.get("month") == month else 0.0
+    spent = max(budget.get("usd", 0.0) if budget.get("month") == month else 0.0,
+                ALREADY_SPENT.get(month, 0.0))
     start = cost()
     cache = {k: v for k, v in (cache or {}).items()
              if not k.startswith("_") and now - pd.Timestamp(v["checked"]) < pd.Timedelta(days=7)}
