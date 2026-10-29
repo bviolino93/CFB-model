@@ -179,6 +179,14 @@ def test_news_lookups_stay_near_kickoff_and_capped():
     assert len(calls) == n
     assert round(cfb_news.cost(), 2) == round(n * (0.2 + 0.02 + 0.03), 2)
     cfb_news._spent.update(dict.fromkeys(cfb_news._spent, 0))
+    # the month's running total stops lookups at the budget, and resets next month
+    full = {"_budget": {"month": "2026-10", "usd": cfb_news.MONTHLY_BUDGET}}
+    n = len(calls)
+    out = cfb_news.fetch(soon[:4], full, now, client=Client)
+    assert len(calls) == n and out["_budget"]["usd"] == cfb_news.MONTHLY_BUDGET
+    out = cfb_news.fetch(soon[:4], full, pd.Timestamp("2026-11-01T00:00Z"), client=Client)
+    assert len(calls) == n + 1 and out["_budget"] == {"month": "2026-11", "usd": 0.25}
+    cfb_news._spent.update(dict.fromkeys(cfb_news._spent, 0))
 
 
 def test_other_starters_count_once_and_are_capped():
