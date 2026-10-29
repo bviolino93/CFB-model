@@ -1,0 +1,380 @@
+{
+ "updated": "2026-10-29T21:53:48.443351+00:00",
+ "checks": [
+  {
+   "league": "cfb",
+   "query": "Troy James Madison",
+   "checked": "2026-10-29T21:53:48.443351+00:00",
+   "found": true,
+   "title": "Troy @ James Madison",
+   "away": "Troy",
+   "home": "James Madison",
+   "kickoff": "2026-10-29T23:30:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "James Madison by 19.8",
+     "model": "James Madison by 19.6"
+    },
+    {
+     "market": "Total",
+     "sharp": "51.2",
+     "model": "51.2"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "James Madison -18.5",
+     "price": -110,
+     "book": "FanDuel",
+     "win": 0.5342,
+     "ev": 0.0198,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "Troy +19.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.4925,
+     "ev": -0.0599,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 50.5",
+     "price": -115,
+     "book": "FanDuel",
+     "win": 0.5302,
+     "ev": -0.0088,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 51.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.4981,
+     "ev": -0.0491,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Lean James Madison -18.5, but under the bar",
+     "text": "The best side is James Madison -18.5 at +2.0% expected value; a bet needs 3%. The model leans Troy by 0.1 against the sharp line; a model-only spread needs a 1-point lean."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 50.5 at -0.9% expected value; a bet needs 3%. None of the totals patterns fits this game. Our own count: about 12 possessions a side, James Madison scoring 3.2 points a possession and Troy 1.5, which builds to about 56."
+    }
+   ],
+   "run": "https://github.com/bviolino93/CFB-model/actions/runs/40961505531"
+  },
+  {
+   "league": "cfb",
+   "query": "Jacksonville State",
+   "checked": "2026-10-28T21:27:17.233938+00:00",
+   "found": true,
+   "title": "Jacksonville State @ New Mexico State",
+   "away": "Jacksonville State",
+   "home": "New Mexico State",
+   "kickoff": "2026-10-29T00:00:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Jacksonville State by 3.2",
+     "model": "Jacksonville State by 4.1"
+    },
+    {
+     "market": "Total",
+     "sharp": "50.0",
+     "model": "50.0"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "Jacksonville State -3.5",
+     "price": 102,
+     "book": "FanDuel",
+     "win": 0.5053,
+     "ev": 0.0208,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "New Mexico State +3",
+     "price": -105,
+     "book": "DraftKings",
+     "win": 0.4746,
+     "ev": -0.0707,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 50.5",
+     "price": -108,
+     "book": "DraftKings",
+     "win": 0.4978,
+     "ev": -0.0412,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 50.5",
+     "price": -110,
+     "book": "FanDuel",
+     "win": 0.5022,
+     "ev": -0.0413,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Lean Jacksonville State -3.5, but under the bar",
+     "text": "The best side is Jacksonville State -3.5 at +2.1% expected value; a bet needs 3%. The model leans Jacksonville State by 0.8 against the sharp line; a model-only spread needs a 1-point lean."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 50.5 at -4.1% expected value; a bet needs 3%. None of the totals patterns fits this game. Our own count: about 11 possessions a side, New Mexico State scoring 2.1 points a possession and Jacksonville State 2.6, which builds to about 54."
+    }
+   ],
+   "run": "https://github.com/bviolino93/CFB-model/actions/runs/40771868492"
+  },
+  {
+   "league": "cfb",
+   "query": "Kennesaw State",
+   "checked": "2026-10-28T21:26:22.809930+00:00",
+   "found": true,
+   "title": "Kennesaw State @ Middle Tennessee",
+   "away": "Kennesaw State",
+   "home": "Middle Tennessee",
+   "kickoff": "2026-10-28T23:00:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Middle Tennessee by 1.0",
+     "model": "Middle Tennessee by 0.3"
+    },
+    {
+     "market": "Total",
+     "sharp": "50.2",
+     "model": "50.2"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "Kennesaw State -1.5",
+     "price": 100,
+     "book": "DraftKings",
+     "win": 0.4873,
+     "ev": -0.0255,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "Middle Tennessee +1.5",
+     "price": -114,
+     "book": "FanDuel",
+     "win": 0.5127,
+     "ev": -0.0375,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 50.5",
+     "price": -108,
+     "book": "DraftKings",
+     "win": 0.4993,
+     "ev": -0.0383,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 50.5",
+     "price": -110,
+     "book": "FanDuel",
+     "win": 0.5007,
+     "ev": -0.0442,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Kennesaw State -1.5 at -2.5% expected value; a bet needs 3%. The model leans Kennesaw State by 0.7 against the sharp line; a model-only spread needs a 1-point lean."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 50.5 at -3.8% expected value; a bet needs 3%. None of the totals patterns fits this game. Our own count: about 10 possessions a side, Middle Tennessee scoring 2.2 points a possession and Kennesaw State 2.2, which builds to about 50."
+    }
+   ],
+   "run": "https://github.com/bviolino93/CFB-model/actions/runs/40771864920"
+  },
+  {
+   "league": "cfb",
+   "query": "Oregon",
+   "checked": "2026-10-28T03:27:57.642821+00:00",
+   "found": true,
+   "title": "Northwestern @ Oregon",
+   "away": "Northwestern",
+   "home": "Oregon",
+   "kickoff": "2026-10-31T19:30:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Oregon by 3.8",
+     "model": "Oregon by 3.1"
+    },
+    {
+     "market": "Total",
+     "sharp": "47.0",
+     "model": "47.0"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "Northwestern +3.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.545,
+     "ev": 0.0404,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "Oregon -3.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.455,
+     "ev": -0.1313,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 46.5",
+     "price": -110,
+     "book": "FanDuel",
+     "win": 0.5242,
+     "ev": 0.0007,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 47.5",
+     "price": -110,
+     "book": "DraftKings",
+     "win": 0.4992,
+     "ev": -0.0469,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Lean Northwestern +3.5, but under the bar",
+     "text": "The best side is Northwestern +3.5 at +4.0% expected value; a bet needs 3%. The model leans Northwestern by 0.6 against the sharp line; a model-only spread needs a 1-point lean."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 46.5 at +0.1% expected value; a bet needs 3%. None of the totals patterns fits this game. Our own count: about 12 possessions a side, Oregon scoring 1.9 points a possession and Northwestern 2.0, which builds to about 52."
+    }
+   ],
+   "run": "https://github.com/bviolino93/CFB-model/actions/runs/40626794091"
+  },
+  {
+   "league": "cfb",
+   "query": "Ohio State",
+   "checked": "2026-10-27T03:32:04.203825+00:00",
+   "found": true,
+   "title": "Ohio State @ USC",
+   "away": "Ohio State",
+   "home": "USC",
+   "kickoff": "2026-10-31T23:30:00Z",
+   "lines": [
+    {
+     "market": "Spread",
+     "sharp": "Ohio State by 6.8",
+     "model": "Ohio State by 6.9"
+    },
+    {
+     "market": "Total",
+     "sharp": "51.2",
+     "model": "51.2"
+    }
+   ],
+   "offers": [
+    {
+     "market": "spreads",
+     "side": "USC +6.5",
+     "price": 100,
+     "book": "FanDuel",
+     "win": 0.4939,
+     "ev": -0.0123,
+     "bet": false
+    },
+    {
+     "market": "spreads",
+     "side": "Ohio State -6.5",
+     "price": -115,
+     "book": "DraftKings",
+     "win": 0.5061,
+     "ev": -0.0537,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Over 51.5",
+     "price": -104,
+     "book": "FanDuel",
+     "win": 0.5019,
+     "ev": -0.0155,
+     "bet": false
+    },
+    {
+     "market": "totals",
+     "side": "Under 51.5",
+     "price": -112,
+     "book": "DraftKings",
+     "win": 0.4981,
+     "ev": -0.0571,
+     "bet": false
+    }
+   ],
+   "verdicts": [
+    {
+     "market": "Spread",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is USC +6.5 at -1.2% expected value; a bet needs 3%. The model leans Ohio State by 0.1 against the sharp line; a model-only spread needs a 1-point lean."
+    },
+    {
+     "market": "Total",
+     "bet": false,
+     "head": "Pass",
+     "text": "The best side is Over 51.5 at -1.6% expected value; a bet needs 3%. None of the totals patterns fits this game. Our own count: about 9 possessions a side, USC scoring 2.2 points a possession and Ohio State 3.9, which builds to about 56."
+    }
+   ],
+   "run": "https://github.com/bviolino93/CFB-model/actions/runs/40444637642"
+  }
+ ]
+}
