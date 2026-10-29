@@ -42,6 +42,13 @@ EFFORT = "low"
 REUSE_HOURS = 48
 LOOKAHEAD_HOURS = 72        # only games kicking off within this window
 MAX_LOOKUPS = 15            # games looked up per run (per process), soonest first
+# Brian's ceiling is $50 a month on the API (2026-10-29). Lookups stop for the
+# rest of the month once the running total in news.json ("_budget") reaches
+# this, leaving room for one-game checks; a Console spend limit backs it up.
+MONTHLY_BUDGET = 40.0
+# Spend from before the running total existed: October 2026 was already at
+# ~$49 (Brian), so lookups pause for the rest of it and restart November 1.
+ALREADY_SPENT = {"2026-10": 49.0}
 # $ per million tokens (Sonnet 5.5) and per search, for the cost line in the log
 PRICE = {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5, "search": 0.01}
 NEWS_VERSION = 2            # bump when the questions asked change; older entries are looked up again
@@ -148,8 +155,13 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
     "teams": [...]}} for every game it could check, reusing cache entries
     under REUSE_HOURS old."""
     now = pd.Timestamp(now or datetime.now(timezone.utc))
+    month = f"{now:%Y-%m}"
+    budget = (cache or {}).get("_budget", {})
+    spent = max(budget.get("usd", 0.0) if budget.get("month") == month else 0.0,
+                ALREADY_SPENT.get(month, 0.0))
+    start = cost()
     cache = {k: v for k, v in (cache or {}).items()
-             if now - pd.Timestamp(v["checked"]) < pd.Timedelta(days=7)}
+             if not k.startswith("_") and now - pd.Timestamp(v["checked"]) < pd.Timedelta(days=7)}
     todo = []
     for g in games:
         k = game_key(g["home"], g["away"], g["kickoff"])
@@ -172,6 +184,10 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
         import anthropic
         client = anthropic.Anthropic()
     for i in range(0, len(todo), BATCH):
+        if spent + cost() - start >= MONTHLY_BUDGET:
+            print(f"news: ${MONTHLY_BUDGET:.0f} monthly budget reached (${spent + cost() - start:.2f} "
+                  f"in {month}); skipping {len(todo) - i} lookups")
+            break
         part = todo[i:i + BATCH]
         _spent["games"] += len(part)
         try:
@@ -184,7 +200,9 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
             if f.get("key") in keys:
                 cache[f["key"]] = {"checked": now.isoformat(), "v": NEWS_VERSION,
                                    "teams": f.get("teams", [])}
-    print(f"news: checked {len(todo)} games, {len(cache)} on file; "
+    cache["_budget"] = {"month": month, "usd": round(spent + cost() - start, 4)}
+    print(f"news: ${cache['_budget']['usd']:.2f} spent in {month} of ${MONTHLY_BUDGET:.0f}")
+    print(f"news: checked {len(todo)} games, {len(cache) - 1} on file; "
           f"lookups this run ~${cost():.2f} ({_spent['games']} games, {_spent['search']} searches)")
     return cache
 

@@ -14,7 +14,8 @@ name: College picks
 #
 # Needs repository secret ODDS_API_KEY (the same key as the NFL repo).
 # Optional secret ANTHROPIC_API_KEY: Claude reads the injury news for the
-# games being bet (cfb_news.py, ~15 cents a game); skipped without it.
+# games being bet (cfb_news.py, Sonnet, ~$5-9 a week, capped at $40 a month);
+# skipped without it.
 # Optional repository variable MY_BOOKS (default "draftkings,fanduel").
 # ~4 Odds API credits a run (us + eu regions, spreads and totals).
 
