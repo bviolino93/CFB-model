@@ -40,6 +40,7 @@ import ledger
 import selector as sel
 
 ODDS_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_ncaaf/odds"
+SCORES_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_ncaaf/scores"
 DASHBOARD_URL = "https://bviolino93.github.io/CFB-model/"
 MY_BOOKS = "draftkings,fanduel"
 BOOK_NAME = {"draftkings": "DraftKings", "fanduel": "FanDuel"}
@@ -663,6 +664,47 @@ def grade(bets: list[dict], g: pd.DataFrame) -> list[dict]:
     return bets
 
 
+def fetch_scores(key: str) -> list[dict]:
+    """Finished games from the last 3 days (the Odds API scores feed, 2
+    credits). The free schedule data can take days to post weeknight scores."""
+    r = requests.get(SCORES_URL, params={"apiKey": key, "daysFrom": 3}, timeout=30)
+    r.raise_for_status()
+    out = []
+    for ev in r.json():
+        pts = {s["name"]: s["score"] for s in ev.get("scores") or []}
+        if ev.get("completed") and ev["home_team"] in pts and ev["away_team"] in pts:
+            out.append({"home": ev["home_team"], "away": ev["away_team"],
+                        "commence": ev["commence_time"],
+                        "home_score": float(pts[ev["home_team"]]),
+                        "away_score": float(pts[ev["away_team"]])})
+    return out
+
+
+def needs_scores(bets: list[dict], now) -> bool:
+    """Any bet still ungraded 4+ hours after kickoff."""
+    late = pd.Timestamp(now) - pd.Timedelta(hours=4)
+    return any(not b.get("result") and not b.get("pulled")
+               and pd.Timestamp(b["commence"]) < late for b in bets)
+
+
+def grade_scores(bets: list[dict], scores: list[dict]) -> list[dict]:
+    """Grade what the schedule data hasn't from the scores feed. Bets keep
+    the Odds API's team names, so they match the feed directly."""
+    for b in bets:
+        if b.get("result") or b.get("pulled"):
+            continue
+        for sc in scores:
+            if (sc["home"] == b["home"] and sc["away"] == b["away"]
+                    and abs(pd.Timestamp(sc["commence"]) - pd.Timestamp(b["commence"]))
+                    <= pd.Timedelta(hours=24)):
+                b["result"] = ledger.grade_one(b, sc["home_score"], sc["away_score"])
+                b["final"] = f"{int(sc['away_score'])}-{int(sc['home_score'])}"
+                b["profit"] = round({"win": ledger.payout(b["stake"], b["price"]),
+                                     "loss": -b["stake"], "push": 0.0}[b["result"]], 2)
+                break
+    return bets
+
+
 def school_names(fair: dict, ids: dict, g: pd.DataFrame, history) -> dict:
     """Odds API name -> school name, so the page says "Ohio State", not
     "Buckeyes"."""
@@ -752,6 +794,7 @@ def main():
                     help="last consensus line seen before each game (for CLV)")
     ap.add_argument("--lines-csv", default="")
     a = ap.parse_args()
+    key = None
     if a.lines_csv:
         rows = sel.latest_snapshot(pd.read_csv(a.lines_csv))
     else:
@@ -792,6 +835,11 @@ def main():
     seen = {ledger._key(b) for b in history}
     history = ledger.merge(history, out, now, now.isoformat())
     history = grade(history, g)
+    if key and needs_scores(history, now):
+        try:
+            history = grade_scores(history, fetch_scores(key))
+        except requests.RequestException as e:      # grading can wait for the next run
+            print(f"scores: lookup failed ({e})")
     ledger.save(a.history, history)
     names = school_names(fair, ids, g, history)
     with open(a.out, "w") as fh:
