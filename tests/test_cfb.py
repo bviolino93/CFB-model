@@ -329,3 +329,19 @@ def test_close_keeps_the_moneyline_chance():
     f.market_margin, f.market_total, f.market_p_home = 7.0, 51.5, 0.7
     c = ledger.record_lines({}, {"a": f}, "2026-10-29T19:00Z")
     assert c["Florida State Seminoles|Miami Hurricanes|2026-10-31"]["p_home"] == 0.7
+
+
+def test_bets_the_schedule_hasnt_scored_grade_from_the_scores_feed():
+    import cfb_picks
+    bet = {"home": "Western Kentucky Hilltoppers", "away": "Delaware Blue Hens",
+           "commence": "2026-10-27T23:00:00Z", "market": "spreads",
+           "pick": "Delaware Blue Hens", "point": 1.5, "price": -120, "stake": 12.0}
+    now = pd.Timestamp("2026-10-29T02:00Z")
+    assert cfb_picks.needs_scores([bet], now)
+    assert not cfb_picks.needs_scores([bet], pd.Timestamp("2026-10-28T01:00Z"))   # still on
+    scores = [{"home": "Western Kentucky Hilltoppers", "away": "Delaware Blue Hens",
+               "commence": "2026-10-27T23:00:00Z", "home_score": 24.0, "away_score": 23.0}]
+    out = cfb_picks.grade_scores([dict(bet)], scores)[0]
+    assert out["result"] == "win" and out["final"] == "23-24" and out["profit"] == 10.0
+    other = [{**scores[0], "commence": "2026-09-12T23:00:00Z"}]           # same teams, other date
+    assert not cfb_picks.grade_scores([dict(bet)], other)[0].get("result")
