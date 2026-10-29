@@ -33,8 +33,17 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-MODEL = "claude-opus-5-5"
-REUSE_HOURS = 20
+# Cost (Brian, 2026-10-29): Opus at medium effort ran ~45 cents a game and
+# ~$30-40 a week. Sonnet at low effort, news kept 2 days, lookups only in the
+# last 3 days before kickoff and at most MAX_LOOKUPS games a run; still 3
+# searches a game, any site, so QB news from beat writers isn't missed.
+MODEL = "claude-sonnet-5-5"
+EFFORT = "low"
+REUSE_HOURS = 48
+LOOKAHEAD_HOURS = 72        # only games kicking off within this window
+MAX_LOOKUPS = 15            # games looked up per run (per process), soonest first
+# $ per million tokens (Sonnet 5.5) and per search, for the cost line in the log
+PRICE = {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5, "search": 0.01}
 NEWS_VERSION = 2            # bump when the questions asked change; older entries are looked up again
 BATCH = 4                   # games per request
 SEARCHES_PER_GAME = 3
@@ -94,6 +103,24 @@ def _parse(text: str) -> list[dict]:
         return []
 
 
+_spent = {"games": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "search": 0}
+
+
+def _tally(usage) -> None:
+    _spent["input"] += getattr(usage, "input_tokens", 0) or 0
+    _spent["output"] += getattr(usage, "output_tokens", 0) or 0
+    _spent["cache_read"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+    _spent["cache_write"] += getattr(usage, "cache_creation_input_tokens", 0) or 0
+    stu = getattr(usage, "server_tool_use", None)
+    _spent["search"] += getattr(stu, "web_search_requests", 0) or 0
+
+
+def cost() -> float:
+    """Dollars spent on lookups so far in this run."""
+    return (sum(_spent[k] * PRICE[k] / 1e6 for k in ("input", "output", "cache_read", "cache_write"))
+            + _spent["search"] * PRICE["search"])
+
+
 def _ask(client, games: list[dict]) -> list[dict]:
     lines = "\n".join(f"- key: {g['key']} | {g['away']} at {g['home']}, kickoff "
                       f"{pd.Timestamp(g['kickoff']):%a %b %-d %Y %H:%M UTC}" for g in games)
@@ -104,8 +131,9 @@ def _ask(client, games: list[dict]) -> list[dict]:
     for _ in range(5):          # server-side search loops can pause; resume them
         resp = client.beta.messages.create(
             model=MODEL, max_tokens=16000, system=SYSTEM, messages=messages,
-            tools=tools, output_config={"effort": "medium"},
+            tools=tools, output_config={"effort": EFFORT},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        _tally(getattr(resp, "usage", None))
         if resp.stop_reason != "pause_turn":
             break
         messages = messages[:1] + [{"role": "assistant", "content": resp.content}]
@@ -129,7 +157,14 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
         if (hit and hit.get("v") == NEWS_VERSION
                 and now - pd.Timestamp(hit["checked"]) < pd.Timedelta(hours=REUSE_HOURS)):
             continue
+        if pd.Timestamp(g["kickoff"]) - now > pd.Timedelta(hours=LOOKAHEAD_HOURS):
+            continue
         todo.append({**g, "key": k})
+    todo.sort(key=lambda g: pd.Timestamp(g["kickoff"]))
+    left = max(0, MAX_LOOKUPS - _spent["games"])
+    if len(todo) > left:
+        print(f"news: {len(todo)} games due, looking up the {left} soonest (cap {MAX_LOOKUPS} a run)")
+        todo = todo[:left]
     if todo and client is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("news: no ANTHROPIC_API_KEY, skipping the injury check")
@@ -138,6 +173,7 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
         client = anthropic.Anthropic()
     for i in range(0, len(todo), BATCH):
         part = todo[i:i + BATCH]
+        _spent["games"] += len(part)
         try:
             found = _ask(client, part)
         except Exception as e:          # news is a check, never a reason to fail the run
@@ -148,7 +184,8 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
             if f.get("key") in keys:
                 cache[f["key"]] = {"checked": now.isoformat(), "v": NEWS_VERSION,
                                    "teams": f.get("teams", [])}
-    print(f"news: checked {len(todo)} games, {len(cache)} on file")
+    print(f"news: checked {len(todo)} games, {len(cache)} on file; "
+          f"lookups this run ~${cost():.2f} ({_spent['games']} games, {_spent['search']} searches)")
     return cache
 
 
