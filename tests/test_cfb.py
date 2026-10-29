@@ -244,7 +244,9 @@ def test_ledger_keeps_the_alerted_line():
     t = datetime(2026, 10, 29, tzinfo=timezone.utc)
     h = ledger.merge([], [bet], t, "r1")
     h = ledger.merge(h, [{**bet, "point": 52.0, "price": -105}], t, "r2")
-    assert (h[0]["point"], h[0]["first_point"], h[0]["first_price"]) == (52.0, 50.5, -110)
+    assert (h[0]["point"], h[0]["price"], h[0]["now_point"]) == (50.5, -110, 52.0)
+    h = ledger.merge(h, [], t, "r3")      # dropped before kickoff: still counts
+    assert len(h) == 1 and h[0]["on_board"] is False and h[0]["point"] == 50.5
 
 
 def test_one_game_finds_schools():
