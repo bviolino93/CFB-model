@@ -61,6 +61,9 @@ def locate(venue: str, school: str):
 
 
 LIMITED = False   # set once the archive's hourly/daily quota is hit
+# Stop fetching after this long and report on what's cached; the saved
+# cache lets the next run carry on (Actions kills the job at 90 minutes).
+DEADLINE = time.time() + float(os.environ.get("FETCH_MINUTES", "70")) * 60
 
 
 def hourly(lat, lon, start, end):
@@ -68,12 +71,14 @@ def hourly(lat, lon, start, end):
         global LIMITED
         if LIMITED:
             raise RuntimeError("quota hit earlier this run")
+        if time.time() > DEADLINE:
+            raise RuntimeError("out of time this run")
         for attempt in range(2):
             r = requests.get(WX, params={
                 "latitude": lat, "longitude": lon, "start_date": start, "end_date": end,
                 "hourly": "wind_speed_10m,precipitation,temperature_2m",
                 "wind_speed_unit": "mph", "precipitation_unit": "inch",
-                "temperature_unit": "fahrenheit", "timezone": "GMT"}, timeout=60)
+                "temperature_unit": "fahrenheit", "timezone": "GMT"}, timeout=20)
             if r.status_code == 429:
                 # minutely limit clears fast; hourly/daily don't, so stop
                 # fetching and report on what's cached (the next run resumes)
@@ -106,15 +111,23 @@ def build() -> pd.DataFrame:
         for season, sg in vg.groupby("season"):
             start = sg.kick.min().strftime("%Y-%m-%d")
             end = (sg.kick.max() + pd.Timedelta(hours=4)).strftime("%Y-%m-%d")
-            try:
-                h = hourly(lat, lon, start, end)
-            except Exception as e:
-                print(f"no weather: {venue} {season}: {e}")
-                continue
-            w = pd.DataFrame(h)
-            w["time"] = pd.to_datetime(w.time, utc=True)
-            w = w.set_index("time")
+            season_file = os.path.join(CACHE, f"wx_{lat:.3f}_{lon:.3f}_{start}_{end}.json")
             for r in sg.itertuples():
+                # a whole season in one request is slow (the first runs timed
+                # out); fetch just the game's day unless the season is cached
+                if os.path.exists(season_file):
+                    a, b = start, end
+                else:
+                    a = r.kick.strftime("%Y-%m-%d")
+                    b = (r.kick + pd.Timedelta(hours=4)).strftime("%Y-%m-%d")
+                try:
+                    w = pd.DataFrame(hourly(lat, lon, a, b))
+                except Exception as e:
+                    if not str(e).startswith(("quota", "out of time")):
+                        print(f"no weather: {venue} {r.kick:%Y-%m-%d}: {e}", flush=True)
+                    continue
+                w["time"] = pd.to_datetime(w.time, utc=True)
+                w = w.set_index("time")
                 t0 = r.kick.floor("h")
                 win = w.loc[t0:t0 + pd.Timedelta(hours=3)]
                 if win.empty:
@@ -122,7 +135,9 @@ def build() -> pd.DataFrame:
                 rows.append({"game_id": r.game_id, "wind": win.wind_speed_10m.mean(),
                              "rain": win.precipitation.sum(),
                              "temp": win.temperature_2m.mean()})
-    wx = pd.DataFrame(rows)
+    print(f"weather for {len(rows)} games (quota hit: {LIMITED}, "
+          f"out of time: {time.time() > DEADLINE})", flush=True)
+    wx = pd.DataFrame(rows, columns=["game_id", "wind", "rain", "temp"])
     return g.merge(wx, on="game_id", how="left")
 
 
