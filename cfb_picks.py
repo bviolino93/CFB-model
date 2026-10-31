@@ -101,6 +101,10 @@ NEWS_NEAR_MISS = 0.02
 # backtest, spread leans under 1 point covered 50%.
 MIN_LEAN = 1.0
 
+# Half stakes until the picks show they beat closing lines (Brian,
+# 2026-10-31, after a 2-6 start in college): every stake, dogs included.
+STAKE_SCALE = 0.5
+
 # Underdog moneylines (Brian, 2026-10-28). moneyline_research.py, every
 # book's closing moneyline 2012-25: dogs past +400 lose 25-45% (the
 # consensus overrates them), the model's lean barely moves a moneyline
@@ -614,11 +618,17 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         picks = sel.select(model_backed(offers), bankroll, pol)
     out["priced"] = priced
     dogs = underdogs(priced, my_books, bankroll, pol)
+    # One bet per team per game: a moneyline on a team the spreads already
+    # back is the same bet twice (UAB +7.5 and UAB +250 both lost 10-30).
+    if len(dogs) and len(picks):
+        backed = set(zip(picks["event_id"], picks["pick"]))
+        dogs = dogs[[k not in backed for k in zip(dogs["event_id"], dogs["pick"])]]
     if len(dogs):
         picks = pd.concat([picks, dogs], ignore_index=True)
         # a moneyline has no point; None, not NaN, so picks.json stays JSON
         picks["point"] = picks.point.astype(object).where(picks.market != "h2h", None)
     if len(picks):
+        picks["stake"] = (picks["stake"] * STAKE_SCALE).round(2)
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
         why = []
         for p in picks.itertuples():
