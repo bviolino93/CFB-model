@@ -60,20 +60,33 @@ def locate(venue: str, school: str):
     return _cached(f"geo_{key}.json", fetch)
 
 
+LIMITED = False   # set once the archive's hourly/daily quota is hit
+
+
 def hourly(lat, lon, start, end):
     def fetch():
-        for attempt in range(4):
+        global LIMITED
+        if LIMITED:
+            raise RuntimeError("quota hit earlier this run")
+        for attempt in range(2):
             r = requests.get(WX, params={
                 "latitude": lat, "longitude": lon, "start_date": start, "end_date": end,
                 "hourly": "wind_speed_10m,precipitation,temperature_2m",
                 "wind_speed_unit": "mph", "precipitation_unit": "inch",
                 "temperature_unit": "fahrenheit", "timezone": "GMT"}, timeout=60)
             if r.status_code == 429:
-                time.sleep(30 * (attempt + 1))
-                continue
+                # minutely limit clears fast; hourly/daily don't, so stop
+                # fetching and report on what's cached (the next run resumes)
+                if attempt == 0 and "inute" in r.text:
+                    time.sleep(61)
+                    continue
+                LIMITED = True
+                print(f"weather archive quota hit: {r.text[:200]}")
+                break
             r.raise_for_status()
             return r.json()["hourly"]
-        raise RuntimeError("weather archive kept rate-limiting")
+        LIMITED = True
+        raise RuntimeError("weather archive rate-limited")
     return _cached(f"wx_{lat:.3f}_{lon:.3f}_{start}_{end}.json", fetch)
 
 
