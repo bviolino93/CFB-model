@@ -63,16 +63,22 @@ def test_total_rules_pick_the_right_pattern():
     assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True, 4.0) is None
 
 
-def test_thin_model_spreads_dropped():
+def test_bets_need_the_model_on_their_side():
     rows = pd.DataFrame([
-        {"home": "A", "market": "spreads", "sources": "combined"},
-        {"home": "B", "market": "spreads", "sources": "combined"},
-        {"home": "C", "market": "spreads", "sources": "market,combined"},
-        {"home": "D", "market": "totals", "sources": "trend"}])
-    ctx = {"A": {"spread": (0.6, {})}, "B": {"spread": (-1.4, {})},
-           "C": {"spread": (0.2, {})}, "D": {}}
-    out = cfb_picks.drop_thin_spreads(rows, ctx)
-    assert list(out.home) == ["B", "C", "D"]
+        # model leans home 1.4: home side backed, away side not
+        {"home": "A", "pick": "A", "market": "spreads", "fair": 8.4, "fair_market": 7.0, "sources": "combined"},
+        {"home": "A", "pick": "B", "market": "spreads", "fair": 8.4, "fair_market": 7.0, "sources": "combined"},
+        # a book off the consensus with only 0.4 of model lean: a price bet, dropped
+        {"home": "C", "pick": "C", "market": "spreads", "fair": -8.6, "fair_market": -9.0, "sources": "market,combined"},
+        # under backed by 1.2 points; over not
+        {"home": "D", "pick": "Under", "market": "totals", "fair": 50.3, "fair_market": 51.5, "sources": "combined"},
+        {"home": "D", "pick": "Over", "market": "totals", "fair": 50.3, "fair_market": 51.5, "sources": "combined"},
+        # a totals pattern its way counts even under a point
+        {"home": "E", "pick": "Under", "market": "totals", "fair": 49.6, "fair_market": 50.0, "sources": "trend"},
+        # moneyline dog: the spread lean counts
+        {"home": "F", "pick": "G", "market": "h2h", "fair": -5.5, "fair_market": -4.0, "sources": "combined"}])
+    out = cfb_picks.model_backed(rows)
+    assert list(zip(out.home, out.pick)) == [("A", "A"), ("D", "Under"), ("E", "Under"), ("F", "G")]
 
 
 def test_news_check_reads_claude_json_and_shows_injuries(monkeypatch):
@@ -296,9 +302,11 @@ def _dog_rows():
                                            (120, 0.04, -2.5), (110, 0.035, -1.5)]):
         rows.append({"event_id": f"e{i}", "home": f"H{i}", "away": "A",
                      "market": "h2h", "pick": f"H{i}", "price": price, "ev": ev,
-                     "fair_market": fair, "kelly": 0.2, "book": "draftkings",
-                     "point": None})
+                     "fair_market": fair, "fair": fair + 1.5, "sources": "combined",
+                     "kelly": 0.2, "book": "draftkings", "point": None})
     rows.append({**rows[0], "book": "pinnacle", "ev": 0.5})          # not my book
+    rows.append({**rows[1], "event_id": "e9", "pick": "H9", "home": "H9",
+                 "fair": rows[1]["fair_market"], "sources": "market", "ev": 0.4})  # price only
     rows.append({**rows[1], "pick": "A", "price": 105, "ev": 0.3})   # favourite
     return pd.DataFrame(rows)
 
