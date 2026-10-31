@@ -1,0 +1,37 @@
+{
+  "updated": "Sat Oct 31, 21:16 UTC",
+  "picks": [
+    {
+      "away": "Northern Illinois Huskies",
+      "home": "UNLV Rebels",
+      "commence": "2026-11-01T02:30:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 54.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 9.94,
+      "win_chance": 0.5616541353383459,
+      "ev": 0.07224880382775112,
+      "why": "A 22-point favorite with a total under 55, and our possession count agrees: since 2015 the over has hit about 56-58% in games like this (500 games). Mismatches score more than low totals allow for. Our own count: about 11 possessions a side, UNLV scoring 3.3 points a possession and Northern Illinois 1.7, which builds to about 56.",
+      "game_id": 401864530,
+      "injuries": []
+    },
+    {
+      "away": "Oklahoma State Cowboys",
+      "home": "Iowa State Cyclones",
+      "commence": "2026-10-31T23:00:00Z",
+      "market": "spreads",
+      "pick": "Oklahoma State Cowboys",
+      "point": -9.5,
+      "price": -112,
+      "book": "FanDuel",
+      "stake": 9.7,
+      "win_chance": 0.5649183147033534,
+      "ev": 0.06930966711706188,
+      "why": "The model has Oklahoma State winning by 11.6, 2.1 more than the 9.5 they're giving. Why: the market (Oklahoma State by 10.0) is far from what the scores so far say (Iowa State by 5.5); when the market strays that far from the scoreboard it has usually been right, and then some. Working against it: Elo has it Iowa State by 7.1.",
+      "game_id": 401856847,
+      "injuries": []
+    }
+  ]
+}

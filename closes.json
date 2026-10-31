@@ -1,0 +1,392 @@
+{
+ "Delaware Blue Hens|Western Kentucky Hilltoppers|2026-10-27": {
+  "commence": "2026-10-27T23:00:00Z",
+  "seen": "2026-10-27T03:35:30.288090+00:00",
+  "spread": 1.25,
+  "total": 57.5
+ },
+ "Sam Houston State Bearkats|Missouri State Bears|2026-10-28": {
+  "commence": "2026-10-28T00:00:00Z",
+  "seen": "2026-10-27T23:36:28.331293+00:00",
+  "spread": -5.0,
+  "total": 51.75
+ },
+ "Kennesaw State Owls|Middle Tennessee Blue Raiders|2026-10-28": {
+  "commence": "2026-10-28T23:00:00Z",
+  "seen": "2026-10-28T21:40:02.495752+00:00",
+  "spread": -0.5,
+  "total": 50.25,
+  "p_home": 0.4957
+ },
+ "Jacksonville State Gamecocks|New Mexico State Aggies|2026-10-29": {
+  "commence": "2026-10-29T00:00:00Z",
+  "seen": "2026-10-28T21:40:02.495752+00:00",
+  "spread": 3.25,
+  "total": 50.0,
+  "p_home": 0.4133
+ },
+ "Florida Atlantic Owls|North Texas Mean Green|2026-10-29": {
+  "commence": "2026-10-29T23:30:00Z",
+  "seen": "2026-10-29T23:03:43.107294+00:00",
+  "spread": -14.25,
+  "total": 79.75,
+  "p_home": 0.8173
+ },
+ "Troy Trojans|James Madison Dukes|2026-10-29": {
+  "commence": "2026-10-29T23:30:00Z",
+  "seen": "2026-10-29T23:03:43.107294+00:00",
+  "spread": -19.25,
+  "total": 51.25,
+  "p_home": 0.8891
+ },
+ "Tulane Green Wave|Charlotte 49ers|2026-10-30": {
+  "commence": "2026-10-30T23:00:00Z",
+  "seen": "2026-10-29T23:03:43.107294+00:00",
+  "spread": 8.25,
+  "total": 46.5,
+  "p_home": 0.2555
+ },
+ "Baylor Bears|UCF Knights|2026-10-30": {
+  "commence": "2026-10-30T23:30:00Z",
+  "seen": "2026-10-29T23:03:43.107294+00:00",
+  "spread": 1.25,
+  "total": 47.75,
+  "p_home": 0.4721
+ },
+ "Kent State Golden Flashes|Sacramento State Hornets|2026-10-31": {
+  "commence": "2026-10-31T02:30:00Z",
+  "seen": "2026-10-29T23:03:43.107294+00:00",
+  "spread": 8.0,
+  "total": 46.0,
+  "p_home": 0.2638
+ },
+ "Arizona Wildcats|Texas Tech Red Raiders|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -4.25,
+  "total": 54.25,
+  "p_home": 0.6169
+ },
+ "Boston College Eagles|Duke Blue Devils|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -6.75,
+  "total": 49.0,
+  "p_home": 0.6988
+ },
+ "Bowling Green Falcons|Western Michigan Broncos|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -13.75,
+  "total": 44.5,
+  "p_home": 0.8285
+ },
+ "California Golden Bears|NC State Wolfpack|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -9.75,
+  "total": 56.75,
+  "p_home": 0.7328
+ },
+ "Illinois Fighting Illini|Maryland Terrapins|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": 2.5,
+  "total": 53.75,
+  "p_home": 0.4447
+ },
+ "Wisconsin Badgers|Iowa Hawkeyes|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -3.0,
+  "total": 36.75,
+  "p_home": 0.5526
+ },
+ "Notre Dame Fighting Irish|Navy Midshipmen|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": 29.75,
+  "total": 54.75,
+  "p_home": 0.0505
+ },
+ "SMU Mustangs|Syracuse Orange|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": 9.5,
+  "total": 59.0,
+  "p_home": 0.257
+ },
+ "UAB Blazers|South Florida Bulls|2026-10-31": {
+  "commence": "2026-10-31T16:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -7.25,
+  "total": 42.25,
+  "p_home": 0.7216
+ },
+ "Michigan Wolverines|Rutgers Scarlet Knights|2026-10-31": {
+  "commence": "2026-10-31T16:30:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": 15.75,
+  "total": 46.0,
+  "p_home": 0.1535
+ },
+ "Auburn Tigers|Ole Miss Rebels|2026-10-31": {
+  "commence": "2026-10-31T16:45:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -11.25,
+  "total": 58.25,
+  "p_home": 0.7864
+ },
+ "Marshall Thundering Herd|Old Dominion Monarchs|2026-10-31": {
+  "commence": "2026-10-31T17:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": 2.5,
+  "total": 46.0,
+  "p_home": 0.4347
+ },
+ "Coastal Carolina Chanticleers|Georgia State Panthers|2026-10-31": {
+  "commence": "2026-10-31T18:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -4.25,
+  "total": 55.5,
+  "p_home": 0.6164
+ },
+ "Kansas State Wildcats|Colorado Buffaloes|2026-10-31": {
+  "commence": "2026-10-31T18:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -3.25,
+  "total": 46.25,
+  "p_home": 0.5756
+ },
+ "UConn Huskies|Air Force Falcons|2026-10-31": {
+  "commence": "2026-10-31T19:00:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -0.25,
+  "total": 52.0,
+  "p_home": 0.4892
+ },
+ "Temple Owls|East Carolina Pirates|2026-10-31": {
+  "commence": "2026-10-31T19:05:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -4.25,
+  "total": 51.25,
+  "p_home": 0.6225
+ },
+ "Louisiana Tech Bulldogs|South Alabama Jaguars|2026-10-31": {
+  "commence": "2026-10-31T19:05:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": 6.5,
+  "total": 58.5,
+  "p_home": 0.3247
+ },
+ "Stanford Cardinal|Louisville Cardinals|2026-10-31": {
+  "commence": "2026-10-31T19:15:00Z",
+  "seen": "2026-10-31T14:17:26.754752+00:00",
+  "spread": -23.0,
+  "total": 61.25,
+  "p_home": 0.9159
+ },
+ "Arizona State Sun Devils|BYU Cougars|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -17.0,
+  "total": 47.5,
+  "p_home": 0.8546
+ },
+ "Colorado State Rams|Utah State Aggies|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -9.75,
+  "total": 62.5,
+  "p_home": 0.7335
+ },
+ "Florida Gators|Georgia Bulldogs|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -11.25,
+  "total": 55.75,
+  "p_home": 0.7864
+ },
+ "Florida International Panthers|Liberty Flames|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -13.25,
+  "total": 45.0,
+  "p_home": 0.8173
+ },
+ "Minnesota Golden Gophers|Indiana Hoosiers|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -21.0,
+  "total": 40.5,
+  "p_home": 0.8996
+ },
+ "Kansas Jayhawks|TCU Horned Frogs|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -6.25,
+  "total": 45.75,
+  "p_home": 0.6742
+ },
+ "UTEP Miners|North Dakota State Bison|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -24.0,
+  "total": 44.25,
+  "p_home": 0.9287
+ },
+ "Northwestern Wildcats|Oregon Ducks|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -4.25,
+  "total": 47.25,
+  "p_home": 0.6211
+ },
+ "Southern Mississippi Golden Eagles|UL Monroe Warhawks|2026-10-31": {
+  "commence": "2026-10-31T19:30:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": 3.25,
+  "total": 54.5,
+  "p_home": 0.3982
+ },
+ "Utah Utes|Cincinnati Bearcats|2026-10-31": {
+  "commence": "2026-10-31T19:45:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": 7.25,
+  "total": 56.0,
+  "p_home": 0.2966
+ },
+ "Virginia Cavaliers|Wake Forest Demon Deacons|2026-10-31": {
+  "commence": "2026-10-31T19:45:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -12.75,
+  "total": 47.75,
+  "p_home": 0.8119
+ },
+ "New Mexico Lobos|San Jose State Spartans|2026-10-31": {
+  "commence": "2026-10-31T20:00:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": 14.25,
+  "total": 43.0,
+  "p_home": 0.1637
+ },
+ "Nevada Wolf Pack|UCLA Bruins|2026-10-31": {
+  "commence": "2026-10-31T20:15:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -22.75,
+  "total": 42.5,
+  "p_home": 0.9129
+ },
+ "South Carolina Gamecocks|Oklahoma Sooners|2026-10-31": {
+  "commence": "2026-10-31T20:15:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -3.75,
+  "total": 44.25,
+  "p_home": 0.5951
+ },
+ "Purdue Boilermakers|Penn State Nittany Lions|2026-10-31": {
+  "commence": "2026-10-31T20:15:00Z",
+  "seen": "2026-10-31T19:02:23.852586+00:00",
+  "spread": -10.5,
+  "total": 54.75,
+  "p_home": 0.759
+ },
+ "Appalachian State Mountaineers|Georgia Southern Eagles|2026-10-31": {
+  "commence": "2026-10-31T22:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -6.0,
+  "total": 55.0,
+  "p_home": 0.6636
+ },
+ "Clemson Tigers|Florida State Seminoles|2026-10-31": {
+  "commence": "2026-10-31T23:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -5.0,
+  "total": 50.25,
+  "p_home": 0.6513
+ },
+ "Oklahoma State Cowboys|Iowa State Cyclones|2026-10-31": {
+  "commence": "2026-10-31T23:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": 10.0,
+  "total": 58.25,
+  "p_home": 0.2428
+ },
+ "Washington State Cougars|San Diego State Aztecs|2026-10-31": {
+  "commence": "2026-10-31T23:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -3.0,
+  "total": 47.75,
+  "p_home": 0.5548
+ },
+ "Georgia Tech Yellow Jackets|Pittsburgh Panthers|2026-10-31": {
+  "commence": "2026-10-31T23:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -7.75,
+  "total": 54.75,
+  "p_home": 0.7269
+ },
+ "Miami Hurricanes|North Carolina Tar Heels|2026-10-31": {
+  "commence": "2026-10-31T23:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": 13.25,
+  "total": 53.5,
+  "p_home": 0.1742
+ },
+ "Mississippi State Bulldogs|Texas Longhorns|2026-10-31": {
+  "commence": "2026-10-31T23:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -20.5,
+  "total": 50.0,
+  "p_home": 0.8973
+ },
+ "Ohio State Buckeyes|USC Trojans|2026-10-31": {
+  "commence": "2026-10-31T23:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": 6.5,
+  "total": 50.75,
+  "p_home": 0.3182
+ },
+ "Missouri Tigers|Arkansas Razorbacks|2026-10-31": {
+  "commence": "2026-10-31T23:45:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": 10.5,
+  "total": 48.25,
+  "p_home": 0.2308
+ },
+ "Army Black Knights|Memphis Tigers|2026-11-01": {
+  "commence": "2026-11-01T00:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -6.0,
+  "total": 59.25,
+  "p_home": 0.6615
+ },
+ "Washington Huskies|Nebraska Cornhuskers|2026-11-01": {
+  "commence": "2026-11-01T00:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -7.5,
+  "total": 49.75,
+  "p_home": 0.7243
+ },
+ "Texas State Bobcats|Boise State Broncos|2026-11-01": {
+  "commence": "2026-11-01T02:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -10.25,
+  "total": 65.0,
+  "p_home": 0.7764
+ },
+ "Northern Illinois Huskies|UNLV Rebels|2026-11-01": {
+  "commence": "2026-11-01T02:30:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": -22.0,
+  "total": 54.75,
+  "p_home": 0.9157
+ },
+ "Oregon State Beavers|Fresno State Bulldogs|2026-11-01": {
+  "commence": "2026-11-01T03:00:00Z",
+  "seen": "2026-10-31T21:16:47.067275+00:00",
+  "spread": 6.0,
+  "total": 57.5,
+  "p_home": 0.331
+ }
+}
