@@ -105,12 +105,12 @@ MIN_LEAN = 1.0
 # 2026-10-31, after a 2-6 start in college): every stake, dogs included.
 STAKE_SCALE = 0.5
 
-# Only bets with a backtested edge (Brian, 2026-10-31: "just make a good
-# educated guess"). The totals patterns (TOTAL_RULES) beat closing totals
-# 55-57% in every era since 2012. Model spreads ran ~49-54% against the
-# close and dog moneylines lost in 2022-25, so neither is bet while this
-# is on; they still show in the one-game check.
-BACKTESTED_ONLY = True
+# Totals-patterns-only mode (tried 2026-10-31, Brian wants spreads too:
+# "I want spread and totals"). Off: spreads and totals with MIN_LEAN.
+BACKTESTED_ONLY = False
+# Underdog moneylines: off since 2026-10-31 (0-2, no backtested edge;
+# Brian asked for spreads and totals). Set True to bet them again.
+BET_DOGS = False
 
 # Underdog moneylines (Brian, 2026-10-28). moneyline_research.py, every
 # book's closing moneyline 2012-25: dogs past +400 lose 25-45% (the
@@ -626,7 +626,7 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                         & priced.book.isin(my_books)]
         picks = sel.select(model_backed(offers), bankroll, pol)
     out["priced"] = priced
-    dogs = underdogs(priced, my_books, bankroll, pol) if not BACKTESTED_ONLY else priced.iloc[:0]
+    dogs = underdogs(priced, my_books, bankroll, pol) if BET_DOGS and not BACKTESTED_ONLY else priced.iloc[:0]
     # One bet per team per game: a moneyline on a team the spreads already
     # back is the same bet twice (UAB +7.5 and UAB +250 both lost 10-30).
     if len(dogs) and len(picks):
