@@ -795,6 +795,27 @@ def render_alert(bets: list[dict], names: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def render_dropped(bets: list[dict], names: dict) -> str:
+    """Alerted bets a later run no longer makes: skip them if not bet yet.
+    They stay in the record at the alerted price."""
+    n = lambda t: names.get(t, t)
+    out = [f"**Skip {'these' if len(bets) != 1 else 'this'} if you haven't bet "
+           f"{'them' if len(bets) != 1 else 'it'}: {len(bets)} college "
+           f"bet{'s' if len(bets) != 1 else ''} dropped off the board**\n"]
+    for b in bets:
+        kick = pd.to_datetime(b["commence"], utc=True).tz_convert(
+            "America/New_York").strftime("%a %-I:%M %p ET")
+        pick = n(b["pick"]) if b["market"] != "totals" else b["pick"]
+        pt = ("to win" if b["market"] == "h2h" else f"{b['point']:+g}"
+              if b["market"] == "spreads" else f"{b['point']:g}")
+        out.append(f"- ~~{pick} {pt} ({int(b['price']):+d}) at {b['book']}~~ · "
+                   f"{n(b['away'])} @ {n(b['home'])}, {kick}")
+    out.append("\nThe line moved or the model no longer backs it. If you already "
+               "bet it, it still counts in the record at the price you got alerted.")
+    out.append(f"\nDashboard: {DASHBOARD_URL}")
+    return "\n".join(out) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="site/index.html")
@@ -849,7 +870,9 @@ def main():
     out = json.loads(json.dumps(out, default=str))
     history = ledger.load(a.history)
     seen = {ledger._key(b) for b in history}
+    was = ledger.on_board(history)
     history = ledger.merge(history, out, now, now.isoformat())
+    gone = ledger.dropped(was, history, now)
     history = grade(history, g)
     if key and needs_scores(history, now):
         try:
@@ -863,11 +886,12 @@ def main():
     with open(a.json, "w") as fh:
         json.dump({"updated": made, "picks": out}, fh, indent=2, default=str)
     fresh = [p for p in out if ledger._key(p) not in seen]
-    if fresh:
-        gap = "\n" if os.path.exists(a.alert) else ""   # after the NFL alert
-        with open(a.alert, "a") as fh:
-            fh.write(gap + render_alert(fresh, names))
-    print(f"{len(out)} college bets, {len(fresh)} new")
+    for bets, render in ((fresh, render_alert), (gone, render_dropped)):
+        if bets:
+            gap = "\n" if os.path.exists(a.alert) else ""   # after the NFL alert
+            with open(a.alert, "a") as fh:
+                fh.write(gap + render(bets, names))
+    print(f"{len(out)} college bets, {len(fresh)} new, {len(gone)} dropped")
     for p in out:
         print(f"  {p['pick']} {p['point']} ({p['price']}) at {p['book']}: "
               f"${p['stake']} | {p['win_chance']:.1%} | {p['why']}")
