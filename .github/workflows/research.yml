@@ -1,0 +1,39 @@
+# One-off research jobs that need the open internet (weather archive),
+# which Claude's sandbox can't reach. Results land in the run summary.
+name: Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Research script to run"
+        default: weather_research.py
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache college data and weather
+        uses: actions/cache@v4
+        with:
+          path: .cache_cfb
+          key: research-${{ github.run_id }}
+          restore-keys: |
+            research-
+            cfb-
+      - run: pip install pandas numpy pyarrow requests
+      - run: python "${{ inputs.script }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-output
+          path: "*.csv"
+          if-no-files-found: ignore
