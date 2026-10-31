@@ -542,6 +542,42 @@ def explain_dog(p, c: dict, ranks) -> str:
     return " ".join(why)
 
 
+def board(priced: pd.DataFrame, my_books, now, hours: float = 24) -> list:
+    """Every game kicking off in the next `hours`: for the spread and the
+    total, the side the model leans to, by how many points, and the best
+    price for it at my books. Bets or not; for Brian's look at the slate."""
+    if priced is None or priced.empty:
+        return []
+    p = priced[priced.book.isin(my_books) & priced.market.isin(["spreads", "totals"])].copy()
+    kick = pd.to_datetime(p.commence, utc=True)
+    p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours))]
+    if p.empty:
+        return []
+    p["lean"] = lean(p)
+    p = p.sort_values("ev", ascending=False).drop_duplicates(["event_id", "market", "pick"])
+    out = []
+    for (eid, mk), s in p.groupby(["event_id", "market"]):
+        best = s.sort_values(["lean", "ev"], ascending=False).iloc[0]
+        out.append({"commence": str(best.commence), "away": best.get("away"), "home": best.home,
+                    "market": mk, "pick": best.pick, "point": float(best.point),
+                    "price": int(best.price), "book": best.book,
+                    "lean": round(float(best.lean), 2), "ev": round(float(best.ev), 4),
+                    "win_chance": round(float(best.p_win / max(1e-9, 1 - best.p_push)), 4),
+                    "sources": str(best.sources)})
+    return sorted(out, key=lambda r: -r["lean"])
+
+
+def write_board(priced, my_books, now, path):
+    rows = board(priced, my_books, now)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump({"updated": now.isoformat(), "games": rows}, fh, indent=1, default=str)
+    print(f"board: {len(rows)} spread/total reads in the next 24h")
+    for r in rows[:40]:
+        print(f"  {r['away']} @ {r['home']}: {r['pick']} {r['point']:g} ({r['price']}) "
+              f"lean {r['lean']:+.1f} ev {r['ev']:+.1%}")
+
+
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None, news: dict | None = None,
                 out: dict | None = None):
@@ -849,6 +885,8 @@ def main():
     ap.add_argument("--closes", default="site/closes.json",
                     help="last consensus line seen before each game (for CLV)")
     ap.add_argument("--lines-csv", default="")
+    ap.add_argument("--board", default="site/board.json",
+                    help="every game in the next 24h: the model's side and lean")
     a = ap.parse_args()
     key = None
     if a.lines_csv:
@@ -868,7 +906,9 @@ def main():
             news = json.load(fh)
     except (OSError, ValueError):
         news = {}
-    picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g, news=news)
+    info = {}
+    picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g, news=news, out=info)
+    write_board(info.get("priced"), books, now, a.board)
     try:
         with open(a.closes) as fh:
             closes = json.load(fh)
