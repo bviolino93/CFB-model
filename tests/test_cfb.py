@@ -63,7 +63,8 @@ def test_total_rules_pick_the_right_pattern():
     assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True, 4.0) is None
 
 
-def test_bets_need_the_model_on_their_side():
+def test_bets_need_the_model_on_their_side(monkeypatch):
+    monkeypatch.setattr(cfb_picks, "BACKTESTED_ONLY", False)
     rows = pd.DataFrame([
         # model leans home 1.4: home side backed, away side not
         {"home": "A", "pick": "A", "market": "spreads", "fair": 8.4, "fair_market": 7.0, "sources": "combined"},
@@ -79,6 +80,10 @@ def test_bets_need_the_model_on_their_side():
         {"home": "F", "pick": "G", "market": "h2h", "fair": -5.5, "fair_market": -4.0, "sources": "combined"}])
     out = cfb_picks.model_backed(rows)
     assert list(zip(out.home, out.pick)) == [("A", "A"), ("D", "Under"), ("E", "Under"), ("F", "G")]
+    # backtested-only mode: just the totals pattern
+    monkeypatch.setattr(cfb_picks, "BACKTESTED_ONLY", True)
+    out = cfb_picks.model_backed(rows)
+    assert list(zip(out.home, out.pick)) == [("E", "Under")]
 
 
 def test_news_check_reads_claude_json_and_shows_injuries(monkeypatch):
@@ -311,7 +316,8 @@ def _dog_rows():
     return pd.DataFrame(rows)
 
 
-def test_underdogs_best_few_short_dogs_at_my_books():
+def test_underdogs_best_few_short_dogs_at_my_books(monkeypatch):
+    monkeypatch.setattr(cfb_picks, "BACKTESTED_ONLY", False)
     import selector as sel
     d = cfb_picks.underdogs(_dog_rows(), ["draftkings"], 1000, sel.Policy(min_ev=0.03))
     assert list(d.pick) == ["H1", "H0", "H4"]
