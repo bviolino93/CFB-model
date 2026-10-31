@@ -355,3 +355,20 @@ def test_bets_the_schedule_hasnt_scored_grade_from_the_scores_feed():
     assert out["result"] == "win" and out["final"] == "23-24" and out["profit"] == 10.0
     other = [{**scores[0], "commence": "2026-09-12T23:00:00Z"}]           # same teams, other date
     assert not cfb_picks.grade_scores([dict(bet)], other)[0].get("result")
+
+
+def test_dropped_bet_gets_a_skip_alert():
+    from datetime import datetime, timezone
+    import ledger
+    bet = {"away": "Boston College Eagles", "home": "Duke Blue Devils",
+           "commence": "2026-10-31T16:00:00Z", "market": "h2h",
+           "pick": "Boston College Eagles", "point": None, "price": 245,
+           "book": "FanDuel", "stake": 9.61}
+    t = datetime(2026, 10, 29, tzinfo=timezone.utc)
+    h = ledger.merge([], [bet], t, "r1")
+    was = ledger.on_board(h)
+    h = ledger.merge(h, [], t, "r2")
+    gone = ledger.dropped(was, h, t)
+    names = {"Boston College Eagles": "Boston College", "Duke Blue Devils": "Duke"}
+    note = cfb_picks.render_dropped(gone, names)
+    assert "~~Boston College to win (+245) at FanDuel~~ · Boston College @ Duke" in note

@@ -93,6 +93,21 @@ def record_lines(closes: dict, fair: dict, now) -> dict:
     return closes
 
 
+def dropped(was: dict, bets: list[dict], now) -> list[dict]:
+    """Bets the last run had on the board that this run doesn't, before
+    kickoff: the alert to skip them if not bet yet. was: key -> on_board
+    before this run's merge."""
+    now = pd.Timestamp(now)
+    return [b for b in bets
+            if was.get(_key(b), False) and b.get("on_board") is False
+            and pd.Timestamp(b["commence"]) > now and not b.get("result")]
+
+
+def on_board(bets: list[dict]) -> dict:
+    """key -> whether the bet was on the board, for dropped()."""
+    return {_key(b): b.get("on_board", True) is not False for b in bets}
+
+
 def payout(stake: float, price: float) -> float:
     """Profit on a winning American-odds bet."""
     return stake * (price / 100 if price > 0 else 100 / -price)
