@@ -144,18 +144,24 @@ def report(rows: pd.DataFrame, query: str, books, bankroll: float = 1000.0,
                 "head": f"Bet {label(p)} ({int(p.price):+d}) at {p.book}, ${p.stake:,.2f}",
                 "text": str(p.why or "")})
             continue
-        head = ("Pass" if top.ev < min_ev / 2
-                else f"Lean {label(top)}, but under the bar")
-        text = (f"The best side is {label(top)} at {top.ev * 100:+.1f}% "
-                f"expected value; a bet needs {min_ev * 100:.0f}%.")
+        if top.ev >= min_ev:
+            head = f"Pass: {label(top)} is a good price, but the model doesn't back it"
+            text = (f"The best side is {label(top)} at {top.ev * 100:+.1f}% "
+                    f"expected value, but a bet also needs the model to lean "
+                    f"{cp.MIN_LEAN:g} point its way; a better price alone isn't enough.")
+        else:
+            head = ("Pass" if top.ev < min_ev / 2
+                    else f"Lean {label(top)}, but under the bar")
+            text = (f"The best side is {label(top)} at {top.ev * 100:+.1f}% "
+                    f"expected value; a bet needs {min_ev * 100:.0f}%.")
         if m == "spreads" and "spread" in ctx:
             lean = ctx["spread"][0]
             if abs(lean) >= 0.05:
                 toward = home if lean > 0 else away
                 text += (f" The model leans {toward} by {abs(lean):.1f} against "
                          f"the sharp line")
-                text += ("; a model-only spread needs a 1-point lean." if
-                         abs(lean) < cp.MIN_SPREAD_LEAN else ".")
+                text += (f"; a bet needs a {cp.MIN_LEAN:g}-point lean." if
+                         abs(lean) < cp.MIN_LEAN else ".")
         if m == "totals":
             if "trend" in ctx:
                 t = ctx["trend"]

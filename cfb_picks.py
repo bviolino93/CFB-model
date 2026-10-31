@@ -93,10 +93,13 @@ MIN_EV = 0.03
 # Injury news is looked up for the picks and for games with an offer within
 # this much of MIN_EV (~15-25 games a week, ~15 cents each), not all ~60.
 NEWS_NEAR_MISS = 0.02
-# A spread the model alone argues for also needs at least this much lean
-# (model minus market, in points): in the 2017-25 backtest leans under 1
-# point won 50-52%, so a good price alone shouldn't carry them.
-MIN_SPREAD_LEAN = 1.0
+# Every bet needs the model on its side (Brian, 2026-10-31: "bets that will
+# win, not just better price"): the model's own adjustments (ratings, injury
+# news) must move the fair line at least this many points toward the bet,
+# or a validated totals pattern must point its way. A book being off the
+# sharp consensus no longer carries a bet on its own. In the 2017-25
+# backtest, spread leans under 1 point covered 50%.
+MIN_LEAN = 1.0
 
 # Underdog moneylines (Brian, 2026-10-28). moneyline_research.py, every
 # book's closing moneyline 2012-25: dogs past +400 lose 25-45% (the
@@ -395,15 +398,24 @@ def rule_shift(tm, total: float, side: str, p: float) -> float:
     return sign * 10.0
 
 
-def drop_thin_spreads(bettable: pd.DataFrame, ctx: dict,
-                      min_lean: float = MIN_SPREAD_LEAN) -> pd.DataFrame:
-    """Drop spreads backed only by the model whose lean is under min_lean.
-    Spreads where a book is off the sharp consensus ("market") stay."""
-    lean = bettable.home.map(lambda h: abs(ctx.get(h, {}).get("spread", (0.0,))[0]))
-    src = bettable.sources.astype(str).str.split(",")
-    thin = ((bettable.market == "spreads") & ~src.map(lambda s: "market" in s)
-            & (lean < min_lean))
-    return bettable[~thin]
+def lean(priced: pd.DataFrame) -> pd.Series:
+    """Points the model's adjustments move the fair line toward each
+    offer's side (fair minus the sharp consensus, signed to the side)."""
+    toward = np.where(priced.market == "totals",
+                      np.where(priced.pick.astype(str).str.lower() == "under", -1, 1),
+                      np.where(priced.pick == priced.home, 1, -1))
+    return (priced.fair - priced.fair_market) * toward
+
+
+def model_backed(priced: pd.DataFrame, min_lean: float = MIN_LEAN) -> pd.DataFrame:
+    """Offers the model itself argues for: MIN_LEAN points of lean their
+    way, or a totals pattern pushing their way."""
+    if priced.empty:
+        return priced
+    ln = lean(priced)
+    trend = ((priced.market == "totals") & (ln > 0)
+             & priced.sources.astype(str).str.split(",").map(lambda s: "trend" in s))
+    return priced[(ln >= min_lean - 1e-9) | trend]
 
 
 def team_starters(g: pd.DataFrame, season: int) -> dict:
@@ -454,16 +466,19 @@ def qb_adjustments(fair: dict, ids: dict, upcoming: pd.DataFrame, news: dict,
     return adj
 
 
-def dog_offers(priced: pd.DataFrame, my_books, min_ev: float) -> pd.DataFrame:
+def dog_offers(priced: pd.DataFrame, my_books, min_ev: float,
+               backed: bool = True) -> pd.DataFrame:
     """Underdog moneylines at my books: a dog at the sharp books (the
     market spread has the other team favoured), +100 to DOG_MAX_PRICE,
-    clearing min_ev."""
+    clearing min_ev, and (backed) with the model leaning MIN_LEAN points
+    their way."""
     if priced.empty:
         return priced
     d = priced[(priced.market == "h2h") & priced.book.isin(my_books)
                & (priced.price >= 100) & (priced.price <= DOG_MAX_PRICE)
                & (priced.ev >= min_ev)]
-    return d[(d.pick == d.home) != (d.fair_market >= 0)]
+    d = d[(d.pick == d.home) != (d.fair_market >= 0)]
+    return model_backed(d) if backed else d
 
 
 def underdogs(priced, my_books, bankroll, pol) -> pd.DataFrame:
@@ -566,10 +581,9 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     out.update(priced=priced, ctx=ctx, ranks=ranks)
     if priced.empty:
         return priced, fair, ids
-    bettable = priced[priced.market.isin(["spreads", "totals"])
-                      & priced.book.isin(my_books)]
-    bettable = drop_thin_spreads(bettable, ctx)
-    picks = sel.select(bettable, bankroll, pol)
+    offers = priced[priced.market.isin(["spreads", "totals"])
+                    & priced.book.isin(my_books)]
+    picks = sel.select(model_backed(offers), bankroll, pol)
     # Look up the news for the games picked. A backup QB's first start
     # moves that game's fair line, so price and pick again; repeat for any
     # new games that brings in.
@@ -578,8 +592,10 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     for _ in range(4):
         # the picks plus near misses: any offer within NEWS_NEAR_MISS of the
         # edge bar, so injury news can also turn a pass into a bet
-        near = pd.concat([bettable[bettable.ev >= min_ev - NEWS_NEAR_MISS],
-                          dog_offers(priced, my_books, min_ev - NEWS_NEAR_MISS)])
+        # (before the model-backed filter: the news can add the lean)
+        near = pd.concat([offers[offers.ev >= min_ev - NEWS_NEAR_MISS],
+                          dog_offers(priced, my_books, min_ev - NEWS_NEAR_MISS,
+                                     backed=False)])
         cand = pd.concat([picks.reindex(columns=["event_id", "commence"]),
                           near[["event_id", "commence"]]]).drop_duplicates("event_id")
         if news is None or not len(cand):
@@ -593,9 +609,9 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             break
         sel.apply_adjustments(fair, qa)
         priced = sel.price_offers(rows, fair, mm, tm, pol)
-        bettable = drop_thin_spreads(priced[priced.market.isin(["spreads", "totals"])
-                                            & priced.book.isin(my_books)], ctx)
-        picks = sel.select(bettable, bankroll, pol)
+        offers = priced[priced.market.isin(["spreads", "totals"])
+                        & priced.book.isin(my_books)]
+        picks = sel.select(model_backed(offers), bankroll, pol)
     out["priced"] = priced
     dogs = underdogs(priced, my_books, bankroll, pol)
     if len(dogs):
