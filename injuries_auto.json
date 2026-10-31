@@ -1,5 +1,7 @@
-{
-  "updated_at": "2026-10-30T08:10:00-04:00",
-  "slate_date": "2026-10-30",
-  "rows": []
-}
+{"updated_at": "2026-10-31T08:05:00-04:00", "slate_date": "2026-10-31", "rows": [
+{"team": "Ohio State", "points": 7, "note": "J. Sayin starting QB out, throwing shoulder (backup L. Fahey has no starts)", "until": "2026-11-14", "added_at": "2026-10-31T08:05:00-04:00", "source": "https://local12.com/sports/osu-buckeyes/ryan-day-putting-together-a-plan-in-case-qb-quarterback-julian-sayin-misses-rest-of-season-shoulder-injury-osu-ohio-state-buckeyes-college-football-usc-trojans-los-angeles-memorial-coliseum-luke-fahey"},
+{"team": "Mississippi State", "points": 5, "note": "K. Taylor starting QB out for season, toe", "until": "2026-11-21", "added_at": "2026-10-31T08:05:00-04:00", "source": "https://www.ksl.com/article/51641630/mississippi-state-qb-kamario-taylor-needs-season-ending-surgery"},
+{"team": "Rutgers", "points": 5, "note": "D. Lonergan starting QB out, head injury", "until": "2026-10-31", "added_at": "2026-10-31T08:05:00-04:00", "source": "https://sports.yahoo.com/articles/michigan-starters-questionable-rutgers-qb-005741085.html"},
+{"team": "UCLA", "points": 3, "note": "N. Iamaleava starting QB out for season, knee (backup T. Dieffenbach has 2 starts)", "until": "2026-11-07", "added_at": "2026-10-31T08:05:00-04:00", "source": "https://www.tsn.ca/ncaa/article/ucla-qb-iamaleava-undergoes-season-ending-knee-surgery-n1-50222886/"},
+{"team": "Oregon", "points": 3, "note": "D. Moore starting QB out for season, concussion (backup B. Thomas has starts)", "until": "2026-11-07", "added_at": "2026-10-31T08:05:00-04:00", "source": "https://www.opb.org/article/2026/10/27/oregon-quarterback-dante-moore-not-expected-to-return-this-season-coach-dan-lanning-says/"}
+]}
