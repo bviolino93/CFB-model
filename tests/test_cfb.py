@@ -47,7 +47,8 @@ def test_grade_by_game_id():
     assert out[0]["profit"] == 10.0 and out[0]["final"] == "21-31"
 
 
-def test_total_rules_pick_the_right_pattern():
+def test_total_rules_pick_the_right_pattern(monkeypatch):
+    monkeypatch.setattr(cfb_picks, "TOTAL_PATTERNS", True)
     sat_noon = "2026-10-31T16:00:00Z"
     sat_night = "2026-11-01T00:00:00Z"      # 8pm ET
     assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False, 2.0)[:2] == ("Over", 0.60)
@@ -535,3 +536,23 @@ def test_handicapper_can_take_the_side_the_model_leans_against():
     r = out.iloc[0]
     assert (r.pick, r.point, r.price, r.book, r.stake) == ("Missouri", -10.5, -108, "FanDuel", 5.0)
     assert "Against the model" in r.why
+
+
+def test_patterns_off_and_daily_cap():
+    import cfb_picks
+    sat_noon = pd.Timestamp("2026-10-31T16:00Z")
+    assert cfb_picks.TOTAL_PATTERNS is False
+    assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False, 2.0) is None     # old over pattern off
+    assert cfb_picks.total_rule(63.5, 3.0, sat_noon, True) is None             # old 60+ under off
+    assert cfb_picks.total_rule(52.5, 7.0, sat_noon, True, -3.5)[:2] == ("Under", 0.535)  # this season's count
+    rows = [{"away": f"A{i}", "home": f"H{i}", "commence": "2026-11-07T17:00:00Z", "market": "spreads",
+             "pick": f"A{i}", "point": 3.0, "stake": 8.0, "ev": 0.05 + i / 100, "why": "model"}
+            for i in range(8)]
+    rows.append({**rows[0], "away": "X", "home": "Y", "pick": "X", "ev": 0.5,
+                 "why": "Handicapper's pick: ..."})
+    hist = [{**rows[0]}]                                    # already alerted: kept, counts
+    out = cfb_picks.cap_daily(pd.DataFrame(rows), hist, 1000)
+    assert "A0" in set(out.pick)
+    assert len(out) == 6 and out.stake.sum() <= 50          # 6 bets, $48
+    assert "X" not in set(out.pick)                         # model bets first
+    assert set(out.pick) - {"A0"} == {"A7", "A6", "A5", "A4", "A3"}
