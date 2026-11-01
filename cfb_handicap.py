@@ -82,6 +82,24 @@ that aren't in what you're given.
 Answer with one ```json block and nothing after it:
 {"decision": "bet|pass", "reason": "<one or two sentences on the football case, plain English>"}"""
 
+PATTERN_SYSTEM = """You are a sharp college football bettor. This bet comes \
+from a historical totals pattern, and Brian wants it judged on this season, \
+not on old patterns: bet it only if this season's results support it on \
+their own. Look at both teams' scoring and points allowed, how their games \
+have gone against our totals lately, who they played, our own possession \
+count, injuries and the situation (weather, motivation, pace). Bet when \
+this season makes a clear case for the side; pass when it is unclear or \
+points the other way. Don't invent facts that aren't in what you're given.
+
+Answer with one ```json block and nothing after it:
+{"decision": "bet|pass", "reason": "<one or two sentences on this season's case, plain English>"}"""
+
+
+def is_pattern(why: str) -> bool:
+    """A totals-pattern bet (cfb_picks.TOTAL_RULES reasons)."""
+    return "in games like this" in (why or "")
+
+
 LEAN_STAKE = 0.005          # of bankroll ($5 on $1,000) for a handicapper's own pick
 MAX_LEANS = 6               # leans reviewed per run, biggest lean first
 MIN_LEAN = 0.5              # points of model lean for a game to be worth a look
@@ -177,7 +195,7 @@ def _ask(client, brief: str, system: str = SYSTEM) -> dict:
         output_config={"effort": cfb_news.EFFORT},
         betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     cfb_news._tally(getattr(resp, "usage", None))
-    default = "pass" if system == LEAN_SYSTEM else "bet"
+    default = "pass" if system in (LEAN_SYSTEM, PATTERN_SYSTEM) else "bet"
     if resp.stop_reason == "refusal":
         return {"decision": default, "reason": ""}
     return _parse("".join(b.text for b in resp.content if b.type == "text"), default)
@@ -213,8 +231,11 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
             if len(row):
                 sch = (row.iloc[0].away_team, row.iloc[0].home_team)
         brief = _brief(p, inj, sit, first.get((getattr(p, "game_id", None), p.market, p.pick)), g, sch)
+        pattern = not leans and is_pattern(p.why)
         if leans:
             brief = "LEAN ONLY (model is short of a bet).\n" + brief
+        elif pattern:
+            brief = "PATTERN BET: judge it on this season.\n" + brief
         key = hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
@@ -229,12 +250,15 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
                             return picks.iloc[:0] if leans else picks
                         import anthropic
                         client = anthropic.Anthropic()
-                    got = _ask(client, brief, LEAN_SYSTEM if leans else SYSTEM)
+                    got = _ask(client, brief, LEAN_SYSTEM if leans else
+                               PATTERN_SYSTEM if pattern else SYSTEM)
                     done[key] = {**got, "at": now.isoformat()}
                 except Exception as e:          # a review is a check, never a reason to fail
                     print(f"handicap: review failed ({type(e).__name__}: {e})")
                     got = None
         dec = (got or {}).get("decision", "pass" if leans else "bet")
+        if pattern and got is not None and dec == "half":
+            dec = "pass"
         reason = (got or {}).get("reason", "")
         print(f"handicap{' (lean)' if leans else ''}: {p.pick} {p.point} -> {dec}: {reason}")
         if leans:
