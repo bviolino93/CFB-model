@@ -22,6 +22,7 @@ name: College picks
 on:
   schedule:
     - cron: "0 22 * 8-12,1 0"    # Sunday 22:00 UTC, once next Saturday's lines are up
+    - cron: "17 14 * 8-12,1 1"   # Monday 14:17 UTC: early lines, where the spread edge is
     - cron: "0 20 * 8-12,1 2"    # Tuesday 20:00 UTC
     - cron: "0 19 * 8-12,1 4"    # Thursday 19:00 UTC
     - cron: "0 15 * 8-12,1 6"    # Saturday 15:00 UTC, before the noon games

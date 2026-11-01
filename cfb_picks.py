@@ -100,6 +100,11 @@ NEWS_NEAR_MISS = 0.02
 # sharp consensus no longer carries a bet on its own. In the 2017-25
 # backtest, spread leans under 1 point covered 50%.
 MIN_LEAN = 1.0
+# Spreads need more (2026-11-01 re-run of cfb_model.backtest, scored vs the
+# opening line): 1+ point leans won 56.4% in 2017-21 but 51.2% in 2022-25;
+# 1.5+ won 56.4% and 55.2% (n=367, 181). Against the close both fade, so
+# the edge is in betting early lines; picks.yml runs from Sunday night.
+MIN_SPREAD_LEAN = 1.5
 
 # Half stakes until the picks show they beat closing lines (Brian,
 # 2026-10-31, after a 2-6 start in college): every stake, dogs included.
@@ -428,7 +433,8 @@ def model_backed(priced: pd.DataFrame, min_lean: float = MIN_LEAN) -> pd.DataFra
              & priced.sources.astype(str).str.split(",").map(lambda s: "trend" in s))
     if BACKTESTED_ONLY:
         return priced[trend]
-    return priced[(ln >= min_lean - 1e-9) | trend]
+    need = np.where(priced.market == "spreads", max(min_lean, MIN_SPREAD_LEAN), min_lean)
+    return priced[(ln >= need - 1e-9) | trend]
 
 
 def team_starters(g: pd.DataFrame, season: int) -> dict:

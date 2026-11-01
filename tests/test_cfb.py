@@ -66,9 +66,11 @@ def test_total_rules_pick_the_right_pattern():
 def test_bets_need_the_model_on_their_side(monkeypatch):
     monkeypatch.setattr(cfb_picks, "BACKTESTED_ONLY", False)
     rows = pd.DataFrame([
-        # model leans home 1.4: home side backed, away side not
-        {"home": "A", "pick": "A", "market": "spreads", "fair": 8.4, "fair_market": 7.0, "sources": "combined"},
-        {"home": "A", "pick": "B", "market": "spreads", "fair": 8.4, "fair_market": 7.0, "sources": "combined"},
+        # model leans home 1.6: home side backed, away side not
+        {"home": "A", "pick": "A", "market": "spreads", "fair": 8.6, "fair_market": 7.0, "sources": "combined"},
+        {"home": "A", "pick": "B", "market": "spreads", "fair": 8.6, "fair_market": 7.0, "sources": "combined"},
+        # a 1.2-point spread lean is under the 1.5 spreads need
+        {"home": "H", "pick": "H", "market": "spreads", "fair": 4.2, "fair_market": 3.0, "sources": "combined"},
         # a book off the consensus with only 0.4 of model lean: a price bet, dropped
         {"home": "C", "pick": "C", "market": "spreads", "fair": -8.6, "fair_market": -9.0, "sources": "market,combined"},
         # under backed by 1.2 points; over not
