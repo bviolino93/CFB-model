@@ -44,6 +44,14 @@ historically burned this kind of bet. Bet half when the case is real but \
 something cuts against it. Otherwise bet: don't pass on vague feelings, and \
 don't invent facts that aren't in what you're given.
 
+Bets that rest on a historical pattern (the totals patterns) get extra \
+scrutiny: the pattern describes past seasons, and you can see this one. \
+Pass a pattern bet when this season's evidence clearly contradicts it, for \
+example an under on two teams whose games have been going well over, \
+whose offenses are scoring at will, or where our own count sits above the \
+line; or an over on two teams whose games keep coming in low against \
+weak opposition. Say what in this season's results made you pass.
+
 Answer with one ```json block and nothing after it:
 {"decision": "bet|half|pass", "reason": "<one or two sentences on the football case, plain English, no jargon>"}"""
 
