@@ -90,6 +90,18 @@ TOTAL_RULES = [
      "against early lines since 2017 (387 games), less against closing lines, "
      "so only a good price gets it a bet"),
 ]
+# Brian (2026-11-01, after 3-14): the historical totals patterns (big-
+# favorite overs, 60+ unders) went 1-4 for -$47 on the first 20 bets and
+# don't look at the teams playing. Off: totals come from this season's
+# numbers only (our possession count from this season's drives, injuries,
+# the handicapper's matchup read). True turns the patterns back on.
+TOTAL_PATTERNS = False
+
+
+def _is_pattern_rule(why: str) -> bool:
+    return "possession count puts" not in why
+
+
 # College picks go through at a 3% edge (NFL: 2%).
 MIN_EV = 0.03
 # Injury news is looked up for the picks and for games with an offer within
@@ -107,6 +119,48 @@ MIN_LEAN = 1.0
 # 1.5+ won 56.4% and 55.2% (n=367, 181). Against the close both fade, so
 # the edge is in betting early lines; picks.yml runs from Sunday night.
 MIN_SPREAD_LEAN = 1.5
+
+# Daily limits (Brian, 2026-11-01: "change it so this never happens
+# again" after 17 college bets on one Saturday went 3-14). At most
+# MAX_BETS_PER_DAY bets per kickoff date (Eastern), the best by edge, and at
+# most MAX_DAY_STAKE of the bankroll staked that day. Bets already alerted
+# count toward the limits and are never dropped.
+MAX_BETS_PER_DAY = 6
+MAX_DAY_STAKE = 0.05
+
+
+def cap_daily(picks: pd.DataFrame, history: list, bankroll: float) -> pd.DataFrame:
+    if not len(picks):
+        return picks
+    day = lambda c: pd.Timestamp(c).tz_convert("America/New_York").date() if pd.Timestamp(c).tzinfo \
+        else pd.Timestamp(c).tz_localize("UTC").tz_convert("America/New_York").date()
+    seen = {ledger._key(b) for b in history or []}
+    n, staked = {}, {}
+    for b in history or []:
+        if b.get("commence"):
+            d = day(b["commence"])
+            n[d] = n.get(d, 0) + 1
+            staked[d] = staked.get(d, 0.0) + float(b.get("stake") or 0)
+    recs = picks.to_dict("records")
+    old = [ledger._key(r) in seen for r in recs]
+    # model bets first, then the handicapper's own small picks; best edge first
+    order = sorted(range(len(recs)), key=lambda i: (str(recs[i].get("why", "")).startswith("Handicapper's pick"),
+                                                     -float(recs[i].get("ev") or 0)))
+    keep = [False] * len(recs)
+    for i in order:
+        if old[i]:
+            keep[i] = True
+            continue
+        d = day(recs[i]["commence"])
+        st = float(recs[i].get("stake") or 0)
+        if n.get(d, 0) < MAX_BETS_PER_DAY and staked.get(d, 0.0) + st <= MAX_DAY_STAKE * bankroll + 1e-9:
+            keep[i] = True
+            n[d] = n.get(d, 0) + 1
+            staked[d] = staked.get(d, 0.0) + st
+        else:
+            print(f"daily cap: skipping {recs[i].get('pick')} {recs[i].get('point')} ({d})")
+    return picks[keep]
+
 
 # Half stakes until the picks show they beat closing lines (Brian,
 # 2026-10-31, after a 2-6 start in college): every stake, dogs included.
@@ -388,6 +442,8 @@ def total_rule(total: float, abs_spread: float, kickoff, conference: bool,
     patterns don't fire without it."""
     night = pd.Timestamp(kickoff).tz_convert("America/New_York").hour >= 19
     for side, rule, p, why in TOTAL_RULES:
+        if not TOTAL_PATTERNS and _is_pattern_rule(why):
+            continue
         if rule(total, abs_spread, night, bool(conference), own_gap):
             return side, p, why
     return None
@@ -985,6 +1041,7 @@ def main():
             picks = pd.concat([picks, lean_rows], ignore_index=True)
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
+    picks = cap_daily(picks, ledger.load(a.history), a.bankroll)
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
