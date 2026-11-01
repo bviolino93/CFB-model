@@ -969,6 +969,16 @@ def main():
     lean_rows = cfb_handicap.lean_candidates(info.get("priced"), lean, ids, books, picks,
                                              now, a.bankroll)
     if len(lean_rows):
+        # Brian (2026-11-01): "look at all the info including injuries". The
+        # games the handicapper reads get the injury/situation lookup too,
+        # inside the same per-run cap and monthly stop.
+        sg = g.set_index("game_id")
+        look = [{"home": sg.loc[r.game_id, "home_team"], "away": sg.loc[r.game_id, "away_team"],
+                 "kickoff": r.commence} for r in lean_rows.itertuples() if r.game_id in sg.index]
+        try:
+            news.update(cfb_news.fetch(look, news, now))
+        except Exception as e:          # news is a check, never a reason to fail
+            print(f"news: lean lookups failed ({type(e).__name__}: {e})")
         lean_rows = attach_news(drop_red_flags(lean_rows, g, news), g, news, starters)
         lean_rows = cfb_handicap.review(lean_rows, news, past, now, g=g, leans=True)
         if len(lean_rows):
