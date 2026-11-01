@@ -406,9 +406,10 @@ def test_red_flag_drops_bets_on_the_other_side():
     assert list(out.pick) == ["Under"]
 
 
-def test_handicapper_passes_halves_and_explains():
+def test_handicapper_passes_halves_and_explains(monkeypatch):
     from types import SimpleNamespace as NS
     import cfb_handicap
+    monkeypatch.setattr(cfb_handicap, "MATCHUP_ALL", False)
     replies = iter(['```json\n{"decision": "pass", "reason": "Coach fired Tuesday."}\n```',
                     '```json\n{"decision": "half", "reason": "Wind cuts against the over."}\n```',
                     '```json\n{"decision": "bet", "reason": "Their run game should control it."}\n```'])
