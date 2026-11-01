@@ -125,12 +125,14 @@ MIN_SPREAD_LEAN = 1.5
 # MAX_BETS_PER_DAY bets per kickoff date (Eastern), the best by edge, and at
 # most MAX_DAY_STAKE of the bankroll staked that day. Bets already alerted
 # count toward the limits and are never dropped.
+# Off (Brian, 2026-11-01: "No cap just be better"). True turns it back on.
+DAILY_CAP = False
 MAX_BETS_PER_DAY = 6
 MAX_DAY_STAKE = 0.05
 
 
 def cap_daily(picks: pd.DataFrame, history: list, bankroll: float) -> pd.DataFrame:
-    if not len(picks):
+    if not DAILY_CAP or not len(picks):
         return picks
     day = lambda c: pd.Timestamp(c).tz_convert("America/New_York").date() if pd.Timestamp(c).tzinfo \
         else pd.Timestamp(c).tz_localize("UTC").tz_convert("America/New_York").date()
