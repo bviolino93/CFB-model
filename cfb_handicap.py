@@ -84,17 +84,22 @@ that aren't in what you're given.
 Answer with one ```json block and nothing after it:
 {"decision": "bet|pass", "reason": "<one or two sentences on the football case, plain English>"}"""
 
-PATTERN_SYSTEM = """You are a sharp college football bettor. This bet comes \
-from a historical totals pattern, and Brian wants it judged on this season, \
-not on old patterns: bet it only if this season's results support it on \
-their own. Look at both teams' scoring and points allowed, how their games \
-have gone against our totals lately, who they played, our own possession \
-count, injuries and the situation (weather, motivation, pace). Bet when \
-this season makes a clear case for the side; pass when it is unclear or \
-points the other way. Don't invent facts that aren't in what you're given.
+PATTERN_SYSTEM = """You are a sharp college football handicapper making the \
+final call on a bet. Brian wants every bet to rest on analysis of this game, \
+not on old patterns or a model number alone. Break down the matchup: how \
+each offense (passing, rushing, efficiency, pace) lines up against the other \
+defense, both teams' season scoring and points allowed, recent form and who \
+it came against, injuries and the situation (weather, motivation, travel). \
+Bet only when that analysis makes a clear case for this side; pass when it \
+is unclear or points the other way. Don't invent facts that aren't in what \
+you're given.
 
 Answer with one ```json block and nothing after it:
-{"decision": "bet|pass", "reason": "<one or two sentences on this season's case, plain English>"}"""
+{"decision": "bet|pass", "reason": "<two or three sentences on the matchup case, plain English>"}"""
+
+# Brian (2026-11-01): "let's start doing that type of analysis". Every
+# model bet, not only the totals patterns, must have the matchup case.
+MATCHUP_ALL = True
 
 
 def is_pattern(why: str) -> bool:
@@ -285,11 +290,11 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
             if len(row):
                 sch = (row.iloc[0].away_team, row.iloc[0].home_team)
         brief = _brief(p, inj, sit, first.get((getattr(p, "game_id", None), p.market, p.pick)), g, sch)
-        pattern = not leans and is_pattern(p.why)
+        pattern = not leans and (MATCHUP_ALL or is_pattern(p.why))
         if leans:
             brief = "LEAN ONLY (model is short of a bet).\n" + brief
         elif pattern:
-            brief = "PATTERN BET: judge it on this season.\n" + brief
+            brief = "MODEL BET: bet only if the matchup analysis supports it.\n" + brief
         key = hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
