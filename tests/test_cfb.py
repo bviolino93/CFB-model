@@ -404,3 +404,35 @@ def test_red_flag_drops_bets_on_the_other_side():
     news = {cfb_news.game_key("Iowa State", "Oklahoma State", "2026-10-31T23:00:00Z"): e}
     out = cfb_picks.drop_red_flags(picks, g, news)
     assert list(out.pick) == ["Under"]
+
+
+def test_handicapper_passes_halves_and_explains():
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    replies = iter(['```json\n{"decision": "pass", "reason": "Coach fired Tuesday."}\n```',
+                    '```json\n{"decision": "half", "reason": "Wind cuts against the over."}\n```',
+                    '```json\n{"decision": "bet", "reason": "Their run game should control it."}\n```'])
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    return NS(content=[NS(type="text", text=next(replies))], stop_reason="end_turn",
+                              usage=NS(input_tokens=1000, output_tokens=100))
+
+    base = {"away": "A", "home": "B", "commence": "2026-11-07T19:00:00Z", "price": -110,
+            "book": "FanDuel", "win_chance": 0.56, "ev": 0.06, "why": "Model likes it.",
+            "game_id": 1, "injuries": [], "situation": []}
+    picks = pd.DataFrame([{**base, "market": "spreads", "pick": "A", "point": -3.0, "stake": 10.0},
+                          {**base, "market": "totals", "pick": "Over", "point": 50.5, "stake": 8.0},
+                          {**base, "game_id": 2, "market": "spreads", "pick": "C", "point": 4.0, "stake": 6.0}])
+    news = {}
+    out = cfb_handicap.review(picks, news, [], pd.Timestamp("2026-11-03", tz="UTC"), client=Client())
+    assert list(out.pick) == ["Over", "C"]
+    assert list(out.stake) == [4.0, 6.0]
+    assert out.why.iloc[1].endswith("Handicapper: Their run game should control it.")
+    assert len(news["_reviews"]) == 3 and news["_budget"]["usd"] > 0
+    # same bets again: answered from the cache, no new calls
+    again = cfb_handicap.review(picks, news, [], pd.Timestamp("2026-11-03", tz="UTC"), client=Client())
+    assert list(again.pick) == ["Over", "C"]

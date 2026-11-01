@@ -35,6 +35,7 @@ import requests
 
 import cfb_data
 import cfb_model
+import cfb_handicap
 import cfb_news
 import ledger
 import selector as sel
@@ -958,6 +959,10 @@ def main():
     picks = drop_red_flags(picks, g, news)
     picks = (attach_news(picks, g, news, starters) if len(picks)
              else picks.assign(injuries=[], situation=[]))
+    # the handicapper's last look (bet / half / pass, with the reason)
+    picks = cfb_handicap.review(picks, news, ledger.load(a.history), now)
+    with open(a.news, "w") as fh:
+        json.dump(news, fh, indent=1)
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
