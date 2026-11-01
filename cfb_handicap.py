@@ -51,6 +51,10 @@ TRACK = {
     "spreads": "Model spreads with a 1.5+ point lean won 56% against opening lines in "
                "2017-21 and 55% in 2022-25; against closing lines the edge mostly fades, "
                "so betting early matters.",
+    "scoring": "Recent scoring runs: in 2017-25, betting WITH a two-team run of games going "
+               "6+ points over or under our totals lost (the market overreacts); fading it won "
+               "about 55%, but not in 2014-16, so treat it as a mild lean, not a reason by itself. "
+               "Spread form (beating our margins) predicted nothing against the close.",
     "totals": "The totals patterns (big favorite with a low total -> over; totals of 60+ -> "
               "under) won 55-57% in every era since 2012. Our own totals model alone is "
               "about break-even.",
@@ -60,7 +64,7 @@ TRACK = {
 LEAN_SYSTEM = """You are a sharp college football handicapper. The model only \
 leans to this side (not enough for a bet on its numbers alone), so this is your \
 call on the football: recent form and who it came against, common opponents, \
-the matchup, injuries and the situation (coaching, motivation, travel, weather). \
+how each team has scored against expectations lately, the matchup, injuries and the situation (coaching, motivation, travel, weather). \
 Bet only when the football case is clearly strong and nothing in the news cuts \
 against it; otherwise pass. Most of these should be passes. Don't invent facts \
 that aren't in what you're given.
@@ -74,6 +78,9 @@ MIN_LEAN = 0.5              # points of model lean for a game to be worth a look
 
 
 def _results(g: pd.DataFrame | None, school: str, before) -> list[tuple]:
+    """This season's finished games for `school`, oldest first: (opponent,
+    margin, home/away, date, points for, points against, total vs our
+    pre-game total)."""
     if g is None or not len(g):
         return []
     x = g[((g.home_team == school) | (g.away_team == school)) & g.margin.notna()].copy()
@@ -87,7 +94,9 @@ def _results(g: pd.DataFrame | None, school: str, before) -> list[tuple]:
         home = r.home_team == school
         opp = r.away_team if home else r.home_team
         m = r.margin if home else -r.margin
-        out.append((opp, float(m), "home" if home else "away", f"{r.when:%b %-d}"))
+        pf, pa = (r.home_points, r.away_points) if home else (r.away_points, r.home_points)
+        vs = float(r.points - r.pred_total) if pd.notna(getattr(r, "pred_total", None)) else None
+        out.append((opp, float(m), "home" if home else "away", f"{r.when:%b %-d}", pf, pa, vs))
     return out
 
 
@@ -95,15 +104,24 @@ def form_text(g, school: str, before) -> str:
     res = _results(g, school, before)
     if not res:
         return f"{school}: no results on file this season."
-    w = sum(m > 0 for _, m, _, _ in res)
-    last = "; ".join(f"{d} {'vs' if h == 'home' else 'at'} {o} {'W' if m > 0 else 'L'} by {abs(m):g}"
-                     for o, m, h, d in res[-6:])
-    return f"{school} is {w}-{len(res) - w} this season. Latest: {last}."
+    w = sum(r[1] > 0 for r in res)
+    pf = sum(r[4] for r in res) / len(res)
+    pa = sum(r[5] for r in res) / len(res)
+    last = "; ".join(f"{d} {'vs' if h == 'home' else 'at'} {o} {'W' if m > 0 else 'L'} {f:g}-{a:g}"
+                     for o, m, h, d, f, a, _ in res[-6:])
+    vs = [r[6] for r in res[-3:] if r[6] is not None]
+    trend = ""
+    if len(vs) >= 2:
+        avg = sum(vs) / len(vs)
+        trend = (f" Its last {len(vs)} games went {abs(avg):.1f} points a game "
+                 f"{'over' if avg > 0 else 'under'} our pre-game totals.")
+    return (f"{school} is {w}-{len(res) - w} this season, scoring {pf:.1f} and allowing {pa:.1f} "
+            f"a game. Latest: {last}.{trend}")
 
 
 def common_text(g, a: str, b: str, before) -> str:
-    ra = {o: m for o, m, _, _ in _results(g, a, before)}
-    rb = {o: m for o, m, _, _ in _results(g, b, before)}
+    ra = {r[0]: r[1] for r in _results(g, a, before)}
+    rb = {r[0]: r[1] for r in _results(g, b, before)}
     both = sorted(set(ra) & set(rb))
     if not both:
         return "No common opponents this season."
@@ -117,7 +135,8 @@ def _brief(p, injuries: list, situation: list, first: dict | None, g=None,
              f"Bet: {side} ({p.market}) at {int(p.price):+d}, {p.book}",
              f"Model: win chance {p.win_chance:.1%}, expected value {p.ev:+.1%}",
              f"Model's reasoning: {p.why}",
-             f"History: {TRACK.get(p.market, '')}"]
+             f"History: {TRACK.get(p.market, '')}",
+             f"Scoring trends: {TRACK['scoring']}"]
     if first:
         lines.append(f"First alerted at {first.get('point')} ({first.get('price')}); "
                      f"the line now is {p.point} ({int(p.price)}).")
