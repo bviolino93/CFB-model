@@ -101,8 +101,8 @@ def is_pattern(why: str) -> bool:
 
 
 LEAN_STAKE = 0.005          # of bankroll ($5 on $1,000) for a handicapper's own pick
-MAX_LEANS = 6               # leans reviewed per run, biggest lean first
-MIN_LEAN = 0.5              # points of model lean for a game to be worth a look
+MAX_LEANS = 10              # games reviewed per run beyond the bets, biggest lean first
+MIN_LEAN = 0.0              # any game the model has a side on (Brian: analyze every game)
 
 
 def _results(g: pd.DataFrame | None, school: str, before) -> list[tuple]:
@@ -290,7 +290,7 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
     p["lean"] = lean_pts(p)
     kick = pd.to_datetime(p.commence, utc=True)
     now = pd.Timestamp(now)
-    p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours)) & (p.lean >= MIN_LEAN)
+    p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours)) & (p.lean >= MIN_LEAN) & (p.lean > 0)
           & (p.ev >= -0.03)]
     if len(picks):
         taken = set(zip(picks.event_id, picks.market))

@@ -438,9 +438,10 @@ def test_handicapper_passes_halves_and_explains():
     assert list(again.pick) == ["Over", "C"]
 
 
-def test_handicapper_leans_default_to_pass_and_bet_small():
+def test_handicapper_leans_default_to_pass_and_bet_small(monkeypatch):
     from types import SimpleNamespace as NS
     import cfb_handicap
+    monkeypatch.setattr(cfb_handicap, "MIN_LEAN", 0.5)
     replies = iter(['```json\n{"decision": "bet", "reason": "They have rolled similar teams by 20."}\n```',
                     '```json\n{"decision": "pass", "reason": "Nothing beyond the number."}\n```',
                     'no json at all'])
