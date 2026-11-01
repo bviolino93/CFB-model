@@ -36,6 +36,22 @@ def _prep(games: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("date").reset_index(drop=True)
 
 
+# Brian (2026-11-01): "let's just focus entirely on this season" (new
+# coaches, QBs and transfers every year). From LATE_WEEK on, last season's
+# games count only LATE_OFFSEASON as much (down from 0.6 / 0.5), so the
+# ratings are almost all this season. 2017-25 test: week 7+ accuracy about
+# the same (MAE 12.9 vs 12.8), slightly better vs closing lines (49% vs 48%
+# on 3+ point gaps), neither beating the close. Early weeks keep the
+# carryover, since a few games alone predict much worse.
+LATE_WEEK = 7
+LATE_OFFSEASON = 0.1
+
+
+def _carry(g, idx, offseason):
+    wk = g.week.values[idx[0]] if "week" in g.columns else 0
+    return LATE_OFFSEASON if pd.notna(wk) and wk >= LATE_WEEK else offseason
+
+
 def _weights(slate, slates, seasons, cur, hl_days, offseason):
     age = (np.datetime64(slate) - slates).astype("timedelta64[D]").astype(float)
     return 0.5 ** (age / hl_days) * offseason ** (cur - seasons)
@@ -59,7 +75,7 @@ def walk_forward(games: pd.DataFrame, hl_days=240, offseason=0.6, alpha=0.3,
         if len(tr) < 200:
             continue
         w = _weights(slate, g.slate.values[tr], g.season.values[tr], cur,
-                     hl_days, offseason)
+                     hl_days, _carry(g, idx, offseason))
         sw, n, home = np.sqrt(w), len(tr), home_all[tr]
         # margin = r_home - r_away + hfa * home
         X = csr_matrix((np.r_[np.ones(n), -np.ones(n)],
@@ -114,7 +130,7 @@ def epa_walk_forward(games: pd.DataFrame, pbp: pd.DataFrame, hl_days=150,
         tr = np.where((ps < np.datetime64(slate)) & (pseason >= cur - lookback))[0]
         if len(tr) < 500:
             continue
-        w = _weights(slate, ps[tr], pseason[tr], cur, hl_days, offseason) \
+        w = _weights(slate, ps[tr], pseason[tr], cur, hl_days, _carry(g, idx, offseason)) \
             * np.sqrt(p.plays.values[tr])
         sw, n = np.sqrt(w), len(tr)
         X = csr_matrix((np.ones(2 * n), (np.r_[np.arange(n), np.arange(n)],
