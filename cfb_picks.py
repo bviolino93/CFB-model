@@ -960,7 +960,18 @@ def main():
     picks = (attach_news(picks, g, news, starters) if len(picks)
              else picks.assign(injuries=[], situation=[]))
     # the handicapper's last look (bet / half / pass, with the reason)
-    picks = cfb_handicap.review(picks, news, ledger.load(a.history), now)
+    past = ledger.load(a.history)
+    picks = cfb_handicap.review(picks, news, past, now, g=g)
+    # Brian (2026-11-01): "let's start thinking of things subjectively". The
+    # handicapper also reads the model's leans with team form and common
+    # opponents, and can bet the ones it likes, small.
+    lean_rows = cfb_handicap.lean_candidates(info.get("priced"), lean, ids, books, picks,
+                                             now, a.bankroll)
+    if len(lean_rows):
+        lean_rows = attach_news(drop_red_flags(lean_rows, g, news), g, news, starters)
+        lean_rows = cfb_handicap.review(lean_rows, news, past, now, g=g, leans=True)
+        if len(lean_rows):
+            picks = pd.concat([picks, lean_rows], ignore_index=True)
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
     made = now.strftime("%a %b %-d, %H:%M UTC")

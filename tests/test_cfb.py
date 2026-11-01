@@ -436,3 +436,39 @@ def test_handicapper_passes_halves_and_explains():
     # same bets again: answered from the cache, no new calls
     again = cfb_handicap.review(picks, news, [], pd.Timestamp("2026-11-03", tz="UTC"), client=Client())
     assert list(again.pick) == ["Over", "C"]
+
+
+def test_handicapper_leans_default_to_pass_and_bet_small():
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    replies = iter(['```json\n{"decision": "bet", "reason": "They have rolled similar teams by 20."}\n```',
+                    '```json\n{"decision": "pass", "reason": "Nothing beyond the number."}\n```',
+                    'no json at all'])
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    assert kw["system"] == cfb_handicap.LEAN_SYSTEM
+                    return NS(content=[NS(type="text", text=next(replies))], stop_reason="end_turn",
+                              usage=NS(input_tokens=1000, output_tokens=100))
+
+    now = pd.Timestamp("2026-11-05", tz="UTC")
+    rows = []
+    for i, (lean, ev) in enumerate([(1.2, 0.01), (0.9, 0.0), (0.7, -0.01), (0.3, 0.02)]):
+        rows.append({"event_id": f"e{i}", "market": "spreads", "pick": f"T{i}", "point": -3.0,
+                     "price": -110, "book": "DraftKings", "ev": ev, "p_win": 0.52, "p_push": 0.0,
+                     "commence": "2026-11-07T19:00:00Z", "away": f"T{i}", "home": f"U{i}", "lean": lean})
+    rows.append({**rows[0], "event_id": "e9", "book": "Caesars"})          # not my book
+    priced = pd.DataFrame(rows)
+    ids = {f"e{i}": i + 1 for i in range(10)}
+    picks = pd.DataFrame([{"event_id": "e2", "market": "totals"}])
+    cand = cfb_handicap.lean_candidates(priced, lambda p: p.lean, ids, ["DraftKings", "FanDuel"],
+                                        picks, now, 1000)
+    assert list(cand.pick) == ["T0", "T1", "T2"]          # 0.3 lean and Caesars left out
+    assert (cand.stake == 5.0).all()
+    cand = cand.assign(injuries=[[]] * 3, situation=[[]] * 3)
+    out = cfb_handicap.review(cand, {}, [], now, client=Client(), leans=True)
+    assert list(out.pick) == ["T0"]                       # pass and unparseable both drop
+    assert out.why.iloc[0].startswith("Handicapper's pick: They have rolled")
