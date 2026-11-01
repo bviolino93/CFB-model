@@ -538,8 +538,9 @@ def test_handicapper_can_take_the_side_the_model_leans_against():
     assert "Against the model" in r.why
 
 
-def test_patterns_off_and_daily_cap():
+def test_patterns_off_and_daily_cap(monkeypatch):
     import cfb_picks
+    monkeypatch.setattr(cfb_picks, "DAILY_CAP", True)
     sat_noon = pd.Timestamp("2026-10-31T16:00Z")
     assert cfb_picks.TOTAL_PATTERNS is False
     assert cfb_picks.total_rule(47.5, 24.5, sat_noon, False, 2.0) is None     # old over pattern off
