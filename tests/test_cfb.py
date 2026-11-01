@@ -472,3 +472,30 @@ def test_handicapper_leans_default_to_pass_and_bet_small():
     out = cfb_handicap.review(cand, {}, [], now, client=Client(), leans=True)
     assert list(out.pick) == ["T0"]                       # pass and unparseable both drop
     assert out.why.iloc[0].startswith("Handicapper's pick: They have rolled")
+
+
+def test_pattern_bets_need_this_seasons_case():
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    seen = []
+    replies = iter(['```json\n{"decision": "pass", "reason": "Both offenses are scoring 40."}\n```',
+                    'garbled'])
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    seen.append(kw["system"])
+                    return NS(content=[NS(type="text", text=next(replies))], stop_reason="end_turn",
+                              usage=NS(input_tokens=1000, output_tokens=100))
+
+    base = {"away": "A", "home": "B", "commence": "2026-11-07T19:00:00Z", "price": -110,
+            "book": "FanDuel", "win_chance": 0.55, "ev": 0.05, "game_id": 1,
+            "injuries": [], "situation": [], "market": "totals", "stake": 10.0,
+            "why": "A conference game at night with a total of 60+: the under has hit about 55% in games like this."}
+    picks = pd.DataFrame([{**base, "pick": "Under", "point": 60.5},
+                          {**base, "game_id": 2, "pick": "Under", "point": 61.5}])
+    out = cfb_handicap.review(picks, {}, [], pd.Timestamp("2026-11-03", tz="UTC"), client=Client())
+    assert len(out) == 0                                  # pass, and garbled counts as pass
+    assert seen == [cfb_handicap.PATTERN_SYSTEM] * 2
