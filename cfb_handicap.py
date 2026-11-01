@@ -290,6 +290,12 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
             if len(row):
                 sch = (row.iloc[0].away_team, row.iloc[0].home_team)
         brief = _brief(p, inj, sit, first.get((getattr(p, "game_id", None), p.market, p.pick)), g, sch)
+        if sch:
+            rec = cfb_news.records(news.get(cfb_news.game_key(sch[1], sch[0], p.commence), {}))
+            if rec:
+                brief += "\nBetting records this season: " + "; ".join(
+                    f"{x.get('team')}: ATS {x.get('ats') or '?'}, totals {x.get('totals') or '?'}"
+                    for x in rec)
         pattern = not leans and (MATCHUP_ALL or is_pattern(p.why))
         if leans:
             brief = "LEAN ONLY (model is short of a bet).\n" + brief
