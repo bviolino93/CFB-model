@@ -74,15 +74,19 @@ TRACK = {
 
 
 LEAN_SYSTEM = """You are a sharp college football handicapper. The model only \
-leans to this side (not enough for a bet on its numbers alone), so this is your \
-call on the football: recent form and who it came against, common opponents, \
-how each team has scored against expectations lately, the matchup, injuries and the situation (coaching, motivation, travel, weather). \
-Bet only when the football case is clearly strong and nothing in the news cuts \
-against it; otherwise pass. Most of these should be passes. Don't invent facts \
-that aren't in what you're given.
+leans to the side shown (not enough for a bet on its numbers alone), so this is \
+your call on the football, and you may take either side: recent form and who it \
+came against, common opponents, how each team has scored against expectations \
+lately, the matchup, injuries and the situation (coaching, motivation, travel, \
+weather). The model's numbers can be wrong (it has missed teams that are much \
+better or worse this season), so if the football clearly points to the other \
+side, take it. Answer "bet" for the side shown, "other" for the other side, or \
+"pass". Bet only when the football case is clearly strong and nothing in the \
+news cuts against it; otherwise pass. Most of these should be passes. Don't \
+invent facts that aren't in what you're given.
 
 Answer with one ```json block and nothing after it:
-{"decision": "bet|pass", "reason": "<one or two sentences on the football case, plain English>"}"""
+{"decision": "bet|other|pass", "reason": "<one or two sentences on the football case for the side you pick, plain English>"}"""
 
 PATTERN_SYSTEM = """You are a sharp college football handicapper making the \
 final call on a bet. Brian wants every bet to rest on analysis of this game, \
@@ -212,6 +216,10 @@ def matchup_text(g, game_id) -> str:
     return " ".join(out)
 
 
+def _side(market, pick, point) -> str:
+    return f"{pick} {point:+g}" if market == "spreads" else f"{pick} {point:g}"
+
+
 def _brief(p, injuries: list, situation: list, first: dict | None, g=None,
            schools: tuple | None = None) -> str:
     side = f"{p.pick} {p.point:+g}" if p.market == "spreads" else f"{p.pick} {p.point:g}"
@@ -243,7 +251,7 @@ def _parse(text: str, default: str = "bet") -> dict:
     except json.JSONDecodeError:
         d = {}
     dec = str(d.get("decision", "")).lower()
-    return {"decision": dec if dec in ("bet", "half", "pass") else default,
+    return {"decision": dec if dec in ("bet", "half", "pass", "other") else default,
             "reason": str(d.get("reason", "")).strip()}
 
 
@@ -280,7 +288,7 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
         first[(b.get("game_id"), b.get("market"), b.get("pick"))] = {
             "point": b.get("first_point", b.get("point")), "price": b.get("first_price", b.get("price"))}
     done = news.setdefault("_reviews", {})
-    keep, stakes, whys = [], [], []
+    keep, stakes, whys, flips = [], [], [], []
     for p in picks.itertuples():
         inj = list(getattr(p, "injuries", []) or [])
         sit = list(getattr(p, "situation", []) or [])
@@ -299,6 +307,9 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
         pattern = not leans and (MATCHUP_ALL or is_pattern(p.why))
         if leans:
             brief = "LEAN ONLY (model is short of a bet).\n" + brief
+            if pd.notna(getattr(p, "opp_pick", None)):
+                brief += (f"\nOther side: {_side(p.market, p.opp_pick, p.opp_point)} at "
+                          f"{int(p.opp_price):+d}, {p.opp_book}")
         elif pattern:
             brief = "MODEL BET: bet only if the matchup analysis supports it.\n" + brief
         key = hashlib.sha1(brief.encode()).hexdigest()[:16]
@@ -327,11 +338,16 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
         reason = (got or {}).get("reason", "")
         print(f"handicap{' (lean)' if leans else ''}: {p.pick} {p.point} -> {dec}: {reason}")
         if leans:
-            keep.append(dec == "bet")
+            other = dec == "other" and pd.notna(getattr(p, "opp_pick", None))
+            keep.append(dec == "bet" or other)
             stakes.append(p.stake)
-            whys.append(f"Handicapper's pick: {reason} (The model leans this way too, "
+            flips.append(other)
+            whys.append(f"Handicapper's pick: {reason} (Against the model, which leaned "
+                        f"{_side(p.market, p.pick, p.point)}; small stake.)" if other else
+                        f"Handicapper's pick: {reason} (The model leans this way too, "
                         f"by less than a bet needs; small stake.)")
             continue
+        flips.append(False)
         keep.append(dec != "pass")
         stakes.append(round(p.stake * (0.5 if dec == "half" else 1.0), 2))
         whys.append(f"{p.why} Handicapper: {reason}" if reason else p.why)
@@ -341,6 +357,11 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
             done.pop(k)
     news["_budget"] = {"month": month, "usd": round(spent + cfb_news.cost() - start, 4)}
     out = picks.assign(stake=stakes, why=whys)
+    flip = pd.Series(flips, index=out.index, dtype=bool) if len(out) else pd.Series([], dtype=bool)
+    if flip.any():
+        for c in ("pick", "point", "price", "book", "ev", "win_chance"):
+            out[c] = out[c].astype(object)
+            out.loc[flip, c] = out.loc[flip, "opp_" + c].values
     return out[keep]
 
 
@@ -353,6 +374,9 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
         return priced.iloc[:0] if priced is not None else pd.DataFrame()
     p = priced[priced.book.isin(my_books) & priced.market.isin(["spreads", "totals"])].copy()
     p["lean"] = lean_pts(p)
+    # Brian (2026-11-01, Missouri at Arkansas): the handicapper can also take
+    # the side the model leans against, so it sees the best offer there too.
+    every = p.sort_values("ev", ascending=False).drop_duplicates(["event_id", "market", "pick"])
     kick = pd.to_datetime(p.commence, utc=True)
     now = pd.Timestamp(now)
     p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours)) & (p.lean >= MIN_LEAN) & (p.lean > 0)
@@ -366,6 +390,16 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
           .sort_values("lean", ascending=False).drop_duplicates("event_id").head(MAX_LEANS))
     p["game_id"] = [ids.get(e) for e in p.event_id]
     p = p[p.game_id.notna()]
+    opp = {}
+    for r in every.itertuples():
+        opp.setdefault((r.event_id, r.market), []).append(r)
+    for c in ("pick", "point", "price", "book", "ev", "win_chance"):
+        vals = []
+        for r in p.itertuples():
+            o = next((x for x in opp.get((r.event_id, r.market), []) if x.pick != r.pick), None)
+            vals.append(None if o is None else
+                        o.p_win / (1 - o.p_push) if c == "win_chance" else getattr(o, c))
+        p["opp_" + c] = vals
     p["stake"] = round(bankroll * LEAN_STAKE, 2)
     p["win_chance"] = p.p_win / (1 - p.p_push)
     p["why"] = [f"The model leans {r.pick} by {r.lean:.1f} points (a bet needs "

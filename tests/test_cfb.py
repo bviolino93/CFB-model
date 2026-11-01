@@ -501,3 +501,37 @@ def test_pattern_bets_need_this_seasons_case():
     out = cfb_handicap.review(picks, {}, [], pd.Timestamp("2026-11-03", tz="UTC"), client=Client())
     assert len(out) == 0                                  # pass, and garbled counts as pass
     assert seen == [cfb_handicap.PATTERN_SYSTEM] * 2
+
+
+def test_handicapper_can_take_the_side_the_model_leans_against():
+    # Brian (2026-11-01): Missouri -10.5 at Arkansas, the model leaned Arkansas.
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    seen = []
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    seen.append(kw["messages"][0]["content"])
+                    return NS(content=[NS(type="text", text='```json\n{"decision": "other", '
+                                          '"reason": "Arkansas has lost three by 27+."}\n```')],
+                              stop_reason="end_turn", usage=NS(input_tokens=1000, output_tokens=100))
+
+    now = pd.Timestamp("2026-11-07", tz="UTC")
+    base = {"event_id": "e1", "market": "spreads", "book": "DraftKings", "p_push": 0.0,
+            "commence": "2026-11-08T00:00:00Z", "away": "Missouri", "home": "Arkansas"}
+    priced = pd.DataFrame([
+        {**base, "pick": "Arkansas", "point": 10.5, "price": -110, "ev": 0.02, "p_win": 0.53, "lean": 3.9},
+        {**base, "pick": "Missouri", "point": -10.5, "price": -108, "ev": -0.06, "p_win": 0.47, "lean": -3.9,
+         "book": "FanDuel"}])
+    cand = cfb_handicap.lean_candidates(priced, lambda p: p.lean, {"e1": 1}, ["DraftKings", "FanDuel"],
+                                        pd.DataFrame(), now, 1000)
+    assert list(cand.pick) == ["Arkansas"] and cand.opp_pick.iloc[0] == "Missouri"
+    cand = cand.assign(injuries=[[]], situation=[[]])
+    out = cfb_handicap.review(cand, {}, [], now, client=Client(), leans=True)
+    assert "Other side: Missouri -10.5 at -108, FanDuel" in seen[0]
+    r = out.iloc[0]
+    assert (r.pick, r.point, r.price, r.book, r.stake) == ("Missouri", -10.5, -108, "FanDuel", 5.0)
+    assert "Against the model" in r.why
