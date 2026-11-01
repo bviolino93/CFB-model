@@ -34,7 +34,9 @@ final call on bets a model has flagged. You see the model's numbers, the \
 price, the news a researcher found (injuries, coaching, motivation, travel, \
 weather) and how this kind of bet has done historically.
 
-Think like a professional: the betting market is efficient, so the model's \
+Analyze the matchup itself: how each offense's strengths (passing, \
+rushing, efficiency, pace) line up against the other defense, recent form \
+and scoring, injuries and the situation. Think like a professional: the betting market is efficient, so the model's \
 edge is small and real only when nothing it can't see undermines it. Pass \
 when there is a concrete reason the number is stale or wrong: news the model \
 doesn't price (a key player out for the first time on the side we bet, a \
@@ -156,6 +158,55 @@ def common_text(g, a: str, b: str, before) -> str:
     return "Common opponents: " + "; ".join(f"{o}: {a} {ra[o]:+g}, {b} {rb[o]:+g}" for o in both) + "."
 
 
+STATS = [("off_epa", "offense EPA/play", True), ("off_sr", "offense success rate", True),
+         ("off_pass_epa", "passing EPA/play", True), ("off_rush_epa", "rushing EPA/play", True),
+         ("off_ppd", "points per drive", True), ("def_epa", "defense EPA/play allowed", False),
+         ("def_pass_epa", "pass defense EPA allowed", False), ("def_rush_epa", "run defense EPA allowed", False),
+         ("def_ppd", "points per drive allowed", False), ("off_drv", "drives a game (pace)", True)]
+
+
+def _team_table(g: pd.DataFrame, season) -> pd.DataFrame:
+    """Each team's latest rating this season (entering its most recent game
+    on file), from the h_/a_ columns, one row per team."""
+    x = g[g.season == season]
+    parts = []
+    for side in ("h", "a"):
+        cols = {f"{side}_{k}": k for k, _, _ in STATS if f"{side}_{k}" in x.columns}
+        t = x[["start_date", f"{'home' if side == 'h' else 'away'}_team", *cols]].rename(
+            columns={**cols, f"{'home' if side == 'h' else 'away'}_team": "team"})
+        parts.append(t)
+    t = pd.concat(parts).dropna(subset=["off_epa"]).sort_values("start_date")
+    return t.groupby("team").last()
+
+
+def matchup_text(g, game_id) -> str:
+    """The two teams' efficiency profiles going into this game, each stat
+    with its rank among this season's teams (1 = best)."""
+    if g is None or game_id is None:
+        return ""
+    row = g[g.game_id == game_id]
+    if not len(row) or "h_off_epa" not in g.columns:
+        return ""
+    r = row.iloc[0]
+    try:
+        table = _team_table(g, r.season)
+    except Exception:
+        return ""
+    n = len(table)
+    out = []
+    for side, team in (("a", r.away_team), ("h", r.home_team)):
+        bits = []
+        for k, label, high in STATS:
+            v = r.get(f"{side}_{k}")
+            if v is None or pd.isna(v) or k not in table:
+                continue
+            rank = int((table[k] > v).sum() + 1) if high else int((table[k] < v).sum() + 1)
+            bits.append(f"{label} {v:.2f} (#{rank} of {n})")
+        if bits:
+            out.append(f"{team} profile: " + "; ".join(bits) + ".")
+    return " ".join(out)
+
+
 def _brief(p, injuries: list, situation: list, first: dict | None, g=None,
            schools: tuple | None = None) -> str:
     side = f"{p.pick} {p.point:+g}" if p.market == "spreads" else f"{p.pick} {p.point:g}"
@@ -172,6 +223,9 @@ def _brief(p, injuries: list, situation: list, first: dict | None, g=None,
         away, home = schools
         lines += [form_text(g, away, p.commence), form_text(g, home, p.commence),
                   common_text(g, away, home, p.commence)]
+        prof = matchup_text(g, getattr(p, "game_id", None))
+        if prof:
+            lines.append("Matchup (season efficiency, opponent-adjusted inputs to our model): " + prof)
     lines.append("Injuries: " + (json.dumps(injuries) if injuries else "none reported"))
     lines.append("Situation: " + (json.dumps(situation) if situation else "nothing reported"))
     return "\n".join(lines)
