@@ -56,7 +56,9 @@ TRACK = {
                "about 55%, but not in 2014-16, so treat it as a mild lean, not a reason by itself. "
                "Spread form (beating our margins) predicted nothing against the close.",
     "totals": "The totals patterns (big favorite with a low total -> over; totals of 60+ -> "
-              "under) won 55-57% in every era since 2012. Our own totals model alone is "
+              "under) won about 55-56% against closing totals since 2015 (the big-favorite "
+              "over ran 53% in 2017-21, its weakest stretch; 24+ favorites with totals "
+              "under 50 hit 62-65% in every era). Our own totals model alone is "
               "about break-even.",
 }
 

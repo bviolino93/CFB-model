@@ -65,12 +65,13 @@ MODEL_MARKETS = {"spread"}
 TOTAL_RULES = [
     ("Over", lambda t, sp, night, conf, gap: sp >= 24 and t < 50 and gap >= 0, 0.60,
      "a {fav}-point favorite with a total under 50, and our possession count "
-     "agrees: since 2015 the over has hit about 63% in games like this (135 "
+     "agrees: since 2015 the over has hit about 63% in games like this (164 "
      "games). Big favorites keep scoring and low totals leave no room for it"),
     ("Over", lambda t, sp, night, conf, gap: sp >= 21 and t < 55 and gap >= 0, 0.56,
      "a {fav}-point favorite with a total under 55, and our possession count "
-     "agrees: since 2015 the over has hit about 56-58% in games like this "
-     "(500 games). Mismatches score more than low totals allow for"),
+     "agrees: since 2015 the over has hit about 56% in games like this "
+     "(543 games; 53% in its weakest stretch, 2017-21). Mismatches score more "
+     "than low totals allow for"),
     ("Under", lambda t, sp, night, conf, gap: t >= 60 and night and conf, 0.545,
      "a conference game at night with a total of 60+: since 2017 the under has "
      "hit about 55% in games like this (450 games). Books shade big totals up "
