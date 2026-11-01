@@ -798,7 +798,7 @@ def school_names(fair: dict, ids: dict, g: pd.DataFrame, history) -> dict:
 
 
 COLS = ["away", "home", "commence", "market", "pick", "point", "price",
-        "book", "stake", "win_chance", "ev", "why", "game_id", "injuries"]
+        "book", "stake", "win_chance", "ev", "why", "game_id", "injuries", "situation"]
 
 
 def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict,
@@ -808,16 +808,44 @@ def attach_news(picks: pd.DataFrame, g: pd.DataFrame, news: dict,
     took off."""
     starters = starters or {}
     s = g.set_index("game_id")
-    out = []
+    out, sit = [], []
     for p in picks.itertuples():
         if p.game_id not in s.index:
             out.append([])
+            sit.append([])
             continue
         r = s.loc[p.game_id]
         e = news.get(cfb_news.game_key(r.home_team, r.away_team, p.commence), {})
         out.append(cfb_news.injuries(e, r.away_team, starters.get(r.away_team))
                    + cfb_news.injuries(e, r.home_team, starters.get(r.home_team)))
-    return picks.assign(injuries=out)
+        sit.append([{k: x.get(k) for k in ("factor", "favors", "red_flag", "note", "source", "date")}
+                    for x in cfb_news.situation(e)])
+    return picks.assign(injuries=out, situation=sit)
+
+
+def drop_red_flags(picks: pd.DataFrame, g: pd.DataFrame, news: dict) -> pd.DataFrame:
+    """Brian (2026-11-01): "you aren't accounting for the qualitative part
+    of betting". The news check also reads the situation (coaching news,
+    discipline, motivation, lookahead, travel, weather); a bet is dropped
+    when a red flag there favors the other side. Unbacktested: no free
+    history of these exists, so judge it by the closing-line review."""
+    if not len(picks):
+        return picks
+    s = g.set_index("game_id")
+    keep = []
+    for p in picks.itertuples():
+        if p.game_id not in s.index:
+            keep.append(True)
+            continue
+        r = s.loc[p.game_id]
+        e = news.get(cfb_news.game_key(r.home_team, r.away_team, p.commence), {})
+        home_side = p.pick == p.home
+        side, other = (r.home_team, r.away_team) if home_side else (r.away_team, r.home_team)
+        why = cfb_news.red_flag_against(e, p.market, p.pick, side, other)
+        if why:
+            print(f"news: dropping {p.pick} {p.point} ({p.market}): {why}")
+        keep.append(not why)
+    return picks[keep]
 
 
 def render_html(picks, fair, made, bankroll, history, names) -> str:
@@ -927,7 +955,9 @@ def main():
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
     starters = team_starters(g, cfb_data.current_season(now))
-    picks = attach_news(picks, g, news, starters) if len(picks) else picks.assign(injuries=[])
+    picks = drop_red_flags(picks, g, news)
+    picks = (attach_news(picks, g, news, starters) if len(picks)
+             else picks.assign(injuries=[], situation=[]))
     made = now.strftime("%a %b %-d, %H:%M UTC")
     for path in (a.out, a.json, a.history):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

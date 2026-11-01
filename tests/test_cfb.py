@@ -380,3 +380,27 @@ def test_dropped_bet_gets_a_skip_alert():
     names = {"Boston College Eagles": "Boston College", "Duke Blue Devils": "Duke"}
     note = cfb_picks.render_dropped(gone, names)
     assert "~~Boston College to win (+245) at FanDuel~~ · Boston College @ Duke" in note
+
+
+def test_red_flag_drops_bets_on_the_other_side():
+    import cfb_news
+    e = {"situation": [
+        {"factor": "coaching", "favors": "Iowa State", "red_flag": True, "note": "OSU coach fired Tuesday"},
+        {"factor": "weather", "favors": "under", "red_flag": False, "note": "15 mph wind"}]}
+    assert cfb_news.red_flag_against(e, "spreads", "Oklahoma State Cowboys",
+                                     "Oklahoma State", "Iowa State") == "OSU coach fired Tuesday"
+    assert cfb_news.red_flag_against(e, "spreads", "Iowa State Cyclones",
+                                     "Iowa State", "Oklahoma State") == ""
+    assert cfb_news.red_flag_against(e, "totals", "Over", "", "") == ""   # not a red flag
+    e["situation"][1]["red_flag"] = True
+    assert cfb_news.red_flag_against(e, "totals", "Over", "", "") == "15 mph wind"
+    assert cfb_news.red_flag_against(e, "totals", "Under", "", "") == ""
+    picks = pd.DataFrame([
+        {"game_id": 1, "home": "Iowa State Cyclones", "pick": "Oklahoma State Cowboys",
+         "market": "spreads", "point": -9.5, "commence": "2026-10-31T23:00:00Z"},
+        {"game_id": 1, "home": "Iowa State Cyclones", "pick": "Under",
+         "market": "totals", "point": 58.5, "commence": "2026-10-31T23:00:00Z"}])
+    g = pd.DataFrame([{"game_id": 1, "home_team": "Iowa State", "away_team": "Oklahoma State"}])
+    news = {cfb_news.game_key("Iowa State", "Oklahoma State", "2026-10-31T23:00:00Z"): e}
+    out = cfb_picks.drop_red_flags(picks, g, news)
+    assert list(out.pick) == ["Under"]
