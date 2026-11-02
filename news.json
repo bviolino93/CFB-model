@@ -1,0 +1,1416 @@
+{
+ "UTEP @ North Dakota State 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "UTEP",
+    "regular_qb": "EJ Colson",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "North Dakota State",
+    "regular_qb": "Nathan Hayes",
+    "expected_qb": null,
+    "qb_status": "questionable",
+    "players": [
+     {
+      "name": "Nathan Hayes",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 0,
+      "note": "Left ankle sprain vs New Mexico; backup Preston Brown would likely start if he can't",
+      "source": "https://www.inforum.com/sports/bison-media-zone/mens-sports/bison-head-into-utep-with-starting-qb-questionable",
+      "date": "2026-10-28"
+     },
+     {
+      "name": "Griffin Empey",
+      "pos": "OL",
+      "status": "out",
+      "starter": true,
+      "games_missed": 0,
+      "note": "Starting LG, hand injury, ruled out for UTEP, expected out about a week",
+      "source": "https://www.inforum.com/sports/bison-media-zone/mens-sports/bison-head-into-utep-with-starting-qb-questionable",
+      "date": "2026-10-28"
+     }
+    ]
+   }
+  ]
+ },
+ "Nevada @ UCLA 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Nevada",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "UCLA",
+    "regular_qb": "Nico Iamaleava",
+    "expected_qb": "Ty Dieffenbach",
+    "qb_status": "out",
+    "players": [
+     {
+      "name": "Nico Iamaleava",
+      "pos": "QB",
+      "status": "season",
+      "starter": true,
+      "games_missed": 2,
+      "note": "Season-ending knee injury vs Oregon Oct 10; replaced by Ty Dieffenbach, who hurt his leg vs MSU but returned",
+      "source": "https://sports.yahoo.com/articles/ty-dieffenbach-injury-ucla-loses-212717910.html",
+      "date": "2026-10-24"
+     }
+    ]
+   }
+  ]
+ },
+ "Troy @ James Madison 2026-10-29": {
+  "checked": "2026-10-27T23:36:28.331293+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Troy",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "James Madison",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "Mississippi State @ Texas 2026-10-31": {
+  "checked": "2026-10-26T21:58:55.788138+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Mississippi State",
+    "regular_qb": "Kamario Taylor",
+    "expected_qb": null,
+    "qb_status": "questionable",
+    "players": [
+     {
+      "name": "Kamario Taylor",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Re-aggravated right turf toe vs Oklahoma, left after 12 plays in a walking boot; missed LSU. Lebby: update within 48 hrs. Puckett/Swann compete if he is out",
+      "source": "https://www.burntorangenation.com/texas-longhorns-football/106409/kamario-taylor-injury-texas-longhorns-mississippi-state-bulldogs",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Jalen Smith",
+      "pos": "LB",
+      "status": "season",
+      "starter": true,
+      "games_missed": null,
+      "note": "Starting LB, season-ending injury Oct 3 vs Alabama, had surgery; listed out vs LSU",
+      "source": "https://sports.yahoo.com/articles/jeff-lebby-said-mississippi-state-171247459.html",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Trevion Williams",
+      "pos": "DL",
+      "status": "season",
+      "starter": false,
+      "games_missed": null,
+      "note": "Leg injury, expected to miss rest of season (Covers, entry dated Sep 26); starter status not confirmed",
+      "source": "https://www.covers.com/sport/football/ncaaf/teams/main/mississippi-state-bulldogs/injuries",
+      "date": "2026-10-17"
+     }
+    ]
+   },
+   {
+    "team": "Texas",
+    "regular_qb": "Arch Manning",
+    "expected_qb": "Arch Manning",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "Trevor Goosby",
+      "pos": "OL",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 0,
+      "note": "Starting LT, carted off with knee injury vs Ole Miss; Sarkisian said it did not look good",
+      "source": "https://www.orangebloods.com/2026/10/25/texas-longhorns-mississippi-state-football/",
+      "date": "2026-10-25"
+     },
+     {
+      "name": "Cam Coleman",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 0,
+      "note": "Left Ole Miss game with shoulder injury; did not look good per Sarkisian",
+      "source": "https://www.orangebloods.com/2026/10/25/texas-longhorns-mississippi-state-football/",
+      "date": "2026-10-25"
+     },
+     {
+      "name": "Colin Simmons",
+      "pos": "DL",
+      "status": "out",
+      "starter": true,
+      "games_missed": null,
+      "note": "Edge rusher, Texas already without him",
+      "source": "https://www.orangebloods.com/2026/10/25/texas-longhorns-mississippi-state-football/",
+      "date": "2026-10-25"
+     },
+     {
+      "name": "Hollywood Smothers",
+      "pos": "RB",
+      "status": "out",
+      "starter": true,
+      "games_missed": null,
+      "note": "RB, Texas already without him",
+      "source": "https://www.orangebloods.com/2026/10/25/texas-longhorns-mississippi-state-football/",
+      "date": "2026-10-25"
+     }
+    ]
+   }
+  ]
+ },
+ "UAB @ South Florida 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "UAB",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "South Florida",
+    "regular_qb": "Michael Van Buren Jr.",
+    "expected_qb": "Michael Van Buren Jr.",
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "Northern Illinois @ UNLV 2026-11-01": {
+  "checked": "2026-11-01T00:32:36.818529+00:00",
+  "v": 3,
+  "teams": [
+   {
+    "team": "Northern Illinois",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "UNLV",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": []
+ },
+ "Oklahoma State @ Iowa State 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Oklahoma State",
+    "regular_qb": "Drew Mestemaker",
+    "expected_qb": "Drew Mestemaker",
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Iowa State",
+    "regular_qb": "Jaylen Raynor",
+    "expected_qb": "Jaylen Raynor",
+    "qb_status": "starting",
+    "players": []
+   }
+  ]
+ },
+ "Michigan @ Rutgers 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Michigan",
+    "regular_qb": "Bryce Underwood",
+    "expected_qb": "Tommy Carr",
+    "qb_status": "starting",
+    "players": []
+   },
+   {
+    "team": "Rutgers",
+    "regular_qb": "Dylan Lonergan",
+    "expected_qb": null,
+    "qb_status": "questionable",
+    "players": [
+     {
+      "name": "Dylan Lonergan",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Injured early vs Northwestern 10/24; status left to availability report; missed BC game earlier",
+      "source": "https://sports.yahoo.com/articles/rutgers-quarterback-situation-entering-michigan-080614950.html",
+      "date": "2026-10-28"
+     },
+     {
+      "name": "Kaj Sanders",
+      "pos": "DB",
+      "status": "season",
+      "starter": null,
+      "games_missed": null,
+      "note": "Schiano: out for remainder of season",
+      "source": "https://www.on3.com/sites/the-knight-report/news/rutgers-football-injury-report-latest-updates-ahead-of-the-northwestern-game/",
+      "date": "2026-10-21"
+     },
+     {
+      "name": "Zahmir Dawud",
+      "pos": "DB",
+      "status": "season",
+      "starter": null,
+      "games_missed": null,
+      "note": "Schiano: out for remainder of season",
+      "source": "https://www.on3.com/sites/the-knight-report/news/rutgers-football-injury-report-latest-updates-ahead-of-the-northwestern-game/",
+      "date": "2026-10-21"
+     }
+    ]
+   }
+  ]
+ },
+ "Stanford @ Louisville 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Stanford",
+    "regular_qb": "Davis Warren",
+    "expected_qb": "Davis Warren",
+    "qb_status": "starting",
+    "players": []
+   },
+   {
+    "team": "Louisville",
+    "regular_qb": "Lincoln Kienholz",
+    "expected_qb": "Lincoln Kienholz",
+    "qb_status": "starting",
+    "players": []
+   }
+  ]
+ },
+ "Boston College @ Duke 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Boston College",
+    "regular_qb": "Mason McKenzie",
+    "expected_qb": "Mason McKenzie",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "Kaelan Chudzinski",
+      "pos": "TE",
+      "status": "season",
+      "starter": true,
+      "games_missed": 7,
+      "note": "Achilles, out for 2026 season",
+      "source": "https://www.bcinterruption.com/boston-college-football/52089/boston-college-loses-major-weapon-for-2026-season",
+      "date": "2026-07-16"
+     }
+    ]
+   },
+   {
+    "team": "Duke",
+    "regular_qb": "Walker Eget",
+    "expected_qb": "Walker Eget",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "Matt Craycraft",
+      "pos": "OL",
+      "status": "out",
+      "starter": true,
+      "games_missed": 2,
+      "note": "Multi-year starter; missed UNC and Virginia",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Andrew Pellicciotta",
+      "pos": "DB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Safety; also out vs Virginia",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Lawrence Gardner",
+      "pos": "QB",
+      "status": "out",
+      "starter": false,
+      "games_missed": null,
+      "note": "Backup QB",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Jamien Little",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Qeanu Johnson",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Evan Smith",
+      "pos": "DB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "CB",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Elliott Schaper",
+      "pos": "LB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Kai Jacobwitz",
+      "pos": "OL",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Reagan McCranie",
+      "pos": "OL",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Roman Fina",
+      "pos": "OL",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "David Anderson",
+      "pos": "DL",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Cosme Salas",
+      "pos": "K",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Blake Rohrer",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "DaShawn Stone",
+      "pos": "DB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Safety",
+      "source": "https://balldurham.com/duke-football-vs-boston-college-how-to-watch-odds-injuries-more-for-week-9-clash",
+      "date": "2026-10-27"
+     }
+    ]
+   }
+  ]
+ },
+ "Marshall @ Old Dominion 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Marshall",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "Carlos Del Rio-Wilson",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Did not play vs South Alabama; Gibson says he could return; starter not named, three QBs likely to play",
+      "source": "https://wvmetronews.com/2026/10/28/gibson-mum-on-starting-quarterback-at-odu-but-indicates-trio-of-signal-callers-likely-to-play/",
+      "date": "2026-10-28"
+     }
+    ]
+   },
+   {
+    "team": "Old Dominion",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "questionable",
+    "players": [
+     {
+      "name": "Ryan Huff",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": null,
+      "note": "Undisclosed; out Week 8 vs La Tech; would have started; status to be tested",
+      "source": "https://www.foxsports.com/college-football/old-dominion-monarchs-team",
+      "date": "2026-10-24"
+     },
+     {
+      "name": "Quinn Henicle",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Named starter in preseason; undisclosed injury, status to be tested",
+      "source": "https://www.foxsports.com/college-football/old-dominion-monarchs-team",
+      "date": "2026-10-24"
+     }
+    ]
+   }
+  ]
+ },
+ "Minnesota @ Indiana 2026-10-31": {
+  "checked": "2026-10-26T22:23:21.531530+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Minnesota",
+    "regular_qb": "Drake Lindsey",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Indiana",
+    "regular_qb": "Josh Hoover",
+    "expected_qb": "Josh Hoover",
+    "qb_status": "starting",
+    "players": []
+   }
+  ]
+ },
+ "Army @ Memphis 2026-11-01": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Army",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "O. Kromah",
+      "pos": "RB",
+      "status": "season",
+      "starter": false,
+      "games_missed": 0,
+      "note": "Ankle, shut down for season per Covers; starter status and games missed unknown",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     }
+    ]
+   },
+   {
+    "team": "Memphis",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "UConn @ Air Force 2026-10-31": {
+  "checked": "2026-10-26T23:21:23.519914+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "UConn",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "J. Merklinger",
+      "pos": "QB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed injury; status unknown for Oct 23 UMass game; not updated for Air Force game",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-11"
+     },
+     {
+      "name": "J. Brown",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Concussion protocol, no timetable for return",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-05"
+     }
+    ]
+   },
+   {
+    "team": "Air Force",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "L. Szarka",
+      "pos": "QB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Out - leg injury",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-05"
+     },
+     {
+      "name": "S. Maiava-Alaimalo",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed; questionable as of Wyoming game, not updated for this game",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     },
+     {
+      "name": "G. Stalfort",
+      "pos": "TE",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed; questionable as of Wyoming game, not updated for this game",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     }
+    ]
+   }
+  ]
+ },
+ "Delaware @ Western Kentucky 2026-10-27": {
+  "checked": "2026-10-27T03:35:30.288090+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Delaware",
+    "regular_qb": "Nick Minicucci",
+    "expected_qb": "Nick Minicucci",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "Brandon Rehmann",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Listed questionable in game preview",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Ty Salazer",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Remains sidelined",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Greg Spiller",
+      "pos": "RB",
+      "status": "season",
+      "starter": null,
+      "games_missed": null,
+      "note": "Shut down for season (Covers, Sep 13); still sidelined",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     }
+    ]
+   },
+   {
+    "team": "Western Kentucky",
+    "regular_qb": null,
+    "expected_qb": "Glenn (first name not given)",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "K.D. Hutchinson",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Knee injury, uncertain",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Nigel Johnson",
+      "pos": "WR",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Dealing with injury; status not given; position unconfirmed",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Adrion Boyd",
+      "pos": "RB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Dealing with injury; status not given",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Sincere Baines",
+      "pos": "RB",
+      "status": "questionable",
+      "starter": null,
+      "games_missed": null,
+      "note": "Dealing with injury; status not given",
+      "source": "https://www.wagertalk.com/news/college-football/delaware-blue-hens-vs-western-kentucky-hilltoppers-prediction-picks-odds-october-27-2026/",
+      "date": "2026-10-26"
+     }
+    ]
+   }
+  ]
+ },
+ "SMU @ Syracuse 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "SMU",
+    "regular_qb": "Kevin Jennings",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "T. Polley Jr.",
+      "pos": "DB",
+      "status": "season",
+      "starter": false,
+      "games_missed": 0,
+      "note": "Pectoral injury, out for season per Covers listing; starter status unknown",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-20"
+     }
+    ]
+   },
+   {
+    "team": "Syracuse",
+    "regular_qb": "Steve Angeli",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "Amari Odom",
+      "pos": "QB",
+      "status": "season",
+      "starter": false,
+      "games_missed": 3,
+      "note": "Shoulder surgery, out for season; started one game (UConn)",
+      "source": "https://dailyorange.com/2026/10/syracuse-football-quarterback-amari-odom-out-for-season/",
+      "date": "2026-10-22"
+     },
+     {
+      "name": "Malachi Nelson",
+      "pos": "QB",
+      "status": "out",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Tightrope ankle surgery, out several weeks; started Oct 10 and Oct 17",
+      "source": "https://dailyorange.com/2026/10/syracuse-football-quarterback-amari-odom-out-for-season/",
+      "date": "2026-10-22"
+     }
+    ]
+   }
+  ]
+ },
+ "Notre Dame @ Navy 2026-10-31": {
+  "checked": "2026-10-27T23:36:28.331293+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Notre Dame",
+    "regular_qb": "CJ Carr",
+    "expected_qb": "CJ Carr",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "DJ McKinney",
+      "pos": "DB",
+      "status": "out",
+      "starter": true,
+      "games_missed": 0,
+      "note": "Starting CB, right ankle, hurt vs BYU",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Brauntae Johnson",
+      "pos": "DB",
+      "status": "out",
+      "starter": true,
+      "games_missed": 6,
+      "note": "Safety, left foot, hurt in opener vs Wisconsin, expected back in November",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Cooper Flanagan",
+      "pos": "TE",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Starting TE, left hamstring, missed BYU game",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Kyngstonn Viliamu-Asa",
+      "pos": "LB",
+      "status": "questionable",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Left thumb, missed Stanford, played 36 snaps vs BYU",
+      "source": "https://sports.yahoo.com/articles/notre-dame-football-rules-cornerback-220613644.html",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Mark Zackery IV",
+      "pos": "DB",
+      "status": "questionable",
+      "starter": false,
+      "games_missed": null,
+      "note": "CB, concussion, starter status not stated",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Loghan Thomas",
+      "pos": "DL",
+      "status": "questionable",
+      "starter": false,
+      "games_missed": null,
+      "note": "Backup DE, right shoulder",
+      "source": "https://www.on3.com/teams/notre-dame-fighting-irish/news/notre-dame-football-beyond-two-deeps-for-game-8-versus-navy/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Charles Jagusah",
+      "pos": "OL",
+      "status": "out",
+      "starter": false,
+      "games_missed": null,
+      "note": "Left humerus, starter status/games missed not stated",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Chris Terek",
+      "pos": "OL",
+      "status": "out",
+      "starter": false,
+      "games_missed": null,
+      "note": "Right knee, starter status/games missed not stated",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Christopher Burgess Jr.",
+      "pos": "DL",
+      "status": "out",
+      "starter": false,
+      "games_missed": null,
+      "note": "Left tibia, starter status/games missed not stated",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Tiki Hola",
+      "pos": "DL",
+      "status": "out",
+      "starter": false,
+      "games_missed": null,
+      "note": "Right knee, starter status/games missed not stated",
+      "source": "https://www.wndu.com/2026/10/26/notre-dame-injury-report-whos-out-whos-questionable-navy-game/",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Quincy Porter",
+      "pos": "WR",
+      "status": "season",
+      "starter": false,
+      "games_missed": null,
+      "note": "Knee, out for season",
+      "source": "https://sports.yahoo.com/articles/notre-dame-football-injury-report-173446400.html",
+      "date": "2026-10-26"
+     },
+     {
+      "name": "Chaz Smith",
+      "pos": "DB",
+      "status": "season",
+      "starter": false,
+      "games_missed": null,
+      "note": "Left knee, out for season, position not stated",
+      "source": "https://sports.yahoo.com/articles/notre-dame-football-injury-report-173446400.html",
+      "date": "2026-10-26"
+     }
+    ]
+   },
+   {
+    "team": "Navy",
+    "regular_qb": "Jackson Gutierrez",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "Kent State @ Sacramento State 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Kent State",
+    "regular_qb": "Dru DeShields",
+    "expected_qb": "Dru DeShields",
+    "qb_status": "starting",
+    "players": [
+     {
+      "name": "M. Stephens",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed, out undetermined length (entry Oct 18)",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     },
+     {
+      "name": "D. Armentrout",
+      "pos": "RB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed, out undetermined length",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     },
+     {
+      "name": "E. Tucker",
+      "pos": "K",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed, no timetable",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     },
+     {
+      "name": "W. Bierfeldt",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed, no timetable",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     }
+    ]
+   },
+   {
+    "team": "Sacramento State",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "K. Peevy",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed, extended absence",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     },
+     {
+      "name": "C. Borders",
+      "pos": "RB",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Undisclosed",
+      "source": "https://www.covers.com/sport/football/ncaaf/injuries",
+      "date": "2026-10-18"
+     }
+    ]
+   }
+  ]
+ },
+ "Northwestern @ Oregon 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Northwestern",
+    "regular_qb": "Aidan Chiles",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Oregon",
+    "regular_qb": "Dante Moore",
+    "expected_qb": "Dylan Raiola",
+    "qb_status": "out",
+    "players": [
+     {
+      "name": "Dante Moore",
+      "pos": "QB",
+      "status": "season",
+      "starter": true,
+      "games_missed": 3,
+      "note": "Concussion vs USC Sep 26; not expected back this season; Raiola likely starter (Brock Thomas also used)",
+      "source": "https://roundtable.io/sports/ncaa/northwestern/news/northwestern-to-face-oregon-without-star-starting-quarterback",
+      "date": "2026-10-27"
+     },
+     {
+      "name": "Trent Ferguson",
+      "pos": "OL",
+      "status": "season",
+      "starter": null,
+      "games_missed": null,
+      "note": "Lost for season; games missed not given",
+      "source": "https://autzenzoo.com/northwestern-vs-oregon-how-to-watch-weather-injuries-odds-announcers-and-more",
+      "date": "2026-10-28"
+     },
+     {
+      "name": "Aaron Flowers",
+      "pos": "DB",
+      "status": "season",
+      "starter": null,
+      "games_missed": null,
+      "note": "Safety, lost for season; games missed not given",
+      "source": "https://autzenzoo.com/northwestern-vs-oregon-how-to-watch-weather-injuries-odds-announcers-and-more",
+      "date": "2026-10-28"
+     }
+    ]
+   }
+  ]
+ },
+ "South Carolina @ Oklahoma 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "South Carolina",
+    "regular_qb": "LaNorris Sellers",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Oklahoma",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": [
+     {
+      "name": "T. Harris",
+      "pos": "WR",
+      "status": "out",
+      "starter": null,
+      "games_missed": null,
+      "note": "Back injury listed Sep 15, no timetable; starter status unknown",
+      "source": "https://www.covers.com/sport/football/ncaaf/teams/main/oklahoma-sooners/injuries",
+      "date": "2026-10-24"
+     }
+    ]
+   }
+  ]
+ },
+ "Purdue @ Penn State 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Purdue",
+    "regular_qb": "Ryan Browne",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Penn State",
+    "regular_qb": "Rocco Becht",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "Washington State @ San Diego State 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Washington State",
+    "regular_qb": null,
+    "expected_qb": "Owen Eshelman",
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "San Diego State",
+    "regular_qb": "Jayden Denegal",
+    "expected_qb": "Stone Saunders",
+    "qb_status": "out",
+    "players": [
+     {
+      "name": "Jayden Denegal",
+      "pos": "QB",
+      "status": "out",
+      "starter": true,
+      "games_missed": 1,
+      "note": "Injured; Saunders confirmed to start vs WSU (his 2nd start)",
+      "source": "https://www.mwcconnection.com/san-diego-state-football/94936/aztecs-quarterback-decision-saunders-could-be-the-quarterback-or-the-future-do-they-reinstate-denegal-when-he-returns-from-injury",
+      "date": "2026-10-28"
+     }
+    ]
+   }
+  ]
+ },
+ "Georgia Tech @ Pittsburgh 2026-10-31": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Georgia Tech",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Pittsburgh",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "Washington @ Nebraska 2026-11-01": {
+  "checked": "2026-10-28T21:25:52.381823+00:00",
+  "v": 2,
+  "teams": [
+   {
+    "team": "Washington",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Nebraska",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ]
+ },
+ "_budget": {
+  "month": "2026-11",
+  "usd": 0.3295
+ },
+ "_reviews": {
+  "40faf3eb95ba8ce4": {
+   "decision": "bet",
+   "reason": "A 22-point favorite with a total under 55 has historically gone over about 56-58% of the time, and our possession count (UNLV scoring heavily, NIU less so) lands around 56, just above the 54.5 line. No injuries, weather or motivation issues were reported, and the line hasn't moved, only the juice (-105 to -110), so the edge is still there.",
+   "at": "2026-11-01T00:32:36.818529+00:00"
+  },
+  "6e7afd2cafb93738": {
+   "decision": "pass",
+   "reason": "Both teams have average-or-slower pace (about 10.6-10.9 drives a game), and Georgia Southern's offense and defense are both better than Marshall's, which does lean toward a lower-scoring game. But Marshall's defense is weak against both pass and run (EPA allowed ranks #180 and #198), and Marshall's offense has a good success rate (#36). Together with Georgia Southern's solid passing offense, that gives enough scoring paths to keep 54.5 reasonable. Both teams have gone well under our totals recently, but that trend is a mild fade signal at best. The model's edge is thin (+4.8%) and the game-specific analysis doesn't make a clear case for the under.",
+   "at": "2026-11-01T23:01:48.041243+00:00"
+  },
+  "dc57e126dce9f290": {
+   "decision": "pass",
+   "reason": "Both pass defenses rank near the bottom nationally (Temple #227, Navy #231 in EPA allowed), and Navy's passing offense ranks #4, so the matchup gives scoring chances despite the slow pace (both teams in the bottom 25 in drives per game). Season scoring (23.6 + 27.6 allowed/scored around 51 combined, with both defenses giving up 27-30 a game) sits near the 53.5 line rather than clearly below it. Navy's last three games ran well over our totals while Temple's ran under, which is mixed, and the model edge is thin (+3.2%) with no situational factors, so there is no clear case for the under.",
+   "at": "2026-11-01T23:01:48.041243+00:00"
+  },
+  "acc25ae182d68ccd": {
+   "decision": "pass",
+   "reason": "Ohio is clearly the better team (6-2 vs 1-7, with better common-opponent margins), but the model's lean is only 0.6 points and the 12.5-point spread already prices that gap. Ohio's close wins over Kent State and Eastern Michigan make laying this many points risky, and nothing in the news adds a clear edge.",
+   "at": "2026-11-01T23:01:48.041243+00:00"
+  },
+  "3d51c926ec6d7f1b": {
+   "decision": "pass",
+   "reason": "The model's lean is only 0.3 points, and the football doesn't clearly favor either side. Miami has the better efficiency profile, but Buffalo has won three straight and +6.5 is a fair number for Miami's narrow wins. There is no injury or situation news to tip it.",
+   "at": "2026-11-01T23:01:48.041243+00:00"
+  },
+  "261a1d42b1bc7d8d": {
+   "decision": "pass",
+   "reason": "Toledo is clearly the better team, but -25.5 is a very large number for a defense that allows 25 a game. Toledo's average winning margin this season is nowhere near 26, and the model's lean is only 0.8 points, with no injury or situational angle to break the tie. Sacramento State just beat Kent State, so there's no clear edge on either side.",
+   "at": "2026-11-02T01:25:40.533258+00:00"
+  },
+  "496769ca083deb84": {
+   "decision": "pass",
+   "reason": "Ohio is clearly the better team, but -12.5 already prices that in. Ohio's recent wins were narrow (13-10 at Kent State, 24-20 against Eastern Michigan), and the model's 0.6-point lean is too thin to back a double-digit favorite. Akron's defense is awful, but a Wednesday MACtion game with no injury or situation news gives nothing to tip it.",
+   "at": "2026-11-02T01:25:40.533258+00:00"
+  },
+  "18658aa6b85b1651": {
+   "decision": "pass",
+   "reason": "The model's lean is only 0.4 points and the football signals conflict. Ball State has the better offense, a better recent trend (two straight wins) and a better result against the common opponent, Sacramento State. UMass has the better defense and has lost four straight. Ball State's pass defense is among the worst in the country, and neither side has a clear edge, so there is no strong case for either side.",
+   "at": "2026-11-02T01:25:40.533258+00:00"
+  },
+  "7997a94d87c61e55": {
+   "decision": "pass",
+   "reason": "The model's lean is only 0.3 points. Miami has the better efficiency profile, but Buffalo has won its last three games (including at Toledo) and covered the common-opponent comparison. Neither side has a clear edge at 6.5, so I'm passing.",
+   "at": "2026-11-02T01:25:40.533258+00:00"
+  },
+  "7f488154a7bac202": {
+   "decision": "pass",
+   "reason": "The teams are nearly even. Central Michigan is slightly better on defense and Eastern Michigan slightly better on offense, and neither side has a clear edge in recent form or common opponents. Eastern Michigan -1.5 is a coin flip at -112, so I'm passing.",
+   "at": "2026-11-02T01:25:40.533258+00:00"
+  }
+ },
+ "Ohio @ Akron 2026-11-04": {
+  "checked": "2026-11-01T23:01:48.041243+00:00",
+  "v": 4,
+  "teams": [
+   {
+    "team": "Ohio",
+    "regular_qb": "Nick Poulos",
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Akron",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": [],
+  "records": []
+ },
+ "Buffalo @ Miami (OH) 2026-11-04": {
+  "checked": "2026-11-01T23:01:48.041243+00:00",
+  "v": 4,
+  "teams": [
+   {
+    "team": "Buffalo",
+    "regular_qb": null,
+    "expected_qb": "Jason Wright",
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Miami (OH)",
+    "regular_qb": null,
+    "expected_qb": "Caleb Heavner",
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": [],
+  "records": []
+ },
+ "Toledo @ Sacramento State 2026-11-05": {
+  "checked": "2026-11-02T01:25:40.533258+00:00",
+  "v": 4,
+  "teams": [
+   {
+    "team": "Toledo",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Sacramento State",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": [],
+  "records": [
+   {
+    "team": "Toledo",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   },
+   {
+    "team": "Sacramento State",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   }
+  ]
+ },
+ "Ball State @ Massachusetts 2026-11-05": {
+  "checked": "2026-11-02T01:25:40.533258+00:00",
+  "v": 4,
+  "teams": [
+   {
+    "team": "Ball State",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Massachusetts",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": [],
+  "records": [
+   {
+    "team": "Ball State",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   },
+   {
+    "team": "Massachusetts",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   }
+  ]
+ },
+ "Central Michigan @ Eastern Michigan 2026-11-05": {
+  "checked": "2026-11-02T01:25:40.533258+00:00",
+  "v": 4,
+  "teams": [
+   {
+    "team": "Central Michigan",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   },
+   {
+    "team": "Eastern Michigan",
+    "regular_qb": null,
+    "expected_qb": null,
+    "qb_status": "unknown",
+    "players": []
+   }
+  ],
+  "situation": [],
+  "records": [
+   {
+    "team": "Central Michigan",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   },
+   {
+    "team": "Eastern Michigan",
+    "ats": null,
+    "totals": null,
+    "source": "",
+    "date": ""
+   }
+  ]
+ }
+}
