@@ -557,3 +557,45 @@ def test_patterns_off_and_daily_cap(monkeypatch):
     assert len(out) == 6 and out.stake.sum() <= 50          # 6 bets, $48
     assert "X" not in set(out.pick)                         # model bets first
     assert set(out.pick) - {"A0"} == {"A7", "A6", "A5", "A4", "A3"}
+
+
+def test_game_views_project_every_game_and_bet_the_strong_ones():
+    # Brian (2026-11-03): "analyze the games and make a real view on the result"
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    replies = iter([
+        '```json\n{"home_pts": 38, "away_pts": 17, "spread": "home", "total": "over", '
+        '"confidence": 4, "reason": "Home offense shreds this pass defense."}\n```',
+        '```json\n{"home_pts": 24, "away_pts": 21, "spread": "away", "total": "none", '
+        '"confidence": 2, "reason": "Close game."}\n```'])
+    seen = []
+
+    class Client:
+        class beta:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    seen.append(kw)
+                    return NS(content=[NS(type="text", text=next(replies))], stop_reason="end_turn",
+                              usage=NS(input_tokens=1000, output_tokens=100))
+
+    now = pd.Timestamp("2026-11-03T12:00Z")
+    rows = []
+    for i, (h, a) in enumerate([("H1", "A1"), ("H2", "A2")]):
+        base = {"event_id": f"e{i}", "home": h, "away": a, "book": "FanDuel", "p_push": 0.0,
+                "p_win": 0.5, "ev": -0.02, "commence": f"2026-11-0{5 + i}T23:00:00Z", "sources": ""}
+        rows += [{**base, "market": "spreads", "pick": h, "point": -14.5, "price": -110, "fair": 15.0, "fair_market": 14.5},
+                 {**base, "market": "spreads", "pick": a, "point": 14.5, "price": -110, "fair": 15.0, "fair_market": 14.5},
+                 {**base, "market": "totals", "pick": "Over", "point": 48.5, "price": -110, "fair": 49.0, "fair_market": 48.5},
+                 {**base, "market": "totals", "pick": "Under", "point": 48.5, "price": -110, "fair": 49.0, "fair_market": 48.5}]
+    priced = pd.DataFrame(rows)
+    news = {}
+    bets, views = cfb_handicap.game_views(priced, {"e0": 1, "e1": 2}, ["DraftKings", "FanDuel"],
+                                          pd.DataFrame(), now, 1000, news, client=Client())
+    assert len(views) == 2 and views[0]["home_pts"] == 38
+    assert "Spread: H1 -14.5" in seen[0]["messages"][0]["content"]
+    # 38-17 covers -14.5 by 6.5 and goes over 48.5 by 6.5, at confidence 4
+    assert sorted(bets.pick) == ["H1", "Over"] and (bets.stake == 5.0).all()
+    assert bets.why.iloc[0].startswith("Handicapper's view: A1 17, H1 38.")
+    assert views[1]["bets"] == []                       # confidence 2: no bet
+    assert set(news["_reviews"]) and news["_budget"]["month"] == "2026-11"
