@@ -593,7 +593,7 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
     bets, views = cfb_handicap.game_views(priced, {"e0": 1, "e1": 2}, ["DraftKings", "FanDuel"],
                                           pd.DataFrame(), now, 1000, news, client=Client())
     assert len(views) == 2 and views[0]["home_pts"] == 38
-    assert "Spread: H1 -14.5" in seen[0]["messages"][0]["content"]
+    assert "-14.5" not in seen[0]["messages"][0]["content"]          # blind: no line shown
     # 38-17 covers -14.5 by 6.5 and goes over 48.5 by 6.5, at confidence 4
     assert sorted(bets.pick) == ["H1", "Over"] and (bets.stake == 5.0).all()
     assert bets.why.iloc[0].startswith("Handicapper's view: A1 17, H1 38.")
