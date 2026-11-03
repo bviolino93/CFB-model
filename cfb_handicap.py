@@ -420,22 +420,21 @@ VIEWS = True
 VIEW_HOURS = 120          # Tuesday's run reaches Saturday's games
 MAX_VIEWS = 30            # games per run (~1-2c each)
 VIEW_MIN_CONF = 3         # 1-5: a real lean with a football reason
-VIEW_GAP = 3.0            # projection must beat the line by this many points
+VIEW_GAP = 4.0            # blind projection must beat the line by this many points
 VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
 
 VIEW_SYSTEM = """You are a sharp college football handicapper. Project the \
-final score of this game the way an informed bettor would: how each \
-offense (passing, rushing, efficiency, pace) matches up against the other \
-defense, both teams' season scoring and points allowed, recent form and who \
-it came against, common opponents, injuries and the situation (motivation, \
-travel, weather). Use this season's evidence; the model's number and the \
-betting line are inputs, not answers. Home field is worth about 2-3 points \
-and is already in the line, so count it once. Give your honest projection \
-even when it lands near the line.
+final score of this game from the football alone: how each offense \
+(passing, rushing, efficiency, pace) matches up against the other defense, \
+both teams' season scoring and points allowed, recent form and who it came \
+against, common opponents, injuries and the situation (motivation, travel, \
+weather). You are not shown the betting line on purpose: build the number \
+yourself, possession by possession, and include home field (about 2-3 \
+points). Project the total as carefully as the margin: pace and \
+points per drive on both sides decide it.
 
-Confidence (1-5) is how sure you are that your projection is better than \
-the line: 5 = the evidence clearly says the line is off, 3 = a real lean \
-with a specific football reason, 1 = no reason to differ from the line.
+Confidence (1-5) is how sure you are of your projection: 5 = the matchup \
+clearly points one way, 3 = solid, 1 = a guess.
 
 Answer with one ```json block and nothing after it:
 {"home_pts": <number>, "away_pts": <number>, "confidence": <1-5>, \
@@ -505,18 +504,9 @@ def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, n
 def _view_brief(v: dict, g, news: dict) -> str:
     o = v["offers"]
     lines = [f"Game: {v['away']} at {v['home']}, kickoff {pd.Timestamp(v['commence']):%a %b %-d %H:%M UTC}"]
-    if "home" in o:
-        h = o["home"]
-        lines.append(f"Spread: {v['home']} {h.point:+g} ({int(h.price):+d}, {h.book})"
-                     + (f" / {v['away']} {o['away'].point:+g} ({int(o['away'].price):+d}, {o['away'].book})"
-                        if "away" in o else ""))
-        lines.append(f"Our model: {v['home']} by {h.fair:+.1f} (market consensus {h.fair_market:+.1f}; "
-                     "negative means the away team is favored)")
-    t = o.get("over") or o.get("under")
-    if t is not None:
-        lines.append(f"Total: {t.point:g} (over {int(o['over'].price) if 'over' in o else 0:+d}, "
-                     f"under {int(o['under'].price) if 'under' in o else 0:+d})")
-        lines.append(f"Our model's total: {t.fair:.1f} (market consensus {t.fair_market:.1f})")
+    # Brian (2026-11-03): "how can you be exactly on the lines?" Shown the
+    # line, the handicapper anchored to it. The brief is blind: no line, no
+    # model number; the projection is compared to the line afterward.
     row = g[g.game_id == v["game_id"]] if g is not None else []
     if len(row):
         away, home = row.iloc[0].away_team, row.iloc[0].home_team
@@ -557,7 +547,7 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
     rows, views = [], []
     for v in games:
         brief = _view_brief(v, g, news)
-        key = "view2:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
+        key = "view3:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
             if spent + cfb_news.cost() - start >= cfb_news.MONTHLY_BUDGET:
