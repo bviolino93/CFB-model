@@ -405,3 +405,223 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
     p["why"] = [f"The model leans {r.pick} by {r.lean:.1f} points (a bet needs "
                 f"{1.5 if r.market == 'spreads' else 1.0:g})." for r in p.itertuples()]
     return p
+
+
+# ----------------------------------------------------------------------
+# Game views (Brian, 2026-11-03: "analyze the games and make a real view
+# on the result"). Every game in the window gets a projected score from
+# the handicapper (form, matchup efficiency, common opponents, news, the
+# model's number and the line), a side on the spread and the total, and
+# a confidence. The strongest views are bet small; every view is
+# published (views.json) so Brian can read the whole slate.
+# Unbacktested: judged by the closing-line review like everything else.
+# ----------------------------------------------------------------------
+VIEWS = True
+VIEW_HOURS = 120          # Tuesday's run reaches Saturday's games
+MAX_VIEWS = 30            # games per run (~1-2c each)
+VIEW_MIN_CONF = 4         # 1-5; bet only 4s and 5s
+VIEW_GAP = 3.0            # projection must beat the line by this many points
+VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
+
+VIEW_SYSTEM = """You are a sharp college football handicapper. Project the \
+final score of this game the way an informed bettor would: how each \
+offense (passing, rushing, efficiency, pace) matches up against the other \
+defense, both teams' season scoring and points allowed, recent form and who \
+it came against, common opponents, injuries and the situation (motivation, \
+travel, weather). Use this season's evidence; the model's number and the \
+betting line are inputs, not answers. Then pick a side on the spread and \
+the total, or "none" when you have no real edge. Confidence is 1-5: 5 means \
+you'd bet it big, 3 means a lean, 1 means a coin flip. Most games should be \
+3 or lower. Don't invent facts that aren't in what you're given.
+
+Answer with one ```json block and nothing after it:
+{"home_pts": <number>, "away_pts": <number>, "spread": "home|away|none", \
+"total": "over|under|none", "confidence": <1-5>, \
+"reason": "<two or three sentences on the football case, plain English>"}"""
+
+
+def _month_spent(news: dict, now) -> tuple[float, float]:
+    month = f"{pd.Timestamp(now):%Y-%m}"
+    budget = news.get("_budget", {})
+    spent = max(budget.get("usd", 0.0) if budget.get("month") == month else 0.0,
+                cfb_news.ALREADY_SPENT.get(month, 0.0))
+    return spent, cfb_news.cost()
+
+
+def _view_parse(text: str) -> dict | None:
+    m = re.findall(r"```json\s*(\{.*?\})\s*```", text, re.S)
+    try:
+        d = json.loads(m[-1]) if m else None
+        hp, ap = float(d["home_pts"]), float(d["away_pts"])
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return None
+    sp = str(d.get("spread", "none")).lower()
+    tt = str(d.get("total", "none")).lower()
+    try:
+        conf = int(round(float(d.get("confidence", 1))))
+    except (TypeError, ValueError):
+        conf = 1
+    return {"home_pts": hp, "away_pts": ap,
+            "spread": sp if sp in ("home", "away") else "none",
+            "total": tt if tt in ("over", "under") else "none",
+            "confidence": max(1, min(5, conf)), "reason": str(d.get("reason", "")).strip()}
+
+
+def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, now,
+               hours: float = VIEW_HOURS) -> list[dict]:
+    """One entry per game kicking off within `hours` (soonest first), not
+    already picked, with the best DK/FD offer on each side of the spread
+    and the total."""
+    if priced is None or priced.empty:
+        return []
+    p = priced[priced.book.isin(my_books) & priced.market.isin(["spreads", "totals"])].copy()
+    kick = pd.to_datetime(p.commence, utc=True)
+    now = pd.Timestamp(now)
+    p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours))]
+    if picks is not None and len(picks) and "event_id" in picks:
+        p = p[~p.event_id.isin(set(picks.event_id))]
+    p = p.sort_values("ev", ascending=False).drop_duplicates(["event_id", "market", "pick"])
+    out = []
+    for eid, s in p.groupby("event_id"):
+        gid = ids.get(eid)
+        if gid is None:
+            continue
+        r0 = s.iloc[0]
+        offers = {}
+        for r in s.itertuples():
+            key = ("home" if r.pick == r.home else "away") if r.market == "spreads" \
+                else str(r.pick).lower()
+            offers[key] = r
+        if not offers:
+            continue
+        out.append({"event_id": eid, "game_id": gid, "home": r0.home, "away": r0.away,
+                    "commence": r0.commence, "offers": offers})
+    out.sort(key=lambda v: pd.Timestamp(v["commence"]))
+    return out[:MAX_VIEWS]
+
+
+def _view_brief(v: dict, g, news: dict) -> str:
+    o = v["offers"]
+    lines = [f"Game: {v['away']} at {v['home']}, kickoff {pd.Timestamp(v['commence']):%a %b %-d %H:%M UTC}"]
+    if "home" in o:
+        h = o["home"]
+        lines.append(f"Spread: {v['home']} {h.point:+g} ({int(h.price):+d}, {h.book})"
+                     + (f" / {v['away']} {o['away'].point:+g} ({int(o['away'].price):+d}, {o['away'].book})"
+                        if "away" in o else ""))
+        lines.append(f"Our model: {v['home']} by {h.fair:+.1f} (market consensus {h.fair_market:+.1f}; "
+                     "negative means the away team is favored)")
+    t = o.get("over") or o.get("under")
+    if t is not None:
+        lines.append(f"Total: {t.point:g} (over {int(o['over'].price) if 'over' in o else 0:+d}, "
+                     f"under {int(o['under'].price) if 'under' in o else 0:+d})")
+        lines.append(f"Our model's total: {t.fair:.1f} (market consensus {t.fair_market:.1f})")
+    row = g[g.game_id == v["game_id"]] if g is not None else []
+    if len(row):
+        away, home = row.iloc[0].away_team, row.iloc[0].home_team
+        lines += [form_text(g, away, v["commence"]), form_text(g, home, v["commence"]),
+                  common_text(g, away, home, v["commence"])]
+        prof = matchup_text(g, v["game_id"])
+        if prof:
+            lines.append("Matchup (season efficiency, opponent-adjusted): " + prof)
+        e = news.get(cfb_news.game_key(home, away, v["commence"]), {})
+        inj = [{"team": t.get("team"), "qb": t.get("expected_qb"), "qb_status": t.get("qb_status"),
+                "out": [{k: pl.get(k) for k in ("name", "position", "status")} for pl in t.get("players") or []]}
+               for t in e.get("teams") or []]
+        lines.append("Injuries: " + (json.dumps(inj) if inj else "no report"))
+        sit = cfb_news.situation(e)
+        lines.append("Situation: " + (json.dumps([{k: x.get(k) for k in ("factor", "favors", "note")}
+                                                 for x in sit]) if sit else "nothing reported"))
+        rec = cfb_news.records(e)
+        if rec:
+            lines.append("Betting records this season: " + "; ".join(
+                f"{x.get('team')}: ATS {x.get('ats') or '?'}, totals {x.get('totals') or '?'}" for x in rec))
+    return "\n".join(lines)
+
+
+def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g=None,
+               client=None, hours: float = VIEW_HOURS):
+    """Returns (bets, views): bets is a DataFrame of offer rows to add to
+    the picks (stake, win_chance, why, game_id set); views is a list of
+    every projection, for views.json."""
+    empty = priced.iloc[:0] if priced is not None else pd.DataFrame()
+    if not (HANDICAP and VIEWS):
+        return empty, []
+    now = pd.Timestamp(now)
+    games = view_games(priced, ids, my_books, picks, now, hours)
+    if not games:
+        return empty, []
+    spent, start = _month_spent(news, now)
+    done = news.setdefault("_reviews", {})
+    rows, views = [], []
+    for v in games:
+        brief = _view_brief(v, g, news)
+        key = "view:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
+        got = done.get(key)
+        if got is None:
+            if spent + cfb_news.cost() - start >= cfb_news.MONTHLY_BUDGET:
+                print("views: monthly budget reached; stopping")
+                break
+            try:
+                if client is None:
+                    if not os.environ.get("ANTHROPIC_API_KEY"):
+                        print("views: no ANTHROPIC_API_KEY, skipping")
+                        break
+                    import anthropic
+                    client = anthropic.Anthropic()
+                resp = client.beta.messages.create(
+                    model=cfb_news.MODEL, max_tokens=2000, system=VIEW_SYSTEM,
+                    messages=[{"role": "user", "content": brief}],
+                    output_config={"effort": cfb_news.EFFORT},
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+                cfb_news._tally(getattr(resp, "usage", None))
+                got = _view_parse("".join(b.text for b in resp.content if b.type == "text"))
+                if got is None:
+                    continue
+                done[key] = {**got, "at": now.isoformat()}
+            except Exception as e:          # a view is extra, never a reason to fail
+                print(f"views: failed ({type(e).__name__}: {e})")
+                continue
+        o = v["offers"]
+        margin = got["home_pts"] - got["away_pts"]
+        total = got["home_pts"] + got["away_pts"]
+        view = {"commence": str(v["commence"]), "away": v["away"], "home": v["home"],
+                "home_pts": got["home_pts"], "away_pts": got["away_pts"],
+                "spread": got["spread"], "total": got["total"], "confidence": got["confidence"],
+                "reason": got["reason"], "bets": []}
+        if "home" in o:
+            view["line"] = float(o["home"].point)
+        t = o.get("over") or o.get("under")
+        if t is not None:
+            view["line_total"] = float(t.point)
+        score = f"{v['away']} {got['away_pts']:g}, {v['home']} {got['home_pts']:g}"
+        if got["confidence"] >= VIEW_MIN_CONF:
+            side = got["spread"]
+            if side in o:
+                r = o[side]
+                # covers by: projected margin for the side plus its points
+                by = (margin if side == "home" else -margin) + float(r.point)
+                if by >= VIEW_GAP:
+                    rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
+                                    f"(Covers by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
+                    view["bets"].append(f"{r.pick} {float(r.point):+g}")
+            side = got["total"]
+            if side in o:
+                r = o[side]
+                by = (total - float(r.point)) * (1 if side == "over" else -1)
+                if by >= VIEW_GAP:
+                    rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
+                                    f"({side.title()} by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
+                    view["bets"].append(f"{r.pick} {float(r.point):g}")
+        views.append(view)
+        print(f"view: {score} | spread {got['spread']} total {got['total']} "
+              f"conf {got['confidence']} | bets {view['bets']}")
+    news["_budget"] = {"month": f"{now:%Y-%m}", "usd": round(spent + cfb_news.cost() - start, 4)}
+    if not rows:
+        return empty, views
+    bets = pd.DataFrame([r._asdict() for r, _ in rows])
+    bets = bets.drop(columns=["Index"], errors="ignore")
+    bets["game_id"] = [ids.get(e) for e in bets.event_id]
+    bets["stake"] = round(bankroll * VIEW_STAKE, 2)
+    bets["win_chance"] = bets.p_win / (1 - bets.p_push)
+    bets["why"] = [w for _, w in rows]
+    return bets, views

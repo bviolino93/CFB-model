@@ -979,6 +979,8 @@ def main():
     ap.add_argument("--closes", default="site/closes.json",
                     help="last consensus line seen before each game (for CLV)")
     ap.add_argument("--lines-csv", default="")
+    ap.add_argument("--views", default="site/views.json",
+                    help="every game's projected score and side (handicapper views)")
     ap.add_argument("--board", default="site/board.json",
                     help="every game in the next 24h: the model's side and lean")
     a = ap.parse_args()
@@ -1024,23 +1026,46 @@ def main():
     # Brian (2026-11-01): "let's start thinking of things subjectively". The
     # handicapper also reads the model's leans with team form and common
     # opponents, and can bet the ones it likes, small.
-    lean_rows = cfb_handicap.lean_candidates(info.get("priced"), lean, ids, books, picks,
-                                             now, a.bankroll)
-    if len(lean_rows):
-        # Brian (2026-11-01): "look at all the info including injuries". The
-        # games the handicapper reads get the injury/situation lookup too,
-        # inside the same per-run cap and monthly stop.
+    if cfb_handicap.VIEWS:
+        # Brian (2026-11-03): "analyze the games and make a real view on the
+        # result". Every game in the window gets a projected score and a
+        # side; the strongest views are bet small. News is looked up for
+        # those games first (same per-run cap and monthly stop).
         sg = g.set_index("game_id")
-        look = [{"home": sg.loc[r.game_id, "home_team"], "away": sg.loc[r.game_id, "away_team"],
-                 "kickoff": r.commence} for r in lean_rows.itertuples() if r.game_id in sg.index]
+        vg = cfb_handicap.view_games(info.get("priced"), ids, books, picks, now)
+        look = [{"home": sg.loc[v["game_id"], "home_team"], "away": sg.loc[v["game_id"], "away_team"],
+                 "kickoff": v["commence"]} for v in vg if v["game_id"] in sg.index]
         try:
             news.update(cfb_news.fetch(look, news, now))
         except Exception as e:          # news is a check, never a reason to fail
-            print(f"news: lean lookups failed ({type(e).__name__}: {e})")
-        lean_rows = attach_news(drop_red_flags(lean_rows, g, news), g, news, starters)
-        lean_rows = cfb_handicap.review(lean_rows, news, past, now, g=g, leans=True)
+            print(f"news: view lookups failed ({type(e).__name__}: {e})")
+        view_rows, views = cfb_handicap.game_views(info.get("priced"), ids, books, picks, now,
+                                                   a.bankroll, news, g=g)
+        os.makedirs(os.path.dirname(a.views) or ".", exist_ok=True)
+        with open(a.views, "w") as fh:
+            json.dump({"updated": now.isoformat(), "views": views}, fh, indent=1, default=str)
+        if len(view_rows):
+            view_rows = attach_news(drop_red_flags(view_rows, g, news), g, news, starters)
+            if len(view_rows):
+                picks = pd.concat([picks, view_rows], ignore_index=True)
+    else:
+        lean_rows = cfb_handicap.lean_candidates(info.get("priced"), lean, ids, books, picks,
+                                                 now, a.bankroll)
         if len(lean_rows):
-            picks = pd.concat([picks, lean_rows], ignore_index=True)
+            # Brian (2026-11-01): "look at all the info including injuries". The
+            # games the handicapper reads get the injury/situation lookup too,
+            # inside the same per-run cap and monthly stop.
+            sg = g.set_index("game_id")
+            look = [{"home": sg.loc[r.game_id, "home_team"], "away": sg.loc[r.game_id, "away_team"],
+                     "kickoff": r.commence} for r in lean_rows.itertuples() if r.game_id in sg.index]
+            try:
+                news.update(cfb_news.fetch(look, news, now))
+            except Exception as e:          # news is a check, never a reason to fail
+                print(f"news: lean lookups failed ({type(e).__name__}: {e})")
+            lean_rows = attach_news(drop_red_flags(lean_rows, g, news), g, news, starters)
+            lean_rows = cfb_handicap.review(lean_rows, news, past, now, g=g, leans=True)
+            if len(lean_rows):
+                picks = pd.concat([picks, lean_rows], ignore_index=True)
     with open(a.news, "w") as fh:
         json.dump(news, fh, indent=1)
     picks = cap_daily(picks, ledger.load(a.history), a.bankroll)
