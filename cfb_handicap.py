@@ -418,7 +418,7 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
 # ----------------------------------------------------------------------
 VIEWS = True
 VIEW_HOURS = 120          # Tuesday's run reaches Saturday's games
-MAX_VIEWS = 30            # games per run (~1-2c each)
+MAX_VIEWS = 90            # every FBS game in the window (~1c each; Brian 2026-11-03: "only 30 games?")
 VIEW_MIN_CONF = 3         # 1-5: a real lean with a football reason
 VIEW_GAP = 4.0            # blind projection must beat the line by this many points
 VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
