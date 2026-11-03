@@ -419,7 +419,7 @@ def lean_candidates(priced: pd.DataFrame, lean_pts, ids: dict, my_books, picks: 
 VIEWS = True
 VIEW_HOURS = 120          # Tuesday's run reaches Saturday's games
 MAX_VIEWS = 30            # games per run (~1-2c each)
-VIEW_MIN_CONF = 4         # 1-5; bet only 4s and 5s
+VIEW_MIN_CONF = 3         # 1-5: a real lean with a football reason
 VIEW_GAP = 3.0            # projection must beat the line by this many points
 VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
 
@@ -429,14 +429,16 @@ offense (passing, rushing, efficiency, pace) matches up against the other \
 defense, both teams' season scoring and points allowed, recent form and who \
 it came against, common opponents, injuries and the situation (motivation, \
 travel, weather). Use this season's evidence; the model's number and the \
-betting line are inputs, not answers. Then pick a side on the spread and \
-the total, or "none" when you have no real edge. Confidence is 1-5: 5 means \
-you'd bet it big, 3 means a lean, 1 means a coin flip. Most games should be \
-3 or lower. Don't invent facts that aren't in what you're given.
+betting line are inputs, not answers. Home field is worth about 2-3 points \
+and is already in the line, so count it once. Give your honest projection \
+even when it lands near the line.
+
+Confidence (1-5) is how sure you are that your projection is better than \
+the line: 5 = the evidence clearly says the line is off, 3 = a real lean \
+with a specific football reason, 1 = no reason to differ from the line.
 
 Answer with one ```json block and nothing after it:
-{"home_pts": <number>, "away_pts": <number>, "spread": "home|away|none", \
-"total": "over|under|none", "confidence": <1-5>, \
+{"home_pts": <number>, "away_pts": <number>, "confidence": <1-5>, \
 "reason": "<two or three sentences on the football case, plain English>"}"""
 
 
@@ -555,7 +557,7 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
     rows, views = [], []
     for v in games:
         brief = _view_brief(v, g, news)
-        key = "view:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
+        key = "view2:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
             if spent + cfb_news.cost() - start >= cfb_news.MONTHLY_BUDGET:
@@ -584,6 +586,13 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
         o = v["offers"]
         margin = got["home_pts"] - got["away_pts"]
         total = got["home_pts"] + got["away_pts"]
+        # the sides follow from the projected score (the model's own words
+        # for a side contradicted its score too often)
+        if "home" in o:
+            got["spread"] = "home" if margin + float(o["home"].point) > 0 else "away"
+        tl = o.get("over") or o.get("under")
+        if tl is not None:
+            got["total"] = "over" if total > float(tl.point) else "under"
         view = {"commence": str(v["commence"]), "away": v["away"], "home": v["home"],
                 "home_pts": got["home_pts"], "away_pts": got["away_pts"],
                 "spread": got["spread"], "total": got["total"], "confidence": got["confidence"],

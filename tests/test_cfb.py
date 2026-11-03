@@ -567,7 +567,7 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
         '```json\n{"home_pts": 38, "away_pts": 17, "spread": "home", "total": "over", '
         '"confidence": 4, "reason": "Home offense shreds this pass defense."}\n```',
         '```json\n{"home_pts": 24, "away_pts": 21, "spread": "away", "total": "none", '
-        '"confidence": 2, "reason": "Close game."}\n```'])
+        '"confidence": 1, "reason": "Close game."}\n```'])
     seen = []
 
     class Client:
@@ -597,5 +597,5 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
     # 38-17 covers -14.5 by 6.5 and goes over 48.5 by 6.5, at confidence 4
     assert sorted(bets.pick) == ["H1", "Over"] and (bets.stake == 5.0).all()
     assert bets.why.iloc[0].startswith("Handicapper's view: A1 17, H1 38.")
-    assert views[1]["bets"] == []                       # confidence 2: no bet
+    assert views[1]["bets"] == []                       # confidence 1: no bet
     assert set(news["_reviews"]) and news["_budget"]["month"] == "2026-11"
