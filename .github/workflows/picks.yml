@@ -21,6 +21,10 @@ name: College picks
 
 on:
   schedule:
+    # Hourly catch-up: GitHub often starts scheduled runs late or drops
+    # them. This wakes every hour and .github/due.py runs the picks only
+    # when the latest planned time below hasn't been covered yet.
+    - cron: "29 * * 8-12,1 *"
     - cron: "0 22 * 8-12,1 0"    # Sunday 22:00 UTC, once next Saturday's lines are up
     - cron: "17 14 * 8-12,1 1"   # Monday 14:17 UTC: early lines, where the spread edge is
     - cron: "0 20 * 8-12,1 2"    # Tuesday 20:00 UTC
@@ -41,13 +45,29 @@ permissions:
   issues: write
   pages: write
   id-token: write
-
-concurrency:
-  group: picks
-  cancel-in-progress: false
+  actions: read
 
 jobs:
+  due:
+    # Is a planned run due? Manual runs always go.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # the planned run times above, as cron weekday@HH:MM UTC
+          SLOTS: "0@22:00 1@14:17 2@20:00 4@19:00 6@15:00"
+        run: python3 .github/due.py
   picks:
+    needs: due
+    if: needs.due.outputs.run == 'true'
+    concurrency:
+      group: picks
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
