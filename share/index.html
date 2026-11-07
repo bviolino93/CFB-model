@@ -375,6 +375,23 @@ function betType(r) {
 }
 const breakEven = p => p < 0 ? -p / (100 - p) : 100 / (p + 100);
 const pct = x => (100 * x).toFixed(0) + "%";
+// College bets come from the handicapper's projected score, so their win
+// chance comes from how far that score clears the line, not from the math
+// model (kept as model_win_chance). HC_SD: how far real results land from a
+// projection, in points (about 16 around a closing line, plus the
+// projection's own error); a 4-point cushion works out to about 58%.
+const HC_SD = 20;
+function normCdf(z) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z / 2);
+  return z >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
+function handicap(b) {
+  const m = /^Handicapper's view/.test(b.why || "") && /(?:Covers|Over|Under) by about (\d+(?:\.\d+)?)/.exec(b.why);
+  if (!m) return b;
+  const by = parseFloat(m[1]);
+  return { ...b, hc_by: by, model_win_chance: b.win_chance, win_chance: normCdf(by / HC_SD) };
+}
 const LEAGUES = [["nfl", "NFL"], ["cfb", "College"]];
 
 let TIPS = [];
@@ -400,17 +417,18 @@ function edgeChart(up) {
   const ticks = []; for (let v = lo; v <= hi + 1e-9; v += 0.05) ticks.push([X(v), v]);
   const leagues = new Set(up.map(r => r.league));
   return `<div class="viz${ANIM ? " an" : ""}"><div class="k">The edge on each pick</div>
-    <div class="sub">Hollow dot: how often the bet needs to win. Solid dot: how often our model says it wins. Bigger gap, better bet.</div>
-    ${legend([["ring", "Needed to break even"], ...LEAGUES.filter(([k]) => leagues.has(k)).map(([k, n]) => ["disc", `Model (${n})`, k])])}
+    <div class="sub">Hollow dot: how often the bet needs to win at its price. Solid dot: how often we expect it to win (college: from the handicapper's projected score; NFL: from the model). Number: the gap in win chance. Bigger gap, better bet.</div>
+    ${legend([["ring", "Needed to break even"], ...LEAGUES.filter(([k]) => leagues.has(k)).map(([k, n]) => ["disc", `${up.some(r => r.league === k && r.hc_by != null) ? "Handicapper" : "Model"} (${n})`, k])])}
     <div style="margin-top:6px">` + rows.map(({ r, be, wc }, i) => {
       const a = Math.min(X(be), X(wc)), b = Math.max(X(be), X(wc));
-      return `<div class="vrow lg-${r.league}" style="--d:${(i * 0.09).toFixed(2)}s" ${tipAttr([[`${betText(r)} ${fmtPrice(r.price)}`], [pct(wc), "model's win chance"],
-          [pct(be), "needed at this price"], [signed(100 * (wc - be)) + " pts", "edge"], [units(r.stake).toFixed(1) + "u", `at ${r.book}`],
+      return `<div class="vrow lg-${r.league}" style="--d:${(i * 0.09).toFixed(2)}s" ${tipAttr([[`${betText(r)} ${fmtPrice(r.price)}`], [pct(wc), r.hc_by != null ? `handicapper's win chance (projected to clear the line by about ${r.hc_by})` : "model's win chance"],
+          [pct(be), "needed at this price"], [signed(100 * (wc - be), 0) + "%", "edge in win chance"], [units(r.stake).toFixed(1) + "u", `at ${r.book}`],
+          ...(r.hc_by != null && r.model_win_chance != null ? [[pct(r.model_win_chance), "math model's win chance"]] : []),
           ["", `${r.away} @ ${r.home}`]], r.league)}>
         <span class="l">${esc(shortBet(r))}</span>
         <div class="track">${grid(ticks)}<i class="seg" style="left:${a}%;width:${b - a}%"></i>
           <i class="be" style="left:${X(be)}%"></i><i class="mo" style="left:${X(wc)}%;--from:${X(be)}%"></i></div>
-        <span class="v">${signed(100 * (wc - be))}<small> pts</small></span></div>`;
+        <span class="v">${signed(100 * (wc - be), 0)}<small>%</small></span></div>`;
     }).join("") + axisRow(ticks, pct, "58px") + `</div></div>`;
 }
 
@@ -496,7 +514,7 @@ async function load() {
     const add = b => {
       const id = [b.commence, b.home, b.market].join("|");
       if (seen.has(id)) return; seen.add(id);
-      const row = { ...b, league: src.key };
+      const row = handicap({ ...b, league: src.key });
       if (b.result) out.graded.push(row);
       else if (new Date(b.commence).getTime() > now && !b.pulled) out.upcoming.push(row);
     };
