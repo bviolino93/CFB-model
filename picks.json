@@ -1,0 +1,672 @@
+{
+  "updated": "Sat Nov 7, 16:25 UTC",
+  "picks": [
+    {
+      "away": "Old Dominion Monarchs",
+      "home": "Coastal Carolina Chanticleers",
+      "commence": "2026-11-07T18:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 44.5,
+      "price": 100,
+      "book": "FanDuel",
+      "stake": 7.86,
+      "win_chance": 0.5314494074749316,
+      "ev": 0.06289881494986327,
+      "why": "News: Old Dominion's backup QB makes his first start. A backup QB's first start is priced a point worse (history: lines overrate that team by about a point); other starters missing their first game, half a point each, and on totals a missing offensive starter lowers the total half a point, a missing defender raises it (educated guesses). Handicapper: Old Dominion's offense is among the worst in the country (#222 EPA/play, #229 success rate, 16.3 points a game) and now starts a backup QB for the first time with its WR Harrell out again. That makes it hard for the Monarchs to score much, even against a Coastal defense that is mediocre (#124 EPA allowed, weak run D). ODU's defense is solid (#45-55 EPA allowed) and it plays fast (#15 in drives), but its blowout losses came mostly from its own offense's failures. The motivation edge goes to Coastal Carolina, whose 26.8 points a game looks like the bulk of the scoring. At 44.5, ODU likely lands in the teens and Coastal in the high 20s, which fits the under, though the edge is modest.",
+      "game_id": 401869945,
+      "injuries": [
+        {
+          "team": "Old Dominion",
+          "name": "Quinn Henicle",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Potter 1st start"
+        },
+        {
+          "team": "Old Dominion",
+          "name": "JJ Harrell",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Out for a fifth consecutive week per Sun"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "Coastal Carolina",
+          "red_flag": false,
+          "note": "ODU is 2-7 and cannot reach six wins; lost its QB and top rusher to the portal and its OC to Memphis",
+          "source": "https://sports.yahoo.com/articles/old-dominion-vs-coastal-carolina-103915235.html",
+          "date": "2026-11-07"
+        }
+      ]
+    },
+    {
+      "away": "Iowa State Cyclones",
+      "home": "Baylor Bears",
+      "commence": "2026-11-07T17:00:00Z",
+      "market": "spreads",
+      "pick": "Baylor Bears",
+      "point": -10.0,
+      "price": -108,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.484931506849315,
+      "ev": -0.06452572108236704,
+      "why": "Handicapper's view: Iowa State Cyclones 19, Baylor Bears 33. Baylor's defense is elite (top 15 in EPA allowed against both the pass and the run, 1.08 points per drive allowed), and Iowa State's offense has been inconsistent on the road, scoring 10 at BYU and 3 at Arizona. Baylor's offense is about even with Iowa State's, and its defense is much better, so it should score on the weak Iowa State run defense. Baylor also gets home field and a possible interim-coach boost. Iowa State's passing game should still get some points, though. The pace is moderate, around 12 drives a side, which puts the total in the low 50s. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401856853,
+      "injuries": [
+        {
+          "team": "Iowa State",
+          "name": "Omari Hayes",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Starting WR questionable; backup QB Conn"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "coaching",
+          "favors": "Baylor",
+          "red_flag": false,
+          "note": "Baylor fired Dave Aranda last month; interim Joe Klanderman in 2nd game after a win at UCF; one win from bowl eligibility",
+          "source": "https://247sports.com/college/baylor/longformarticle/iowa-state-football-pick-and-preview-at-baylor-292245772/",
+          "date": "2026-11-07"
+        },
+        {
+          "factor": "letdown",
+          "favors": "Baylor",
+          "red_flag": false,
+          "note": "Iowa State coming off emotional 2-point win over Oklahoma State; preview says it can cut either way",
+          "source": "https://sports.yahoo.com/articles/2026-game-ix-iowa-state-210327580.html",
+          "date": "2026-11-05"
+        }
+      ]
+    },
+    {
+      "away": "BYU Cougars",
+      "home": "Utah Utes",
+      "commence": "2026-11-07T17:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 49.5,
+      "price": -110,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5008532423208191,
+      "ev": -0.04382562829661818,
+      "why": "Handicapper's view: BYU Cougars 24, Utah Utes 30. Utah has the better offense (#1 in success rate, #2 in rushing EPA) and a top-5 run defense. That run defense is the key against a BYU team that relies on the pass. BYU's slow pace (10.4 drives a game) trims possessions to about 21 combined. With Utah's home edge of about 3 points, I project a Utah win by roughly a touchdown with a total in the mid-50s. BYU's passing game and a good defense keep it competitive. LJ Martin being questionable is a minor negative for BYU. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401856849,
+      "injuries": [
+        {
+          "team": "BYU",
+          "name": "LJ Martin",
+          "pos": "RB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Ankle; was doubtful on Wed report, then "
+        },
+        {
+          "team": "BYU",
+          "name": "Evan Johnson",
+          "pos": "DB",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Listed doubtful on Big 12 availability r"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Arkansas Razorbacks",
+      "home": "Auburn Tigers",
+      "commence": "2026-11-07T17:45:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 54.5,
+      "price": -115,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5166816952209197,
+      "ev": -0.03402987415219366,
+      "why": "Handicapper's view: Arkansas Razorbacks 19, Auburn Tigers 27. Auburn has the better offense (3.05 points per drive, #43, vs 2.61 for Arkansas) and the better defense (1.76 allowed per drive vs 2.04). Both teams run about 11 drives a game, so the total stays moderate at roughly 46. Arkansas has slumped lately (lost 7-34 at Texas A&M and 10-34 to Missouri), and Auburn's recent losses were to stronger teams. Home field adds about 2-3 points, which gives Auburn about a 7-8 point edge. (Under by about 8; confidence 3/5, small stake.)",
+      "game_id": 401856738,
+      "injuries": [
+        {
+          "team": "Auburn",
+          "name": "Bryce Deas",
+          "pos": "LB",
+          "status": "Out",
+          "pts": null,
+          "note": "Official availability report lists him o"
+        },
+        {
+          "team": "Auburn",
+          "name": "Sylvester Smith-Reed",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "Safety, out per availability report. Sta"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Marshall Thundering Herd",
+      "home": "Georgia Southern Eagles",
+      "commence": "2026-11-07T20:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 54.5,
+      "price": -106,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5367647058823529,
+      "ev": 0.04314650388457264,
+      "why": "Handicapper's view: Marshall Thundering Herd 21, Georgia Southern Eagles 27. Georgia Southern has the better offense (EPA/play 0.17 vs 0.10, points per drive 2.78 vs 2.20) and the better defense (1.88 points per drive allowed vs 2.19), and it gets home field. Marshall's defense is weak against both the run and the pass. Georgia Southern's slow pace (10.5 drives a game) and its recent low-scoring wins hold the total down to about 48. Marshall's bowl motivation and its good offensive success rate keep it within a touchdown. (Under by about 6; confidence 3/5, small stake.)",
+      "game_id": 401869951,
+      "injuries": [],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "Marshall",
+          "red_flag": false,
+          "note": "Marshall can gain bowl eligibility with a win; its QB situation has been unsettled.",
+          "source": "https://wvmetronews.com/2026/11/07/marshall-at-georgia-southern-what-to-watch-for-3/",
+          "date": "2026-11-07"
+        }
+      ]
+    },
+    {
+      "away": "Rice Owls",
+      "home": "North Texas Mean Green",
+      "commence": "2026-11-07T21:00:00Z",
+      "market": "spreads",
+      "pick": "North Texas Mean Green",
+      "point": -15.5,
+      "price": -110,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.49783549783549785,
+      "ev": -0.049586776859504134,
+      "why": "Handicapper's view: Rice Owls 21, North Texas Mean Green 41. North Texas has a top-5 offense by EPA in both passing and rushing and plays fast at 12.1 drives a game. Rice's pass defense is weak, so North Texas should score at about 3.3 points per drive on roughly 11.5 drives. Rice's offense is one-dimensional, with a bottom-5 passing EPA and a decent run game, and it plays slowly, which caps its drives. Rice should still score some against a poor North Texas pass defense, but North Texas wins comfortably at home. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401862821,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Northern Illinois Huskies",
+      "home": "San Jose State Spartans",
+      "commence": "2026-11-07T21:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 52.5,
+      "price": -112,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5050900548159749,
+      "ev": -0.043936681955476065,
+      "why": "Handicapper's view: Northern Illinois Huskies 14, San Jose State Spartans 27. San Jose State has a clear defensive edge: it is #43 in points per drive allowed, while Northern Illinois is #231 and #234 against the run. Northern Illinois's one real strength is its rushing offense, but San Jose State's run defense is solid. The Spartans' offense is poor, though, so I expect them to win with about 12 drives and roughly 2.2 points per drive against that defense. Northern Illinois is slow-paced and inefficient, so I project about 11 drives and 1.3 points per drive against the San Jose State defense. Home field adds a couple of points. (Under by about 12; confidence 3/5, small stake.)",
+      "game_id": 401864534,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Vanderbilt Commodores",
+      "home": "Mississippi State Bulldogs",
+      "commence": "2026-11-07T21:15:00Z",
+      "market": "spreads",
+      "pick": "Mississippi State Bulldogs",
+      "point": -3.0,
+      "price": 100,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.39197530864197533,
+      "ev": -0.20689655172413784,
+      "why": "Handicapper's view: Vanderbilt Commodores 21, Mississippi State Bulldogs 30. Mississippi State has the better offense by efficiency (EPA/play 0.28 vs 0.19, points per drive 3.43 vs 2.46) and gets home field. Vanderbilt has lost five straight and allows 30 a game, but Mississippi State has scored 0, 15 and 3 in its last three against stronger opponents, so I trim its output below its season average. Both teams play at a slow-to-middling pace of about 10-11 drives, which keeps the total around 51. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401856742,
+      "injuries": [
+        {
+          "team": "Vanderbilt",
+          "name": "Blaze Berlowitz",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out on Nov 5 availability report;"
+        },
+        {
+          "team": "Vanderbilt",
+          "name": "Gunner Givens",
+          "pos": "OL",
+          "status": "Out",
+          "pts": null,
+          "note": "Out per Nov 5 report; starter status unk"
+        },
+        {
+          "team": "Vanderbilt",
+          "name": "Nikhil Jefferson",
+          "pos": "DL",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Questionable per Nov 5 report; starter s"
+        },
+        {
+          "team": "Mississippi State",
+          "name": "Kamario Taylor",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Swann 1st start"
+        },
+        {
+          "team": "Mississippi State",
+          "name": "Tyler Lockhart",
+          "pos": "LB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Questionable on Nov 5 report; starter st"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "under",
+          "red_flag": false,
+          "note": "Under is 7-0 in the last 7 meetings and MSU's offense has slumped without Taylor; total 48.5",
+          "source": "https://www.covers.com/sport/football/ncaaf/matchup/378737/picks",
+          "date": "2026-11-07"
+        }
+      ]
+    },
+    {
+      "away": "Rutgers Scarlet Knights",
+      "home": "Wisconsin Badgers",
+      "commence": "2026-11-07T21:15:00Z",
+      "market": "spreads",
+      "pick": "Rutgers Scarlet Knights",
+      "point": 19.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5122641509433963,
+      "ev": -0.022041166380788957,
+      "why": "Handicapper's view: Rutgers Scarlet Knights 14, Wisconsin Badgers 27. Wisconsin's defense is elite (top 10 in points per drive allowed and run defense), and Rutgers is down its starting QB, a top WR and some OL. Rutgers' defense is among the worst in the country, especially against the run, which suits Wisconsin's best unit, its rushing offense. Both teams play slow (about 10-11 drives), so I project around 41 points total with Wisconsin winning by double digits at home. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401858517,
+      "injuries": [
+        {
+          "team": "Rutgers",
+          "name": "Dylan Lonergan",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "Surace starting"
+        },
+        {
+          "team": "Rutgers",
+          "name": "KJ Duff",
+          "pos": "WR",
+          "status": "Doubtful",
+          "pts": -0.5,
+          "note": "Team's leading receiver: 45 catches, 774"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Tyler Needham",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Starting left tackle"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Kwabena Asamoah",
+          "pos": "OL",
+          "status": "Out",
+          "pts": null,
+          "note": "Out for game; may be the starting right "
+        },
+        {
+          "team": "Rutgers",
+          "name": "J'Dan Burnett",
+          "pos": "DL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "EDGE, doubtful"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Zilan Williams",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "CB out for season"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Kevin Heywood",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": -0.5,
+          "note": "Starting tackle, hurt vs Iowa"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Nate Palmer",
+          "pos": "RB",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Has missed the last few contests"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Barrett Nelson",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Missed last week; started the week befor"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Cai Bates",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "CB out"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Emmett Bork",
+          "pos": "TE",
+          "status": "Out",
+          "pts": null,
+          "note": "TE out"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Wisconsin",
+          "red_flag": false,
+          "note": "Rutgers missing its QB, top WR and OL starters; Wisconsin line also shuffled",
+          "source": "https://badgerofhonor.com/the-wisconsin-vs-rutgers-injury-report-has-some-bombshells-dropped-on-both-sides",
+          "date": "2026-11-05"
+        }
+      ]
+    },
+    {
+      "away": "Rutgers Scarlet Knights",
+      "home": "Wisconsin Badgers",
+      "commence": "2026-11-07T21:15:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 45.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4970760233918129,
+      "ev": -0.051036682615629936,
+      "why": "Handicapper's view: Rutgers Scarlet Knights 14, Wisconsin Badgers 27. Wisconsin's defense is elite (top 10 in points per drive allowed and run defense), and Rutgers is down its starting QB, a top WR and some OL. Rutgers' defense is among the worst in the country, especially against the run, which suits Wisconsin's best unit, its rushing offense. Both teams play slow (about 10-11 drives), so I project around 41 points total with Wisconsin winning by double digits at home. (Under by about 4; confidence 3/5, small stake.)",
+      "game_id": 401858517,
+      "injuries": [
+        {
+          "team": "Rutgers",
+          "name": "Dylan Lonergan",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "Surace starting"
+        },
+        {
+          "team": "Rutgers",
+          "name": "KJ Duff",
+          "pos": "WR",
+          "status": "Doubtful",
+          "pts": -0.5,
+          "note": "Team's leading receiver: 45 catches, 774"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Tyler Needham",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Starting left tackle"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Kwabena Asamoah",
+          "pos": "OL",
+          "status": "Out",
+          "pts": null,
+          "note": "Out for game; may be the starting right "
+        },
+        {
+          "team": "Rutgers",
+          "name": "J'Dan Burnett",
+          "pos": "DL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "EDGE, doubtful"
+        },
+        {
+          "team": "Rutgers",
+          "name": "Zilan Williams",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "CB out for season"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Kevin Heywood",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": -0.5,
+          "note": "Starting tackle, hurt vs Iowa"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Nate Palmer",
+          "pos": "RB",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Has missed the last few contests"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Barrett Nelson",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Missed last week; started the week befor"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Cai Bates",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "CB out"
+        },
+        {
+          "team": "Wisconsin",
+          "name": "Emmett Bork",
+          "pos": "TE",
+          "status": "Out",
+          "pts": null,
+          "note": "TE out"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Wisconsin",
+          "red_flag": false,
+          "note": "Rutgers missing its QB, top WR and OL starters; Wisconsin line also shuffled",
+          "source": "https://badgerofhonor.com/the-wisconsin-vs-rutgers-injury-report-has-some-bombshells-dropped-on-both-sides",
+          "date": "2026-11-05"
+        }
+      ]
+    },
+    {
+      "away": "Sam Houston State Bearkats",
+      "home": "Jacksonville State Gamecocks",
+      "commence": "2026-11-08T00:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 45.5,
+      "price": -105,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4970760233918129,
+      "ev": -0.029518240044555832,
+      "why": "Handicapper's view: Sam Houston State Bearkats 11, Jacksonville State Gamecocks 30. Jacksonville State has a top-35 offense by EPA and success rate against a Sam Houston offense ranked near the bottom nationally, at about 1.1 points per drive. Sam Houston's defense is decent by EPA, but it has been worn down by a bad offense, and its QB situation is shaky. Jacksonville State plays at a slow pace of under 10 drives a game, which caps the total. I project roughly 9-10 drives each, with home field adding 2-3 points to the margin. (Under by about 4; confidence 4/5, small stake.)",
+      "game_id": 401871075,
+      "injuries": [
+        {
+          "team": "Sam Houston",
+          "name": "Hunter Watson",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "backup 1st start"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Air Force Falcons",
+      "home": "Army Black Knights",
+      "commence": "2026-11-08T00:30:00Z",
+      "market": "spreads",
+      "pick": "Army Black Knights",
+      "point": -3.5,
+      "price": -112,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4898949070331447,
+      "ev": -0.07269892597297611,
+      "why": "Handicapper's view: Air Force Falcons 24, Army Black Knights 33. Both teams run heavily and play at the slowest pace in the country (about 9.5 and 9.8 drives a game), but both defenses are poor against the run and the pass. Army's offense is better (3.56 points per drive against 3.27) and it has home field. I project about 10 drives each at roughly 3.3 points per drive for Army and 2.4 for Air Force, whose passing game is the worst in the country. That puts the total in the mid-50s. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401862823,
+      "injuries": [
+        {
+          "team": "Air Force",
+          "name": "Evan Medders",
+          "pos": "QB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Turf toe; not ruled out. He started the "
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "over",
+          "red_flag": false,
+          "note": "Both service academy teams are weak on defense and run heavily. Covers picks the over at 47.5. Army games are over 6 of 8.",
+          "source": "https://www.covers.com/ncaaf/air-force-vs-army-prediction-picks-odds-nov-7-2026",
+          "date": "2026-11-06"
+        }
+      ]
+    },
+    {
+      "away": "Air Force Falcons",
+      "home": "Army Black Knights",
+      "commence": "2026-11-08T00:30:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 43.5,
+      "price": -114,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5139344262295082,
+      "ev": -0.03524590163934421,
+      "why": "Handicapper's view: Air Force Falcons 24, Army Black Knights 33. Both teams run heavily and play at the slowest pace in the country (about 9.5 and 9.8 drives a game), but both defenses are poor against the run and the pass. Army's offense is better (3.56 points per drive against 3.27) and it has home field. I project about 10 drives each at roughly 3.3 points per drive for Army and 2.4 for Air Force, whose passing game is the worst in the country. That puts the total in the mid-50s. (Over by about 14; confidence 3/5, small stake.)",
+      "game_id": 401862823,
+      "injuries": [
+        {
+          "team": "Air Force",
+          "name": "Evan Medders",
+          "pos": "QB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Turf toe; not ruled out. He started the "
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "over",
+          "red_flag": false,
+          "note": "Both service academy teams are weak on defense and run heavily. Covers picks the over at 47.5. Army games are over 6 of 8.",
+          "source": "https://www.covers.com/ncaaf/air-force-vs-army-prediction-picks-odds-nov-7-2026",
+          "date": "2026-11-06"
+        }
+      ]
+    },
+    {
+      "away": "Liberty Flames",
+      "home": "New Mexico State Aggies",
+      "commence": "2026-11-08T01:00:00Z",
+      "market": "spreads",
+      "pick": "Liberty Flames",
+      "point": -15.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5063868613138687,
+      "ev": -0.033261446582614373,
+      "why": "Handicapper's view: Liberty Flames 35, New Mexico State Aggies 12. Liberty is much stronger on both sides of the ball, with a top-30 offense in EPA and success rate and a top-30 defense. New Mexico State's passing offense is among the worst in the country (#223 in EPA/play) and its points per drive is 1.58. Liberty's slow pace (about 10.4 drives a game) limits the total, but at roughly 3.0 points per drive against an average defense it should still reach the mid-30s, while NMSU gets about 1.1 points per drive against Liberty's defense for roughly 12. I include about 2.5 points of home field for NMSU. (Covers by about 8; confidence 3/5, small stake.)",
+      "game_id": 401870795,
+      "injuries": [],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Liberty",
+          "red_flag": false,
+          "note": "NMSU may change QB again; Damante started last four games; Liberty -16.5, total 46.5",
+          "source": "https://sports.yahoo.com/articles/aggies-weighing-quarterback-change-against-040700954.html",
+          "date": "2026-11-07"
+        }
+      ]
+    },
+    {
+      "away": "Wyoming Cowboys",
+      "home": "UNLV Rebels",
+      "commence": "2026-11-08T03:30:00Z",
+      "market": "spreads",
+      "pick": "UNLV Rebels",
+      "point": -3.5,
+      "price": -105,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4690265486725664,
+      "ev": -0.08428150021070369,
+      "why": "Handicapper's view: Wyoming Cowboys 17, UNLV Rebels 26. Wyoming has the slowest pace in the country (9.2 drives a game) and a weak passing offense (#214 in EPA/play), so it will struggle against UNLV's good pass defense (#46). The Cowboys' one real strength is the run game, which meets a middling UNLV run defense. UNLV is a bit better on both sides of the ball and gets about 2.5 points of home field, but its offense is only average. Wyoming's slow pace should hold the game to roughly 11 drives per team, so I project a modest total of about 43. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401864535,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Wyoming Cowboys",
+      "home": "UNLV Rebels",
+      "commence": "2026-11-08T03:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 49.5,
+      "price": -115,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.51698670605613,
+      "ev": -0.03345963650375705,
+      "why": "Handicapper's view: Wyoming Cowboys 17, UNLV Rebels 26. Wyoming has the slowest pace in the country (9.2 drives a game) and a weak passing offense (#214 in EPA/play), so it will struggle against UNLV's good pass defense (#46). The Cowboys' one real strength is the run game, which meets a middling UNLV run defense. UNLV is a bit better on both sides of the ball and gets about 2.5 points of home field, but its offense is only average. Wyoming's slow pace should hold the game to roughly 11 drives per team, so I project a modest total of about 43. (Under by about 6; confidence 3/5, small stake.)",
+      "game_id": 401864535,
+      "injuries": [],
+      "situation": []
+    }
+  ]
+}
