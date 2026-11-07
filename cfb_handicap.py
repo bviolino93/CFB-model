@@ -429,6 +429,33 @@ VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
 VIEW_NEED_MODEL = False
 
 
+# Line movement, shown to the handicapper only after its blind projection:
+# a line that has moved this many points against its side since we first
+# saw it (sharp money on the other side) takes a point off its confidence.
+MOVE_AGAINST = 1.5
+
+
+def _moved_against(c: dict | None, market: str, side: str) -> float | None:
+    """Points the consensus line has moved against `side` since we first saw
+    it (negative: moved toward it). c: the closes.json entry for the game."""
+    if not c:
+        return None
+    if market == "spreads" and "open_spread" in c and "spread" in c:
+        d = float(c["spread"]) - float(c["open_spread"])      # home line rising = home less favored
+        return d if side == "home" else -d
+    if market == "totals" and "open_total" in c and "total" in c:
+        d = float(c["total"]) - float(c["open_total"])
+        return -d if side == "over" else d
+    return None
+
+
+def _move_note(moved: float | None) -> str:
+    if moved is None or abs(moved) < 1:
+        return ""
+    way = "against" if moved > 0 else "toward"
+    return f" The line has moved {abs(moved):g} {'point' if abs(moved) == 1 else 'points'} {way} this side since we first saw it."
+
+
 def _model_agrees(r) -> bool:
     if not VIEW_NEED_MODEL:
         return True
@@ -545,7 +572,7 @@ def _view_brief(v: dict, g, news: dict) -> str:
 
 
 def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g=None,
-               client=None, hours: float = VIEW_HOURS):
+               client=None, hours: float = VIEW_HOURS, closes: dict | None = None):
     """Returns (bets, views): bets is a DataFrame of offer rows to add to
     the picks (stake, win_chance, why, game_id set); views is a list of
     every projection, for views.json."""
@@ -607,24 +634,26 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
         if t is not None:
             view["line_total"] = float(t.point)
         score = f"{v['away']} {got['away_pts']:g}, {v['home']} {got['home_pts']:g}"
-        if got["confidence"] >= VIEW_MIN_CONF:
-            side = got["spread"]
-            if side in o:
-                r = o[side]
+        c = (closes or {}).get(f"{v['away']}|{v['home']}|{str(v['commence'])[:10]}")
+        for market, side in (("spreads", got["spread"]), ("totals", got["total"])):
+            if side not in o:
+                continue
+            r = o[side]
+            if market == "spreads":
                 # covers by: projected margin for the side plus its points
                 by = (margin if side == "home" else -margin) + float(r.point)
-                if by >= VIEW_GAP and _model_agrees(r):
-                    rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
-                                    f"(Covers by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
-                    view["bets"].append(f"{r.pick} {float(r.point):+g}")
-            side = got["total"]
-            if side in o:
-                r = o[side]
+                label, shown = "Covers", f"{r.pick} {float(r.point):+g}"
+            else:
                 by = (total - float(r.point)) * (1 if side == "over" else -1)
-                if by >= VIEW_GAP and _model_agrees(r):
-                    rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
-                                    f"({side.title()} by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
-                    view["bets"].append(f"{r.pick} {float(r.point):g}")
+                label, shown = side.title(), f"{r.pick} {float(r.point):g}"
+            moved = _moved_against(c, market, side)
+            conf = got["confidence"] - (1 if moved is not None and moved >= MOVE_AGAINST else 0)
+            if moved is not None:
+                view[f"{market}_moved_against"] = round(moved, 1)
+            if conf >= VIEW_MIN_CONF and by >= VIEW_GAP and _model_agrees(r):
+                rows.append((r, f"Handicapper's view: {score}. {got['reason']}{_move_note(moved)} "
+                                f"({label} by about {by:.0f}; confidence {conf}/5, small stake.)"))
+                view["bets"].append(shown)
         views.append(view)
         print(f"view: {score} | spread {got['spread']} total {got['total']} "
               f"conf {got['confidence']} | bets {view['bets']}")

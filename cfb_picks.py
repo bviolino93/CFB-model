@@ -1036,11 +1036,11 @@ def main():
         look = [{"home": sg.loc[v["game_id"], "home_team"], "away": sg.loc[v["game_id"], "away_team"],
                  "kickoff": v["commence"]} for v in vg if v["game_id"] in sg.index]
         try:
-            news.update(cfb_news.fetch(look, news, now))
+            news.update(cfb_news.fetch(look, news, now, cap=cfb_news.MAX_VIEW_LOOKUPS))
         except Exception as e:          # news is a check, never a reason to fail
             print(f"news: view lookups failed ({type(e).__name__}: {e})")
         view_rows, views = cfb_handicap.game_views(info.get("priced"), ids, books, picks, now,
-                                                   a.bankroll, news, g=g)
+                                                   a.bankroll, news, g=g, closes=closes)
         os.makedirs(os.path.dirname(a.views) or ".", exist_ok=True)
         with open(a.views, "w") as fh:
             json.dump({"updated": now.isoformat(), "views": views}, fh, indent=1, default=str)
