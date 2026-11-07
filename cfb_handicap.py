@@ -422,6 +422,19 @@ MAX_VIEWS = 90            # every FBS game in the window (~1c each; Brian 2026-1
 VIEW_MIN_CONF = 3         # 1-5: a real lean with a football reason
 VIEW_GAP = 4.0            # blind projection must beat the line by this many points
 VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
+# Bet a view only when the math model also says the bet at least breaks
+# even at its price (offer ev >= 0). Brian, 2026-11-07: the dashboard showed
+# the model leaning against almost every handicapper bet.
+VIEW_NEED_MODEL = True
+
+
+def _model_agrees(r) -> bool:
+    if not VIEW_NEED_MODEL:
+        return True
+    try:
+        return float(r.ev) >= 0
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 VIEW_SYSTEM = """You are a sharp college football handicapper. Project the \
 final score of this game from the football alone: how each offense \
@@ -599,7 +612,7 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
                 r = o[side]
                 # covers by: projected margin for the side plus its points
                 by = (margin if side == "home" else -margin) + float(r.point)
-                if by >= VIEW_GAP:
+                if by >= VIEW_GAP and _model_agrees(r):
                     rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
                                     f"(Covers by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
                     view["bets"].append(f"{r.pick} {float(r.point):+g}")
@@ -607,7 +620,7 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
             if side in o:
                 r = o[side]
                 by = (total - float(r.point)) * (1 if side == "over" else -1)
-                if by >= VIEW_GAP:
+                if by >= VIEW_GAP and _model_agrees(r):
                     rows.append((r, f"Handicapper's view: {score}. {got['reason']} "
                                     f"({side.title()} by about {by:.0f}; confidence {got['confidence']}/5, small stake.)"))
                     view["bets"].append(f"{r.pick} {float(r.point):g}")
