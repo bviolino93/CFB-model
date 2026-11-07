@@ -583,7 +583,7 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
     rows = []
     for i, (h, a) in enumerate([("H1", "A1"), ("H2", "A2")]):
         base = {"event_id": f"e{i}", "home": h, "away": a, "book": "FanDuel", "p_push": 0.0,
-                "p_win": 0.5, "ev": -0.02, "commence": f"2026-11-0{5 + i}T23:00:00Z", "sources": ""}
+                "p_win": 0.53, "ev": 0.01, "commence": f"2026-11-0{5 + i}T23:00:00Z", "sources": ""}
         rows += [{**base, "market": "spreads", "pick": h, "point": -14.5, "price": -110, "fair": 15.0, "fair_market": 14.5},
                  {**base, "market": "spreads", "pick": a, "point": 14.5, "price": -110, "fair": 15.0, "fair_market": 14.5},
                  {**base, "market": "totals", "pick": "Over", "point": 48.5, "price": -110, "fair": 49.0, "fair_market": 48.5},
@@ -599,3 +599,8 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
     assert bets.why.iloc[0].startswith("Handicapper's view: A1 17, H1 38.")
     assert views[1]["bets"] == []                       # confidence 1: no bet
     assert set(news["_reviews"]) and news["_budget"]["month"] == "2026-11"
+    # the math model must back the bet too: no bets when it says it loses
+    priced["ev"] = -0.02
+    bets2, _ = cfb_handicap.game_views(priced, {"e0": 1, "e1": 2}, ["DraftKings", "FanDuel"],
+                                       pd.DataFrame(), now, 1000, news, client=Client())
+    assert bets2.empty
