@@ -40,6 +40,10 @@ import pandas as pd
 MODEL = "claude-sonnet-5-5"
 EFFORT = "low"
 REUSE_HOURS = 48
+# Game-day news moves fast, and a lookup that found nothing (no QB, no
+# injuries for either team, as with UNC/UConn on 2026-11-07) is a miss, not
+# an all-clear: both are looked up again after this many hours.
+FRESH_HOURS = 12
 LOOKAHEAD_HOURS = 72        # only games kicking off within this window
 MAX_LOOKUPS = 15            # games looked up per run (per process), soonest first
 # Brian (2026-11-07): the handicapper should see all the info, so every game
@@ -189,9 +193,12 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
     for g in games:
         k = game_key(g["home"], g["away"], g["kickoff"])
         hit = cache.get(k)
-        if (hit and hit.get("v") == NEWS_VERSION
-                and now - pd.Timestamp(hit["checked"]) < pd.Timedelta(hours=REUSE_HOURS)):
-            continue
+        if hit and hit.get("v") == NEWS_VERSION:
+            age = now - pd.Timestamp(hit["checked"])
+            soon = pd.Timestamp(g["kickoff"]) - now < pd.Timedelta(hours=24)
+            keep = pd.Timedelta(hours=FRESH_HOURS if soon or _empty(hit) else REUSE_HOURS)
+            if age < keep:
+                continue
         if pd.Timestamp(g["kickoff"]) - now > pd.Timedelta(hours=LOOKAHEAD_HOURS):
             continue
         todo.append({**g, "key": k})
@@ -231,6 +238,12 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
     print(f"news: checked {len(todo)} games, {len(cache) - 1} on file; "
           f"lookups this run ~${cost():.2f} ({_spent['games']} games, {_spent['search']} searches)")
     return cache
+
+
+def _empty(entry: dict) -> bool:
+    """A lookup that came back with nothing about either team."""
+    return not any(t.get("players") or t.get("expected_qb") or t.get("regular_qb")
+                   for t in entry.get("teams") or [] if isinstance(t, dict))
 
 
 def records(entry: dict) -> list[dict]:

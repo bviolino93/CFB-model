@@ -626,3 +626,32 @@ def test_line_movement_against_the_handicapper():
     assert cfb_handicap._moved_against(c, "totals", "over") == 2.5
     assert cfb_handicap._moved_against(c, "totals", "under") == -2.5
     assert cfb_handicap._moved_against(None, "totals", "under") is None
+
+
+def test_news_relooks_empty_and_game_day_entries():
+    import cfb_news
+    now = pd.Timestamp("2026-11-07T15:00Z")
+    old = (now - pd.Timedelta(hours=14)).isoformat()
+    full = {"checked": old, "v": cfb_news.NEWS_VERSION,
+            "teams": [{"team": "A", "expected_qb": "X", "players": []}]}
+    empty = {"checked": old, "v": cfb_news.NEWS_VERSION,
+             "teams": [{"team": "A", "players": []}, {"team": "B", "players": []}]}
+    assert cfb_news._empty(empty) and not cfb_news._empty(full)
+    later = "2026-11-09T17:00Z"        # 50h out: a full entry 14h old is reused
+    games = [{"home": "H1", "away": "A1", "kickoff": later},
+             {"home": "H2", "away": "A2", "kickoff": later},
+             {"home": "H3", "away": "A3", "kickoff": "2026-11-07T20:00Z"}]
+    cache = {cfb_news.game_key("H1", "A1", later): full,
+             cfb_news.game_key("H2", "A2", later): empty,
+             cfb_news.game_key("H3", "A3", "2026-11-07T20:00Z"): full}
+    asked = []
+
+    class C:  # records which games get looked up; returns nothing
+        pass
+    orig = cfb_news._ask
+    cfb_news._ask = lambda client, part: asked.extend(g["home"] for g in part) or []
+    try:
+        cfb_news.fetch(games, cache, now, client=C())
+    finally:
+        cfb_news._ask = orig
+    assert sorted(asked) == ["H2", "H3"]    # empty one and the game-day one
