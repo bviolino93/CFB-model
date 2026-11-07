@@ -42,6 +42,9 @@ EFFORT = "low"
 REUSE_HOURS = 48
 LOOKAHEAD_HOURS = 72        # only games kicking off within this window
 MAX_LOOKUPS = 15            # games looked up per run (per process), soonest first
+# Brian (2026-11-07): the handicapper should see all the info, so every game
+# it projects gets a lookup (within LOOKAHEAD_HOURS), up to this many a run.
+MAX_VIEW_LOOKUPS = 80
 # Brian's ceiling is $50 a month on the API (2026-10-29). Lookups stop for the
 # rest of the month once the running total in news.json ("_budget") reaches
 # this, leaving room for one-game checks; a Console spend limit backs it up.
@@ -170,7 +173,7 @@ def _ask(client, games: list[dict]) -> list[dict]:
 
 
 def fetch(games: list[dict], cache: dict | None = None, now=None,
-          client=None) -> dict:
+          client=None, cap: int | None = None) -> dict:
     """games: [{"home", "away", "kickoff"}]. Returns {key: {"checked": iso,
     "teams": [...]}} for every game it could check, reusing cache entries
     under REUSE_HOURS old."""
@@ -193,9 +196,10 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
             continue
         todo.append({**g, "key": k})
     todo.sort(key=lambda g: pd.Timestamp(g["kickoff"]))
-    left = max(0, MAX_LOOKUPS - _spent["games"])
+    cap = MAX_LOOKUPS if cap is None else cap
+    left = max(0, cap - _spent["games"])
     if len(todo) > left:
-        print(f"news: {len(todo)} games due, looking up the {left} soonest (cap {MAX_LOOKUPS} a run)")
+        print(f"news: {len(todo)} games due, looking up the {left} soonest (cap {cap} a run)")
         todo = todo[:left]
     if todo and client is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):

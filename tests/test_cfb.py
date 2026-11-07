@@ -606,3 +606,23 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
                                        pd.DataFrame(), now, 1000, news, client=Client())
     cfb_handicap.VIEW_NEED_MODEL = False
     assert bets2.empty
+
+
+def test_line_movement_against_the_handicapper():
+    from types import SimpleNamespace as NS
+    import cfb_handicap
+    import ledger
+    nan = float("nan")
+    f = NS(away_team="A", home_team="H", commence="2026-11-07T17:00:00Z",
+           market_margin=3.0, market_total=50.0, market_p_home=nan)
+    closes = ledger.record_lines({}, {"x": f}, "2026-11-05T12:00Z")
+    c = closes["A|H|2026-11-07"]
+    assert c["open_spread"] == -3.0 and c["open_total"] == 50.0
+    f.market_margin, f.market_total = 1.0, 47.5          # home -3 -> -1, total 50 -> 47.5
+    c = ledger.record_lines(closes, {"x": f}, "2026-11-06T12:00Z")["A|H|2026-11-07"]
+    assert c["open_spread"] == -3.0 and c["spread"] == -1.0      # open kept
+    assert cfb_handicap._moved_against(c, "spreads", "home") == 2.0
+    assert cfb_handicap._moved_against(c, "spreads", "away") == -2.0
+    assert cfb_handicap._moved_against(c, "totals", "over") == 2.5
+    assert cfb_handicap._moved_against(c, "totals", "under") == -2.5
+    assert cfb_handicap._moved_against(None, "totals", "under") is None

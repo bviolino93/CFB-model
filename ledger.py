@@ -89,7 +89,16 @@ def record_lines(closes: dict, fair: dict, now) -> dict:
         p = getattr(f, "market_p_home", float("nan"))
         if p == p:
             row["p_home"] = round(float(p), 4)    # de-vigged moneyline
-        closes[k] = {**closes.get(k, {}), **row}
+        old = closes.get(k, {})
+        # the first line we saw, for line movement (Brian 2026-11-07: the
+        # handicapper should see all the info, including where the line went)
+        if "open_seen" not in old:
+            row["open_seen"] = seen
+            if "spread" in row:
+                row["open_spread"] = row["spread"]
+            if "total" in row:
+                row["open_total"] = row["total"]
+        closes[k] = {**old, **row}
     return closes
 
 
