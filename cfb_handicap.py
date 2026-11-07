@@ -424,8 +424,9 @@ VIEW_GAP = 4.0            # blind projection must beat the line by this many poi
 VIEW_STAKE = 0.005        # of bankroll ($5 on $1,000) until proven
 # Bet a view only when the math model also says the bet at least breaks
 # even at its price (offer ev >= 0). Brian, 2026-11-07: the dashboard showed
-# the model leaning against almost every handicapper bet.
-VIEW_NEED_MODEL = True
+# the model leaning against almost every handicapper bet. Turned off the
+# same morning: Brian wants the handicapper, not the model, to drive picks.
+VIEW_NEED_MODEL = False
 
 
 def _model_agrees(r) -> bool:
