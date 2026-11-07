@@ -601,6 +601,8 @@ def test_game_views_project_every_game_and_bet_the_strong_ones():
     assert set(news["_reviews"]) and news["_budget"]["month"] == "2026-11"
     # the math model must back the bet too: no bets when it says it loses
     priced["ev"] = -0.02
+    cfb_handicap.VIEW_NEED_MODEL = True
     bets2, _ = cfb_handicap.game_views(priced, {"e0": 1, "e1": 2}, ["DraftKings", "FanDuel"],
                                        pd.DataFrame(), now, 1000, news, client=Client())
+    cfb_handicap.VIEW_NEED_MODEL = False
     assert bets2.empty
