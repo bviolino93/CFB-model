@@ -26,6 +26,7 @@ import re
 import pandas as pd
 
 import cfb_news
+import cfb_streak
 
 HANDICAP = True
 
@@ -290,6 +291,11 @@ def review(picks: pd.DataFrame, news: dict, history: list | None = None,
     done = news.setdefault("_reviews", {})
     keep, stakes, whys, flips = [], [], [], []
     for p in picks.itertuples():
+        if not leans and "streak" in str(getattr(p, "sources", "")).split(","):
+            # the over-streak under is a tested rule, not a model lean: it
+            # goes out as is (Brian made it the main bet, 2026-11-09)
+            keep.append(True); stakes.append(p.stake); whys.append(p.why); flips.append(False)
+            continue
         inj = list(getattr(p, "injuries", []) or [])
         sit = list(getattr(p, "situation", []) or [])
         sch = None
@@ -520,8 +526,12 @@ def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, n
     kick = pd.to_datetime(p.commence, utc=True)
     now = pd.Timestamp(now)
     p = p[(kick > now) & (kick <= now + pd.Timedelta(hours=hours))]
+    # games with a bet still get a view (Brian 2026-11-09: analysis on every
+    # game); only the market already bet is off limits for a view bet
+    taken = {}
     if picks is not None and len(picks) and "event_id" in picks:
-        p = p[~p.event_id.isin(set(picks.event_id))]
+        for e, m in zip(picks.event_id, picks.market):
+            taken.setdefault(e, set()).add(m)
     p = p.sort_values("ev", ascending=False).drop_duplicates(["event_id", "market", "pick"])
     out = []
     for eid, s in p.groupby("event_id"):
@@ -537,12 +547,12 @@ def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, n
         if not offers:
             continue
         out.append({"event_id": eid, "game_id": gid, "home": r0.home, "away": r0.away,
-                    "commence": r0.commence, "offers": offers})
+                    "commence": r0.commence, "offers": offers, "taken": taken.get(eid, set())})
     out.sort(key=lambda v: pd.Timestamp(v["commence"]))
     return out[:MAX_VIEWS]
 
 
-def _view_brief(v: dict, g, news: dict) -> str:
+def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
     o = v["offers"]
     lines = [f"Game: {v['away']} at {v['home']}, kickoff {pd.Timestamp(v['commence']):%a %b %-d %H:%M UTC}"]
     # Brian (2026-11-03): "how can you be exactly on the lines?" Shown the
@@ -553,6 +563,10 @@ def _view_brief(v: dict, g, news: dict) -> str:
         away, home = row.iloc[0].away_team, row.iloc[0].home_team
         lines += [form_text(g, away, v["commence"]), form_text(g, home, v["commence"]),
                   common_text(g, away, home, v["commence"])]
+        if streaks:
+            lines.append("Recent totals vs the betting total: " + "; ".join(
+                cfb_streak.describe(streaks, t) for t in (away, home))
+                + " (history: after a team goes over 3+ straight, the under hits about 54-56%)")
         prof = matchup_text(g, v["game_id"])
         if prof:
             lines.append("Matchup (season efficiency, opponent-adjusted): " + prof)
@@ -586,8 +600,9 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
     spent, start = _month_spent(news, now)
     done = news.setdefault("_reviews", {})
     rows, views = [], []
+    st = cfb_streak.streaks(g, closes, int(g.season.max())) if g is not None and len(g) else {}
     for v in games:
-        brief = _view_brief(v, g, news)
+        brief = _view_brief(v, g, news, st)
         key = "view3:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
@@ -639,6 +654,9 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
             if side not in o:
                 continue
             r = o[side]
+            if market in v.get("taken", ()):
+                view[f"{market}_bet_elsewhere"] = True
+                continue
             if market == "spreads":
                 # covers by: projected margin for the side plus its points
                 by = (margin if side == "home" else -margin) + float(r.point)
