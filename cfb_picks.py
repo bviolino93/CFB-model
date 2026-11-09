@@ -37,6 +37,7 @@ import cfb_data
 import cfb_model
 import cfb_handicap
 import cfb_news
+import cfb_streak
 import ledger
 import selector as sel
 
@@ -96,6 +97,10 @@ TOTAL_RULES = [
 # numbers only (our possession count from this season's drives, injuries,
 # the handicapper's matchup read). True turns the patterns back on.
 TOTAL_PATTERNS = False
+# The over-streak under (cfb_streak): the one trend that held against
+# closing totals in every stretch since 2014. Brian made it the main
+# college bet (2026-11-09), $5 flat. False turns it off.
+STREAKS = True
 
 
 def _is_pattern_rule(why: str) -> bool:
@@ -490,7 +495,7 @@ def model_backed(priced: pd.DataFrame, min_lean: float = MIN_LEAN) -> pd.DataFra
         return priced
     ln = lean(priced)
     trend = ((priced.market == "totals") & (ln > 0)
-             & priced.sources.astype(str).str.split(",").map(lambda s: "trend" in s))
+             & priced.sources.astype(str).str.split(",").map(lambda s: "trend" in s or "streak" in s))
     if BACKTESTED_ONLY:
         return priced[trend]
     need = np.where(priced.market == "spreads", max(min_lean, MIN_SPREAD_LEAN), min_lean)
@@ -646,7 +651,7 @@ def write_board(priced, my_books, now, path):
 
 def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 now=None, g: pd.DataFrame | None = None, news: dict | None = None,
-                out: dict | None = None):
+                out: dict | None = None, closes: dict | None = None):
     """news: the injury news cache (cfb_news), or None to skip the check.
     It's updated in place with whatever this run looks up. out, if given,
     gets every priced offer ("priced") and the model's working ("ctx"),
@@ -663,6 +668,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
     print(f"matched {len(ids)} of {len(fair)} college games to the schedule")
     upcoming = g[g.game_id.isin(ids.values())].set_index("game_id")
     ranks = Ranks(upcoming) if len(upcoming) else None
+    # Brian (2026-11-09): the over-streak under is the main college bet.
+    st = cfb_streak.streaks(g, closes, cfb_data.current_season(now)) if STREAKS else {}
     adj, ctx = [], {}
     for ev, gid in ids.items():
         f, r = fair[ev], upcoming.loc[gid]
@@ -679,7 +686,13 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
             src = "combined" if kind in MODEL_MARKETS else "combined_info"
             if abs(pts) >= 0.05:
                 adj.append(sel.Adjustment(f.home_team, market, pts, src))
-        if not (np.isnan(f.market_total) or np.isnan(f.market_margin)):
+        why_streak = cfb_streak.signal(st, r.home_team, r.away_team) if st else None
+        if why_streak and not np.isnan(f.market_total):
+            c["streak"] = why_streak
+            adj.append(sel.Adjustment(f.home_team, "totals",
+                                      rule_shift(tm, f.market_total, "Under", cfb_streak.STREAK_P),
+                                      "streak"))
+        elif not (np.isnan(f.market_total) or np.isnan(f.market_margin)):
             hit = total_rule(f.market_total, abs(f.market_margin), f.commence,
                              r.get("conference_game", False),
                              r.get("poss_total", np.nan) - f.market_total)
@@ -740,6 +753,8 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
         picks["point"] = picks.point.astype(object).where(picks.market != "h2h", None)
     if len(picks):
         picks["stake"] = (picks["stake"] * STAKE_SCALE).round(2)
+        streak = picks.sources.astype(str).str.split(",").map(lambda s: "streak" in s)
+        picks.loc[streak, "stake"] = round(bankroll * cfb_streak.STREAK_STAKE, 2)
         picks["win_chance"] = picks.p_win / (1 - picks.p_push)
         why = []
         for p in picks.itertuples():
@@ -749,7 +764,9 @@ def build_picks(rows: pd.DataFrame, my_books, bankroll=1000.0, min_ev=MIN_EV,
                 continue
             kind = "spread" if p.market == "spreads" else "total"
             srcs = str(p.sources).split(",")
-            if kind == "total" and "trend" in srcs and "trend" in c:
+            if kind == "total" and "streak" in srcs and "streak" in c:
+                why.append(f"Over streak: {c['streak']}.")
+            elif kind == "total" and "trend" in srcs and "trend" in c:
                 t = c["trend"]
                 own = own_total_text(c["row"], c["row"].home_team, c["row"].away_team)
                 why.append(f"{t[0].upper()}{t[1:]}." + (f" {own}" if own else ""))
@@ -1002,14 +1019,15 @@ def main():
             news = json.load(fh)
     except (OSError, ValueError):
         news = {}
-    info = {}
-    picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g, news=news, out=info)
-    write_board(info.get("priced"), books, now, a.board)
     try:
         with open(a.closes) as fh:
             closes = json.load(fh)
     except (OSError, ValueError):
         closes = {}
+    info = {}
+    picks, fair, ids = build_picks(rows, books, a.bankroll, now=now, g=g, news=news, out=info,
+                                   closes=closes)
+    write_board(info.get("priced"), books, now, a.board)
     os.makedirs(os.path.dirname(a.closes) or ".", exist_ok=True)
     with open(a.closes, "w") as fh:
         json.dump(ledger.record_lines(closes, fair, now), fh, indent=1)
