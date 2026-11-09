@@ -48,3 +48,9 @@ def test_streak_bets_skip_the_handicapper_review():
 
     out = cfb_handicap.review(picks, {}, [], pd.Timestamp("2026-11-10", tz="UTC"), client=Boom())
     assert len(out) == 1 and out.stake.iloc[0] == 5.0
+
+
+def test_streak_moves_the_fair_total():
+    import selector as sel
+    a = sel.Adjustment("Miami Hurricanes", "totals", -2.0, "streak")
+    assert a.active
