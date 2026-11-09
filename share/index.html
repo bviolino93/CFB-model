@@ -265,6 +265,10 @@ footer a { color: var(--neon); text-decoration: none; }
   </div>
   <div id="checks"></div>
 
+  <h2 id="previewsH">College game previews</h2>
+  <div class="hint" id="previewsHint" style="font-size:12.5px;color:var(--muted);margin:-4px 0 8px">The handicapper's projected score and read on every upcoming college game. It doesn't see the betting line when it projects; bets come from the picks above.</div>
+  <div id="previews"></div>
+
   <h2>Results</h2>
   <div id="results"></div>
 
@@ -717,6 +721,40 @@ document.getElementById("checkForm").addEventListener("submit", e => {
   let n = 0;
   CHECK_POLL = setInterval(() => { loadChecks(); if (++n >= 20) clearInterval(CHECK_POLL); }, 30000);
 });
+// ---- college game previews: every game's projected score and read, from
+// views.json on the CFB picks branch (Brian 2026-11-09: "true analysis").
+let VIEWS = [];
+async function loadViews() {
+  try {
+    const j = await getJSON("https://raw.githubusercontent.com/bviolino93/CFB-model/picks/views.json");
+    VIEWS = j.views || [];
+  } catch (e) { VIEWS = []; }
+  renderViews();
+}
+function previewCard(v) {
+  const hp = Number(v.home_pts), ap = Number(v.away_pts);
+  const fav = hp >= ap ? v.home : v.away, by = Math.abs(hp - ap);
+  const line = v.line == null ? "" : `Line: ${esc(v.home)} ${v.line > 0 ? "+" : ""}${v.line}`;
+  const tot = v.line_total == null ? "" : `Total ${v.line_total} · projected ${(hp + ap).toFixed(0)} (${v.total === "over" ? "over" : "under"} lean)`;
+  const side = v.spread === "home" ? v.home : v.away;
+  const bets = (v.bets || []).length ? `<div class="verdict yes"><b>Handicapper's bets:</b> ${esc(v.bets.join(", "))}</div>` : "";
+  return `<article class="ticket ck cfb"><div class="row1"><span class="badge">CFB</span><span>${esc(kick(v.commence))}</span>
+      <span class="when">confidence ${esc(String(v.confidence))}/5</span></div>
+      <div class="head">${esc(v.away)} ${ap} · ${esc(v.home)} ${hp}</div>
+      <div class="verdict" style="color:var(--muted)">${esc(fav)} by ${by.toFixed(0)}. ${line ? esc(line) + ". " : ""}Side: ${esc(side)}. ${esc(tot)}</div>
+      ${bets}<details><summary>The read</summary><p>${esc(v.reason || "")}</p></details></article>`;
+}
+function renderViews() {
+  const show = FILTER !== "nfl";
+  ["previewsH", "previewsHint", "previews"].forEach(id => document.getElementById(id).hidden = !show);
+  const list = VIEWS.filter(v => new Date(v.commence) > Date.now())
+    .sort((a, b) => new Date(a.commence) - new Date(b.commence));
+  document.getElementById("previews").innerHTML = list.length ? list.map(previewCard).join("")
+    : `<div class="hint" style="color:var(--muted)">No previews yet for upcoming games.</div>`;
+}
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => setTimeout(renderViews, 0)));
+loadViews();
+setInterval(loadViews, 10 * 60 * 1000);
 loadChecks();
 setInterval(loadChecks, 10 * 60 * 1000);
 load();
