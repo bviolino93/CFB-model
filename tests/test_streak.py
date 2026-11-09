@@ -54,3 +54,14 @@ def test_streak_moves_the_fair_total():
     import selector as sel
     a = sel.Adjustment("Miami Hurricanes", "totals", -2.0, "streak")
     assert a.active
+
+
+def test_view_brief_starts_from_the_stats_projection():
+    import cfb_handicap
+    g = pd.DataFrame([{"game_id": 7, "season": 2026, "home_team": "Toledo", "away_team": "Massachusetts",
+                       "start_date": "2026-11-12T00:30:00Z", "margin": float("nan"),
+                       "pred_margin": 13.6, "pred_total": 54.5}])
+    v = {"game_id": 7, "away": "UMass Minutemen", "home": "Toledo Rockets",
+         "commence": "2026-11-12T00:30:00Z", "offers": {}}
+    brief = cfb_handicap._view_brief(v, g, {})
+    assert "Stats model projection (objective starting point): Toledo 34, Massachusetts 20" in brief

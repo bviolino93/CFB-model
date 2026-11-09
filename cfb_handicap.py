@@ -470,15 +470,17 @@ def _model_agrees(r) -> bool:
     except (AttributeError, TypeError, ValueError):
         return False
 
-VIEW_SYSTEM = """You are a sharp college football handicapper. Project the \
-final score of this game from the football alone: how each offense \
-(passing, rushing, efficiency, pace) matches up against the other defense, \
-both teams' season scoring and points allowed, recent form and who it came \
-against, common opponents, injuries and the situation (motivation, travel, \
-weather). You are not shown the betting line on purpose: build the number \
-yourself, possession by possession, and include home field (about 2-3 \
-points). Project the total as carefully as the margin: pace and \
-points per drive on both sides decide it.
+VIEW_SYSTEM = """You are a sharp, objective college football handicapper. \
+Project the final score of this game. You are not shown the betting line on \
+purpose. You ARE given an objective starting point: our stats model's \
+projection, built from every play this season adjusted for opponent \
+strength, with home field included. Start from that number. Move it only \
+for specific reasons the stats can't see (an injury or QB change, a clear \
+matchup edge, the situation), and keep each move to what that reason is \
+worth: a starting QB out is worth about 3-7 points, most other factors 1-3. \
+Do not pull scores toward a typical game: blowouts and shootouts are real, \
+and a big projected margin or total from the stats is usually right. If \
+nothing specific moves it, stay with the stats projection.
 
 Confidence (1-5) is how sure you are of your projection: 5 = the matchup \
 clearly points one way, 3 = solid, 1 = a guess.
@@ -555,6 +557,9 @@ def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, n
 def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
     o = v["offers"]
     lines = [f"Game: {v['away']} at {v['home']}, kickoff {pd.Timestamp(v['commence']):%a %b %-d %H:%M UTC}"]
+    # Brian (2026-11-09): "make the handicapper more objective". Blind
+    # projections bunched toward ~50 points and close games (11-23), so the
+    # brief now starts it from the stats model's projection (no line).
     # Brian (2026-11-03): "how can you be exactly on the lines?" Shown the
     # line, the handicapper anchored to it. The brief is blind: no line, no
     # model number; the projection is compared to the line afterward.
@@ -563,6 +568,13 @@ def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
         away, home = row.iloc[0].away_team, row.iloc[0].home_team
         lines += [form_text(g, away, v["commence"]), form_text(g, home, v["commence"]),
                   common_text(g, away, home, v["commence"])]
+        r0 = row.iloc[0]
+        if pd.notna(r0.get("pred_margin")) and pd.notna(r0.get("pred_total")):
+            hp = (r0.pred_total + r0.pred_margin) / 2
+            ap = (r0.pred_total - r0.pred_margin) / 2
+            lines.append(f"Stats model projection (objective starting point): {home} {hp:.0f}, "
+                         f"{away} {ap:.0f} ({home if hp >= ap else away} by {abs(hp - ap):.0f}, "
+                         f"total {r0.pred_total:.0f})")
         if streaks:
             lines.append("Recent totals vs the betting total: " + "; ".join(
                 cfb_streak.describe(streaks, t) for t in (away, home))
@@ -603,7 +615,7 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
     st = cfb_streak.streaks(g, closes, int(g.season.max())) if g is not None and len(g) else {}
     for v in games:
         brief = _view_brief(v, g, news, st)
-        key = "view3:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
+        key = "view4:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
             if spent + cfb_news.cost() - start >= cfb_news.MONTHLY_BUDGET:
