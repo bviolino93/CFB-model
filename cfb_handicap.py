@@ -478,6 +478,9 @@ strength, with home field included. Start from that number. Move it only \
 for specific reasons the stats can't see (an injury or QB change, a clear \
 matchup edge, the situation), and keep each move to what that reason is \
 worth: a starting QB out is worth about 3-7 points, most other factors 1-3. \
+Only NEW absences move the number. A player who has already missed games \
+(a QB whose backup has already started, or games_missed above 0) is already \
+in the stats projection, so do not move for him again. \
 Do not pull scores toward a typical game: blowouts and shootouts are real, \
 and a big projected margin or total from the stats is usually right. If \
 nothing specific moves it, stay with the stats projection.
@@ -554,7 +557,8 @@ def view_games(priced: pd.DataFrame, ids: dict, my_books, picks: pd.DataFrame, n
     return out[:MAX_VIEWS]
 
 
-def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
+def _view_brief(v: dict, g, news: dict, streaks: dict | None = None,
+                starters: dict | None = None) -> str:
     o = v["offers"]
     lines = [f"Game: {v['away']} at {v['home']}, kickoff {pd.Timestamp(v['commence']):%a %b %-d %H:%M UTC}"]
     # Brian (2026-11-09): "make the handicapper more objective". Blind
@@ -583,9 +587,25 @@ def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
         if prof:
             lines.append("Matchup (season efficiency, opponent-adjusted): " + prof)
         e = news.get(cfb_news.game_key(home, away, v["commence"]), {})
-        inj = [{"team": t.get("team"), "qb": t.get("expected_qb"), "qb_status": t.get("qb_status"),
-                "out": [{k: pl.get(k) for k in ("name", "position", "status")} for pl in t.get("players") or []]}
-               for t in e.get("teams") or []]
+        # Brian (2026-11-13): "Nico has been out for weeks". The handicapper
+        # cut UCLA 4 pts for a QB whose backup had already started for
+        # weeks, so the stats already had it. Each absence now says whether
+        # it is new.
+        inj = []
+        for t in e.get("teams") or []:
+            item = {"team": t.get("team"), "qb": t.get("expected_qb"), "qb_status": t.get("qb_status"),
+                    "out": [{k: pl.get(k) for k in ("name", "position", "status", "games_missed")}
+                            for pl in t.get("players") or []]}
+            school = next((s for s in (home, away) if cfb_news._team({"teams": [t]}, s)), None) \
+                if len(row) else None
+            if school and cfb_news.qb_out(e, school):
+                pts, n = cfb_news.qb_change(e, school, (starters or {}).get(school, []))
+                if pts:
+                    item["qb_note"] = "NEW: the backup's first start (not in the stats yet)"
+                elif n:
+                    item["qb_note"] = (f"not new: {t.get('expected_qb')} has started the last {n} "
+                                       "games, already in the stats projection")
+            inj.append(item)
         lines.append("Injuries: " + (json.dumps(inj) if inj else "no report"))
         sit = cfb_news.situation(e)
         lines.append("Situation: " + (json.dumps([{k: x.get(k) for k in ("factor", "favors", "note")}
@@ -598,7 +618,8 @@ def _view_brief(v: dict, g, news: dict, streaks: dict | None = None) -> str:
 
 
 def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g=None,
-               client=None, hours: float = VIEW_HOURS, closes: dict | None = None):
+               client=None, hours: float = VIEW_HOURS, closes: dict | None = None,
+               starters: dict | None = None):
     """Returns (bets, views): bets is a DataFrame of offer rows to add to
     the picks (stake, win_chance, why, game_id set); views is a list of
     every projection, for views.json."""
@@ -614,8 +635,8 @@ def game_views(priced, ids, my_books, picks, now, bankroll: float, news: dict, g
     rows, views = [], []
     st = cfb_streak.streaks(g, closes, int(g.season.max())) if g is not None and len(g) else {}
     for v in games:
-        brief = _view_brief(v, g, news, st)
-        key = "view4:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
+        brief = _view_brief(v, g, news, st, starters)
+        key = "view5:" + hashlib.sha1(brief.encode()).hexdigest()[:16]
         got = done.get(key)
         if got is None:
             if spent + cfb_news.cost() - start >= cfb_news.MONTHLY_BUDGET:
