@@ -65,3 +65,19 @@ def test_view_brief_starts_from_the_stats_projection():
          "commence": "2026-11-12T00:30:00Z", "offers": {}}
     brief = cfb_handicap._view_brief(v, g, {})
     assert "Stats model projection (objective starting point): Toledo 34, Massachusetts 20" in brief
+
+
+def test_view_brief_flags_old_qb_absence():
+    import pandas as pd, cfb_handicap, cfb_news
+    g = pd.DataFrame([{"game_id": 1, "season": 2026, "home_team": "UCLA", "away_team": "Illinois",
+                       "start_date": "2026-11-14T02:00:00Z", "margin": None, "points": None,
+                       "pred_margin": 14.0, "pred_total": 48.0}])
+    v = {"game_id": 1, "away": "Illinois", "home": "UCLA", "commence": "2026-11-14T02:00:00Z", "offers": {}}
+    e = {"teams": [{"team": "UCLA", "regular_qb": "Nico Iamaleava", "expected_qb": "Joey Backup",
+                    "qb_status": "out", "players": []}]}
+    news = {cfb_news.game_key("UCLA", "Illinois", v["commence"]): e}
+    st = {"UCLA": ["N.Iamaleava"] * 5 + ["J.Backup"] * 3}
+    b = cfb_handicap._view_brief(v, g, news, None, st)
+    assert "not new" in b and "last 3 games" in b
+    st = {"UCLA": ["N.Iamaleava"] * 8}
+    assert "NEW: the backup's first start" in cfb_handicap._view_brief(v, g, news, None, st)

@@ -1058,7 +1058,8 @@ def main():
         except Exception as e:          # news is a check, never a reason to fail
             print(f"news: view lookups failed ({type(e).__name__}: {e})")
         view_rows, views = cfb_handicap.game_views(info.get("priced"), ids, books, picks, now,
-                                                   a.bankroll, news, g=g, closes=closes)
+                                                   a.bankroll, news, g=g, closes=closes,
+                                                   starters=starters)
         os.makedirs(os.path.dirname(a.views) or ".", exist_ok=True)
         with open(a.views, "w") as fh:
             json.dump({"updated": now.isoformat(), "views": views}, fh, indent=1, default=str)
