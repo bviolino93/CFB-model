@@ -1,0 +1,882 @@
+{
+  "updated": "Fri Nov 13, 18:21 UTC",
+  "picks": [
+    {
+      "away": "Southern Mississippi Golden Eagles",
+      "home": "Louisiana Tech Bulldogs",
+      "commence": "2026-11-14T22:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 56.5,
+      "price": -110,
+      "book": "DraftKings",
+      "stake": 5.0,
+      "win_chance": 0.592734225621415,
+      "ev": 0.13158352164088316,
+      "why": "Over streak: Southern Miss has gone over in 3 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs. News: Louisiana Tech's backup QB makes his first start. A backup QB's first start is priced a point worse (history: lines overrate that team by about a point); other starters missing their first game, half a point each, and on totals a missing offensive starter lowers the total half a point, a missing defender raises it (educated guesses).",
+      "game_id": 401871099,
+      "injuries": [
+        {
+          "team": "Southern Miss",
+          "name": "Jaylen Himes",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Out vs Louisiana Tech per Sun Belt repor"
+        },
+        {
+          "team": "Louisiana Tech",
+          "name": "Blake Baker",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Kukuk 1st start"
+        },
+        {
+          "team": "Louisiana Tech",
+          "name": "Dylone Brooks",
+          "pos": "RB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Turf toe; coach unsure of status for res"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "Louisiana Tech",
+          "red_flag": false,
+          "note": "Louisiana Tech 7-2 (5-0) can clinch Sun Belt title game spot; Southern Miss 3-6",
+          "source": "https://www.rustonleader.com/sports/cumbie-shares-injury-updates-key-starters-louisiana-tech-s-offense",
+          "date": "2026-11-11"
+        }
+      ]
+    },
+    {
+      "away": "Arizona State Sun Devils",
+      "home": "UCF Knights",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 48.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.5883293365307753,
+      "ev": 0.12317418792238932,
+      "why": "Over streak: UCF has gone over in 4 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs. News: Arizona State's backup QB makes his first start. A backup QB's first start is priced a point worse (history: lines overrate that team by about a point); other starters missing their first game, half a point each, and on totals a missing offensive starter lowers the total half a point, a missing defender raises it (educated guesses).",
+      "game_id": 401856857,
+      "injuries": [
+        {
+          "team": "Arizona State",
+          "name": "Mikey Keene",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Fette 1st start"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Arizona State",
+          "red_flag": false,
+          "note": "UCF allowed 11 sacks and 23 TFLs in last two games; Barnett just back from 6-game hamstring absence",
+          "source": "https://sports.yahoo.com/articles/asu-football-down-ucfs-attack-180652520.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "UNLV Rebels",
+      "home": "New Mexico Lobos",
+      "commence": "2026-11-15T00:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 46.5,
+      "price": -105,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.5742935278030994,
+      "ev": 0.12123974475843213,
+      "why": "Over streak: UNLV has gone over in 3 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs. News: New Mexico's missing starters move the total -0.5. A backup QB's first start is priced a point worse (history: lines overrate that team by about a point); other starters missing their first game, half a point each, and on totals a missing offensive starter lowers the total half a point, a missing defender raises it (educated guesses).",
+      "game_id": 401864539,
+      "injuries": [
+        {
+          "team": "New Mexico",
+          "name": "James Laubstein",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "Out for full season per availability rep"
+        },
+        {
+          "team": "New Mexico",
+          "name": "Massiah Mingo",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.5,
+          "note": "Out for season, ankle"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "New Mexico",
+          "red_flag": false,
+          "note": "UNLV benched QB Jackson Arnold for Alex Orji in second half last game; QB uncertainty",
+          "source": "https://sports.yahoo.com/articles/2026-mountain-west-football-week-150000396.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "Kennesaw State Owls",
+      "home": "Sam Houston State Bearkats",
+      "commence": "2026-11-14T19:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 46.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.5614754098360656,
+      "ev": 0.07190760059612522,
+      "why": "Over streak: Kennesaw State has gone over in 3 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs.",
+      "game_id": 401870769,
+      "injuries": [],
+      "situation": [
+        {
+          "factor": "coaching",
+          "favors": "Kennesaw State",
+          "red_flag": false,
+          "note": "Coach Phil Longo was fired last week; interim co-head coaches (Eric Raisbeck and Freddie Aughtry-Lindsay) have one game so far; Sam Houston is 1-8 on a six-game losing streak",
+          "source": "https://sports.yahoo.com/articles/sam-houston-vs-kennesaw-state-123000742.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "Tulane Green Wave",
+      "home": "Rice Owls",
+      "commence": "2026-11-14T19:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 48.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.561241610738255,
+      "ev": 0.07146125686394122,
+      "why": "Over streak: Tulane has gone over in 4 straight games and Rice has gone over in 3 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs.",
+      "game_id": 401862828,
+      "injuries": [],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Tulane",
+          "red_flag": false,
+          "note": "VSIN system: home conference teams that allowed 48+ points last game are 79-109 ATS since 2020; Rice (-2.5) listed as a fade",
+          "source": "https://vsin.com/college-football/college-football-top-plays-based-on-betting-splits-power-ratings-and-trends-for-week-11",
+          "date": "2026-11-12"
+        }
+      ]
+    },
+    {
+      "away": "Duke Blue Devils",
+      "home": "Miami Hurricanes",
+      "commence": "2026-11-14T17:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 54.5,
+      "price": -108,
+      "book": "DraftKings",
+      "stake": 5.0,
+      "win_chance": 0.5465935787000783,
+      "ev": 0.05269874416311371,
+      "why": "Over streak: Miami has gone over in 9 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs.",
+      "game_id": 401858296,
+      "injuries": [
+        {
+          "team": "Miami",
+          "name": "Malachi Toney",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Out with ankle injury; described as a He"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Middle Tennessee Blue Raiders",
+      "home": "Liberty Flames",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 53.5,
+      "price": -110,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.5471698113207547,
+      "ev": 0.04459691252144077,
+      "why": "Over streak: Middle Tennessee has gone over in 5 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs.",
+      "game_id": 401871061,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Florida State Seminoles",
+      "home": "Pittsburgh Panthers",
+      "commence": "2026-11-14T00:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 52.5,
+      "price": -115,
+      "book": "FanDuel",
+      "stake": 5.0,
+      "win_chance": 0.5566298342541436,
+      "ev": 0.040655777083833666,
+      "why": "Over streak: Florida State has gone over in 4 straight games. When either team is on a run of 3+ overs, the under has hit about 54-56% against closing totals in every stretch since 2014 (1,275 games): the market overreacts to hot scoring runs.",
+      "game_id": 401858293,
+      "injuries": [
+        {
+          "team": "Florida State",
+          "name": "Duce Robinson",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out on Thursday report; starter s"
+        },
+        {
+          "team": "Florida State",
+          "name": "Quintrevion Wisner",
+          "pos": "RB",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out on Thursday report; starter s"
+        },
+        {
+          "team": "Pittsburgh",
+          "name": "Holden Geriner",
+          "pos": "QB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Questionable on updated report; regular-"
+        },
+        {
+          "team": "Pittsburgh",
+          "name": "Ja'Kyrian Turner",
+          "pos": "RB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Questionable; starter status not stated"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Cincinnati Bearcats",
+      "home": "Iowa State Cyclones",
+      "commence": "2026-11-14T17:00:00Z",
+      "market": "spreads",
+      "pick": "Iowa State Cyclones",
+      "point": -3.0,
+      "price": -108,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.48312439729990353,
+      "ev": -0.06549601372489666,
+      "why": "Handicapper's view: Cincinnati Bearcats 27, Iowa State Cyclones 34. The stats projection has Iowa State by 7 with a total of 62, and nothing specific justifies a large move. Iowa State's home field and its stronger defense by EPA support the margin. Cincinnati's offense is strong, but its pass defense is weak. I trimmed Iowa State by a point because the stats model may be overrating its recent shootout results. The line has moved 1.5 points toward this side since we first saw it. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401856859,
+      "injuries": [
+        {
+          "team": "Cincinnati",
+          "name": "Gibson",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Hospitalized after hard hit; ruled out. "
+        }
+      ],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "over",
+          "red_flag": false,
+          "note": "Both teams chasing bowl eligibility; Iowa State seeking 5-5. Not a one-sided spot",
+          "source": "https://cyclonefanatic.com/podcasts/cf-pregame-iowa-state-cincinnati-preview-can-the-cyclones-get-to-5-5/",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "James Madison Dukes",
+      "home": "UConn Huskies",
+      "commence": "2026-11-14T17:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 57.5,
+      "price": -108,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.4992138364779874,
+      "ev": -0.03855112974609831,
+      "why": "Handicapper's view: James Madison Dukes 36, UConn Huskies 29. The stats model has James Madison by 7, and that fits the season profile. JMU is better on both sides of the ball: it ranks 30th in points per drive and 39th in points per drive allowed, while UConn's defense ranks 143rd in EPA allowed. UConn's strong rushing offense keeps it competitive, and there are no new injuries or situational factors, so I'm staying with the model. (Over by about 8; confidence 3/5, small stake.)",
+      "game_id": 401861967,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Nebraska Cornhuskers",
+      "home": "Rutgers Scarlet Knights",
+      "commence": "2026-11-14T17:30:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 51.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5087881591119334,
+      "ev": -0.028677150786308947,
+      "why": "Handicapper's view: Nebraska Cornhuskers 35, Rutgers Scarlet Knights 21. Nebraska has a strong defense (#24 in EPA allowed) against a Rutgers offense that is middling. Rutgers' defense is among the worst in the country, which favors Nebraska's rushing attack. Nebraska's recent scoring slump is a small concern, so I trimmed the stats projection by a point. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401858525,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "East Carolina Pirates",
+      "home": "Charlotte 49ers",
+      "commence": "2026-11-14T18:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 45.5,
+      "price": -105,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5029239766081871,
+      "ev": -0.01810080757449184,
+      "why": "Handicapper's view: East Carolina Pirates 31, Charlotte 49ers 19. The stats projection has East Carolina winning 31-19. ECU has the better defense and a fast pace, while Charlotte's offense is near the bottom nationally and its pass defense is among the worst. No injuries or situational factors are reported, so I stayed with the model. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401862825,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Florida International Panthers",
+      "home": "Delaware Blue Hens",
+      "commence": "2026-11-14T20:00:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 54.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5166816952209197,
+      "ev": -0.013607672760062473,
+      "why": "Handicapper's view: Florida International Panthers 20, Delaware Blue Hens 28. The stats projection has Delaware by 8 with a total of 48. Delaware's offense is much better (EPA/play rank #49 vs #202), and FIU's strong defense is offset by Delaware's pace and FIU's weak offense. No injuries or situational factors are reported, so I'm staying with the model. (Under by about 6; confidence 3/5, small stake.)",
+      "game_id": 401871060,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Florida Atlantic Owls",
+      "home": "Tulsa Golden Hurricane",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "spreads",
+      "pick": "Tulsa Golden Hurricane",
+      "point": -5.5,
+      "price": -112,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.4896115627822945,
+      "ev": -0.07323525616208532,
+      "why": "Handicapper's view: Florida Atlantic Owls 30, Tulsa Golden Hurricane 41. The stats model has Tulsa winning 43-30. Tulsa's run offense and run defense both rank well, and they should exploit FAU's 223rd-ranked run defense. I trim the total a little because both teams have gone over five straight, and the model already leans high. Tulsa gets a small bump for bowl-eligibility motivation, but the 13-point margin looks a bit large next to the common-opponent results. The line has moved 1.5 points toward this side since we first saw it. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401862826,
+      "injuries": [],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "Tulsa",
+          "red_flag": false,
+          "note": "Tulsa 5-4 can reach bowl eligibility with a win; FAU 1-3 on the road this season. Yahoo preview lists Tulsa -5.5.",
+          "source": "https://sports.yahoo.com/articles/2026-week-11-preview-florida-183029514.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "Arizona State Sun Devils",
+      "home": "UCF Knights",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "spreads",
+      "pick": "UCF Knights",
+      "point": -3.0,
+      "price": -112,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5209677419354839,
+      "ev": -0.013011553827880384,
+      "why": "Handicapper's view: Arizona State Sun Devils 21, UCF Knights 33. The stats model has UCF by 10 (34-23). Arizona State is starting a backup QB (Jake Fette) for the first time, which is worth a small downgrade to its offense, about 2 points. That is partly offset by UCF's recent trouble with sacks and tackles for loss, and by Barnett's return from a hamstring injury. UCF's offense should still hold up at home, so I stay close to the model and trim the total slightly. (Covers by about 9; confidence 3/5, small stake.)",
+      "game_id": 401856857,
+      "injuries": [
+        {
+          "team": "Arizona State",
+          "name": "Mikey Keene",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Fette 1st start"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Arizona State",
+          "red_flag": false,
+          "note": "UCF allowed 11 sacks and 23 TFLs in last two games; Barnett just back from 6-game hamstring absence",
+          "source": "https://sports.yahoo.com/articles/asu-football-down-ucfs-attack-180652520.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "Michigan Wolverines",
+      "home": "Oregon Ducks",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "spreads",
+      "pick": "Oregon Ducks",
+      "point": -10.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4821576763485477,
+      "ev": -0.07951716333459069,
+      "why": "Handicapper's view: Michigan Wolverines 12, Oregon Ducks 28. The stats projection of Oregon 28, Michigan 12 fits the matchup. Oregon has an elite defense, especially against the pass, and a better offense. Michigan's offense is mediocre and has scored 13 or fewer in three of its last four games. The injury lists don't clearly move the number, so I'm staying with the stats. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401858523,
+      "injuries": [
+        {
+          "team": "Michigan",
+          "name": "Blake Frazier",
+          "pos": "OL",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "OT; hurt before Indiana game, returned, "
+        },
+        {
+          "team": "Michigan",
+          "name": "Channing Goodwin",
+          "pos": "WR",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "Yahoo Thursday report lists doubtful; On"
+        },
+        {
+          "team": "Michigan",
+          "name": "Brady Norton",
+          "pos": "OL",
+          "status": "Questionable",
+          "pts": null,
+          "note": "Yahoo lists OL; On3 lists S, sources dis"
+        },
+        {
+          "team": "Michigan",
+          "name": "Rod Moore",
+          "pos": "DB",
+          "status": "Questionable",
+          "pts": null,
+          "note": "S"
+        },
+        {
+          "team": "Michigan",
+          "name": "Dom Nichols",
+          "pos": "DL",
+          "status": "Questionable",
+          "pts": null,
+          "note": "DE/EDGE"
+        },
+        {
+          "team": "Michigan",
+          "name": "John Henry Daley",
+          "pos": "DL",
+          "status": "Questionable",
+          "pts": null,
+          "note": "DE/EDGE"
+        },
+        {
+          "team": "Oregon",
+          "name": "Teitum Tuioti",
+          "pos": "LB",
+          "status": "Out",
+          "pts": -0.5,
+          "note": "OLB; first missed game this year per Yah"
+        },
+        {
+          "team": "Oregon",
+          "name": "Andrew Olesh",
+          "pos": "TE",
+          "status": "Doubtful",
+          "pts": null,
+          "note": "was out vs Ohio State"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "California Golden Bears",
+      "home": "Virginia Cavaliers",
+      "commence": "2026-11-14T20:30:00Z",
+      "market": "totals",
+      "pick": "Under",
+      "point": 47.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5173076923076922,
+      "ev": -0.01241258741258755,
+      "why": "Handicapper's view: California Golden Bears 14, Virginia Cavaliers 29. The stats model has Virginia by 15. Virginia has the better offense and defense on opponent-adjusted efficiency, and California has been blown out repeatedly on the road (59 points allowed at SMU, 31 at NC State). No injury or situational news gives a reason to move off the model, so I'm staying with its projection. (Under by about 4; confidence 3/5, small stake.)",
+      "game_id": 401858295,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Oregon State Beavers",
+      "home": "Boise State Broncos",
+      "commence": "2026-11-14T23:00:00Z",
+      "market": "spreads",
+      "pick": "Boise State Broncos",
+      "point": -14.5,
+      "price": -110,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5206692913385826,
+      "ev": -0.005994989262705863,
+      "why": "Handicapper's view: Oregon State Beavers 24, Boise State Broncos 43. The stats model has Boise State 42, Oregon State 28. Oregon State's starting QB Maalik Murphy is out and the backup is making his first start, which is not in the stats yet, so I cut about 4 points from Oregon State's score. Boise State's offense is elite and Oregon State's defense is poor, which supports a big margin. The reported Boise State QB concern has no details, so I only added a point for the home side. The line has moved 3.5 points toward this side since we first saw it. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401860914,
+      "injuries": [
+        {
+          "team": "Oregon State",
+          "name": "Braden Atkinson",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Murphy 1st start"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Boise State",
+          "red_flag": false,
+          "note": "Oregon State starting QB out; Boise State also reported with a QB injury concern (details not retrieved)",
+          "source": "https://sports.yahoo.com/articles/boise-state-oregon-state-both-233926669.html",
+          "date": "2026-11-12"
+        }
+      ]
+    },
+    {
+      "away": "Oregon State Beavers",
+      "home": "Boise State Broncos",
+      "commence": "2026-11-14T23:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 62.5,
+      "price": -115,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4946236559139785,
+      "ev": -0.07526881720430106,
+      "why": "Handicapper's view: Oregon State Beavers 24, Boise State Broncos 43. The stats model has Boise State 42, Oregon State 28. Oregon State's starting QB Maalik Murphy is out and the backup is making his first start, which is not in the stats yet, so I cut about 4 points from Oregon State's score. Boise State's offense is elite and Oregon State's defense is poor, which supports a big margin. The reported Boise State QB concern has no details, so I only added a point for the home side. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401860914,
+      "injuries": [
+        {
+          "team": "Oregon State",
+          "name": "Braden Atkinson",
+          "pos": "QB",
+          "status": "Out",
+          "pts": -1.0,
+          "note": "Murphy 1st start"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "Boise State",
+          "red_flag": false,
+          "note": "Oregon State starting QB out; Boise State also reported with a QB injury concern (details not retrieved)",
+          "source": "https://sports.yahoo.com/articles/boise-state-oregon-state-both-233926669.html",
+          "date": "2026-11-12"
+        }
+      ]
+    },
+    {
+      "away": "Troy Trojans",
+      "home": "South Alabama Jaguars",
+      "commence": "2026-11-15T00:00:00Z",
+      "market": "spreads",
+      "pick": "South Alabama Jaguars",
+      "point": -2.5,
+      "price": -120,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5221238938053098,
+      "ev": -0.04277286135693209,
+      "why": "Handicapper's view: Troy Trojans 26, South Alabama Jaguars 34. The stats model has South Alabama by 8 with a total of 62, and nothing specific justifies a big move. Troy's offense is weak (passing EPA #207), and its pass defense is good, which should limit South Alabama's strong passing game a little. Jace Petty is only questionable and has missed no games, so I'm not moving for him. South Alabama's run defense is among the worst in the country, which helps Troy's rushing offense, so I'm trimming both scores slightly. (Covers by about 6; confidence 3/5, small stake.)",
+      "game_id": 401871100,
+      "injuries": [
+        {
+          "team": "Troy",
+          "name": "Jace Petty",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.2,
+          "note": "Questionable on Sun Belt report; has a c"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Troy Trojans",
+      "home": "South Alabama Jaguars",
+      "commence": "2026-11-15T00:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 55.5,
+      "price": -110,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.4943502824858757,
+      "ev": -0.056240369799691936,
+      "why": "Handicapper's view: Troy Trojans 26, South Alabama Jaguars 34. The stats model has South Alabama by 8 with a total of 62, and nothing specific justifies a big move. Troy's offense is weak (passing EPA #207), and its pass defense is good, which should limit South Alabama's strong passing game a little. Jace Petty is only questionable and has missed no games, so I'm not moving for him. South Alabama's run defense is among the worst in the country, which helps Troy's rushing offense, so I'm trimming both scores slightly. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401871100,
+      "injuries": [
+        {
+          "team": "Troy",
+          "name": "Jace Petty",
+          "pos": "WR",
+          "status": "Questionable",
+          "pts": -0.2,
+          "note": "Questionable on Sun Belt report; has a c"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "Minnesota Golden Gophers",
+      "home": "Penn State Nittany Lions",
+      "commence": "2026-11-15T00:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 41.5,
+      "price": -112,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.5141874462596733,
+      "ev": -0.02671661957990412,
+      "why": "Handicapper's view: Minnesota Golden Gophers 17, Penn State Nittany Lions 29. The stats model has Penn State by 12 and I'm staying with it. Penn State has the better offense and pass defense, and Minnesota's offense ranks near 145th in EPA per play. The injury lists give no positions and no games missed, so there is no clear new absence to move the number for. The line has moved 1.25 points against this side since we first saw it. (Over by about 4; confidence 3/5, small stake.)",
+      "game_id": 401858524,
+      "injuries": [
+        {
+          "team": "Minnesota",
+          "name": "Ryan Estrada",
+          "pos": "RB",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out on first availability report;"
+        },
+        {
+          "team": "Minnesota",
+          "name": "Jaylin Hicks",
+          "pos": "DL",
+          "status": "Out",
+          "pts": null,
+          "note": "Lost for season with lower-leg injury vs"
+        },
+        {
+          "team": "Minnesota",
+          "name": "Brett Carroll",
+          "pos": "OL",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out; starter status not stated"
+        },
+        {
+          "team": "Minnesota",
+          "name": "Ashton Beers",
+          "pos": "OL",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out; starter status not stated"
+        },
+        {
+          "team": "Minnesota",
+          "name": "Garrison Monroe",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out; starter status not stated"
+        },
+        {
+          "team": "Minnesota",
+          "name": "Hayden Moore",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Listed out; starter status not stated"
+        },
+        {
+          "team": "Penn State",
+          "name": "Koby Howard",
+          "pos": "WR",
+          "status": "Out",
+          "pts": null,
+          "note": "Out indefinitely, undisclosed injury, pe"
+        },
+        {
+          "team": "Penn State",
+          "name": "Max Granville",
+          "pos": "DL",
+          "status": "Out",
+          "pts": null,
+          "note": "Out (DE)"
+        },
+        {
+          "team": "Penn State",
+          "name": "Alex Tatsch",
+          "pos": "LB",
+          "status": "Out",
+          "pts": null,
+          "note": "Out"
+        },
+        {
+          "team": "Penn State",
+          "name": "Tyler Armstead",
+          "pos": "DB",
+          "status": "Out",
+          "pts": null,
+          "note": "Out (CB)"
+        },
+        {
+          "team": "Penn State",
+          "name": "Alijah Carnell",
+          "pos": "DL",
+          "status": "Out",
+          "pts": null,
+          "note": "Out (DT)"
+        }
+      ],
+      "situation": []
+    },
+    {
+      "away": "UNLV Rebels",
+      "home": "New Mexico Lobos",
+      "commence": "2026-11-15T00:30:00Z",
+      "market": "spreads",
+      "pick": "New Mexico Lobos",
+      "point": -14.5,
+      "price": -105,
+      "book": "draftkings",
+      "stake": 5.0,
+      "win_chance": 0.48601735776277727,
+      "ev": -0.05110896817743482,
+      "why": "Handicapper's view: UNLV Rebels 15, New Mexico Lobos 34. The stats model has New Mexico winning by about 20 behind a top-15 defense and a strong run game, and I'm staying close to that. UNLV's offense is below average, and its QB situation is unsettled after Arnold was benched for Orji in the second half last game. New Mexico has two players out for the season, but both have already missed games, so they are already in the stats projection and I don't move for them. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401864539,
+      "injuries": [
+        {
+          "team": "New Mexico",
+          "name": "James Laubstein",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "Out for full season per availability rep"
+        },
+        {
+          "team": "New Mexico",
+          "name": "Massiah Mingo",
+          "pos": "WR",
+          "status": "Out",
+          "pts": -0.5,
+          "note": "Out for season, ankle"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "other",
+          "favors": "New Mexico",
+          "red_flag": false,
+          "note": "UNLV benched QB Jackson Arnold for Alex Orji in second half last game; QB uncertainty",
+          "source": "https://sports.yahoo.com/articles/2026-mountain-west-football-week-150000396.html",
+          "date": "2026-11-13"
+        }
+      ]
+    },
+    {
+      "away": "South Carolina Gamecocks",
+      "home": "Arkansas Razorbacks",
+      "commence": "2026-11-15T00:45:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 51.5,
+      "price": -105,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5087881591119334,
+      "ev": -0.0066516893528918986,
+      "why": "Handicapper's view: South Carolina Gamecocks 33, Arkansas Razorbacks 25. No injuries or situational factors are reported, so I'm keeping the stats projection. South Carolina has the better offense, ranking in the top 10 in both rushing EPA and points per drive. Arkansas's weak run defense (#164) points to South Carolina's ground game doing damage, and that supports the 8-point margin. (Over by about 6; confidence 3/5, small stake.)",
+      "game_id": 401856882,
+      "injuries": [],
+      "situation": []
+    },
+    {
+      "away": "Wyoming Cowboys",
+      "home": "UTEP Miners",
+      "commence": "2026-11-15T03:00:00Z",
+      "market": "totals",
+      "pick": "Over",
+      "point": 40.5,
+      "price": -105,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.49906716417910446,
+      "ev": -0.02563077469793895,
+      "why": "Handicapper's view: Wyoming Cowboys 28, UTEP Miners 18. The stats model has Wyoming by 11 with a total of 46, and nothing new in the injury or situation notes justifies moving it. Wyoming's rushing offense (#46) faces a UTEP run defense that ranks #190, and UTEP's offense is near the bottom nationally. Wyoming's slow pace keeps the total in check. Both starting QBs are listed as unknown, and the quarterback uncertainty is not new. (Over by about 6; confidence 3/5, small stake.)",
+      "game_id": 401864540,
+      "injuries": [
+        {
+          "team": "UTEP",
+          "name": "EJ Colson Jr.",
+          "pos": "QB",
+          "status": "Out",
+          "pts": null,
+          "note": "III starting"
+        }
+      ],
+      "situation": [
+        {
+          "factor": "motivation",
+          "favors": "Wyoming",
+          "red_flag": false,
+          "note": "UTEP is 1-8 and on a seven-game losing streak, with no real stakes beyond Senior Day for 21 seniors. Wyoming is a 7.5-point favorite. Fox Sports lists Raymond Moore III as UTEP's starting QB. Colson Jr. has more passing yards on ESPN's leaders list, but I did not find a dated report on his status.",
+          "source": "https://lufkindailynews.com/news_reuters/state/scouting-report-for-wyoming-at-utep-how-do-miners-match-up/article_6c8945ea-bbc2-5b85-82d5-45321a00335b.html",
+          "date": "2026-11-14"
+        }
+      ]
+    },
+    {
+      "away": "North Dakota State Bison",
+      "home": "Hawaii Rainbow Warriors",
+      "commence": "2026-11-15T04:00:00Z",
+      "market": "spreads",
+      "pick": "North Dakota State Bison",
+      "point": -6.5,
+      "price": -115,
+      "book": "fanduel",
+      "stake": 5.0,
+      "win_chance": 0.5267686424474187,
+      "ev": -0.015171668467869381,
+      "why": "Handicapper's view: North Dakota State Bison 24, Hawaii Rainbow Warriors 13. The stats model has North Dakota State by 11 on a total of 36, and nothing specific moves it. North Dakota State's defense ranks in the top 25 in EPA and points per drive allowed, and Hawaii's offense is poor at 1.80 points per drive (#213). Hawaii's defense is weak against the pass, which should let a mediocre North Dakota State offense score enough. I nudged the total up one point because Hawaii's 56-point game shows it can score at home, and I made no other adjustment. (Covers by about 4; confidence 3/5, small stake.)",
+      "game_id": 401864537,
+      "injuries": [],
+      "situation": []
+    }
+  ]
+}
