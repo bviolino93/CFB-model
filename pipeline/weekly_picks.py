@@ -290,7 +290,9 @@ def render(card: pd.DataFrame, date: str, n_games: int, n_lines: int, n_inj: int
                 tail = f"watch · bet at {r['ok_to']} or better"
             else:
                 tail = "no bet"
-            out.append(f"{i}. **{r['pick']}** · {r['edge']:.1f} pts · {tail}  \n"
+            ko = pd.Timestamp(r["kickoff"]).tz_convert("America/New_York")
+            when = ko.strftime("%a %I:%M %p").replace(" 0", " ")
+            out.append(f"{i}. **{r['pick']}** · {when} ET · {r['edge']:.1f} pts · {tail}  \n"
                        f"   _{r['game']}._ {r['why']}.")
         out.append("")
     out += ["---",
