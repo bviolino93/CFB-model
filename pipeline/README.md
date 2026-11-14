@@ -9,9 +9,9 @@ cfbfastR files on GitHub), so no API key is needed.
 |---|---|---|
 | 1. Ingestion and cleaning | `ingest.py` | done |
 | 2. Features (strict anti-leakage) | `features.py` | done |
-| 3. Model and calibration | `model.py` | next |
-| 4. De-vig, edge filter, quarter Kelly | `betting.py` | next |
-| 5. Out-of-sample backtest | `backtest.py` | next |
+| 3. Model and calibration | `model.py` | done |
+| 4. De-vig, edge filter, quarter Kelly | `betting.py` | done |
+| 5. Out-of-sample backtest | `backtest.py` | done |
 
 Settings live in `config.py`: train 2018-2024, test 2025 (2017 is warm-up
 only), margin cap 28, min edge 3.5%, quarter Kelly, $1,000 bankroll.
@@ -21,7 +21,8 @@ only), margin cap 28, min edge 3.5%, quarter Kelly, $1,000 bankroll.
 ```bash
 pip install -r pipeline/requirements.txt
 python -m pipeline.run_stage12            # all seasons (~10 min first time, cached after)
-python -m pytest tests/test_pipeline_leakage.py
+python -m pipeline.backtest               # Stages 3-5 (~20 s once the table exists)
+python -m pytest tests/test_pipeline_leakage.py tests/test_pipeline_betting.py
 ```
 
 Outputs go to `pipeline/output/` (git-ignored): `model_table.parquet`
@@ -65,3 +66,31 @@ forced fumble, pass breakup) and capped points.
 or after kickoff or any weekly fit used a game after its cutoff, and
 `tests/test_pipeline_leakage.py` changes one game's result and checks that no
 feature of that game or any earlier game moves.
+
+## Stages 3-5
+
+* **Model.** Ridge (alpha by leave-one-season-out CV) and XGBoost (small,
+  fixed settings), averaged. Spreads predict home margin from `diff_*`;
+  totals predict points from `sum_*`.
+* **Calibration.** Platt scaling on the model-minus-line gap, fit on
+  out-of-fold training predictions, so a gap that doesn't predict covers
+  gives ~50% and no bet. A negative slope is clamped to zero (never fade
+  your own model). The naive Normal(pred, sigma) version is reported for
+  comparison.
+* **Betting.** De-vig both sides proportionally, bet only when model prob
+  beats fair prob by 3.5% and EV > 0 at the price paid; quarter Kelly,
+  capped at 5% a bet, sized off the bankroll at the start of each week.
+* **Backtest.** Train 2018-2024, bet 2025 at closing lines; also re-priced
+  at 734's usual -105. Writes `backtest_report.txt`, `backtest_summary.csv`
+  and `backtest_bets.csv` to `pipeline/output/`.
+
+### First result (2025, out of sample)
+
+The closing line beat the model (MAE 11.8 vs 12.5 on spreads, 12.5 vs 13.0
+on totals). In 2018-2024 out-of-fold, the model's side covered 47-53% at
+every gap size, so the calibrated filter placed almost no bets (1 total).
+Betting every "edge" the naive way would have meant ~600 bets per market:
+spreads went 309-279-8 (+0.3% ROI, 58% drawdown) and totals lost 74% of the
+bankroll. Public box-score stats are already in the closing line; an edge
+would need information the market prices late (injuries, QB news, weather)
+or a better price than the close.
