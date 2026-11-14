@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -43,6 +44,14 @@ PBP_COLS = ["game_id", "pos_team", "def_pos_team", "home", "period",
             "pos_score_diff_start", "EPA", "success", "rush", "pass",
             "yards_gained", "sack_vec", "int", "fumble_vec",
             "pass_breakup_player_name"]
+# Who did what, for returning production (offense by player id, defense by
+# name, because the newer files rarely carry defensive ids).
+PLAYER_ID_COLS = ["completion_player_id", "incompletion_player_id",
+                  "interception_thrown_player_id", "sack_taken_player_id",
+                  "rush_player_id", "reception_player_id"]
+DEF_NAME_COLS = ["sack_player_name", "interception_player_name",
+                 "pass_breakup_player_name", "fumble_forced_player_name"]
+ROSTER_URL = f"{cfb_data.RAW}/rosters/csv/cfb_rosters_{{season}}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -153,24 +162,118 @@ def collapse_pbp(raw: pd.DataFrame) -> pd.DataFrame:
     return a.rename(columns={"pos_team": "team"})
 
 
+def collapse_players(raw: pd.DataFrame) -> pd.DataFrame:
+    """Per (team, player) season production outside garbage time:
+    dropbacks (QB), rush_yds, rec_yds by athlete id; havoc credits
+    (sacks, INTs, PBUs, forced fumbles) by defender name."""
+    d = raw[(raw.rush == 1) | (raw["pass"] == 1)]
+    d = d[~garbage_mask(d.period, d.pos_score_diff_start.fillna(0))]
+    rows = []
+    qb = pd.concat([d[["pos_team", c]].rename(columns={c: "pid"}).dropna()
+                    for c in PLAYER_ID_COLS[:4]])
+    rows.append(qb.groupby(["pos_team", "pid"]).size().rename("dropbacks"))
+    ru = d[d.rush == 1].dropna(subset=["rush_player_id"])
+    rows.append(ru.groupby(["pos_team", "rush_player_id"]).yards_gained.sum()
+                .rename("rush_yds").rename_axis(["pos_team", "pid"]))
+    re_ = d.dropna(subset=["reception_player_id"])
+    rows.append(re_.groupby(["pos_team", "reception_player_id"]).yards_gained.sum()
+                .rename("rec_yds").rename_axis(["pos_team", "pid"]))
+    off = pd.concat(rows, axis=1).fillna(0).reset_index()
+    off["pid"] = pd.to_numeric(off.pid, errors="coerce")
+    off = off.rename(columns={"pos_team": "team"}).assign(name=None, havoc=0.0)
+    dn = pd.concat([d[["def_pos_team", c]].rename(columns={c: "name"}).dropna()
+                    for c in DEF_NAME_COLS if c in d])
+    dn["name"] = dn.name.map(norm_name)
+    dfn = (dn.groupby(["def_pos_team", "name"]).size().rename("havoc").reset_index()
+           .rename(columns={"def_pos_team": "team"}))
+    return pd.concat([off, dfn.assign(pid=np.nan)], ignore_index=True)
+
+
+def norm_name(x) -> str:
+    s = re.sub(r"[^a-z ]", "", str(x or "").lower())
+    s = " ".join(w for w in s.split() if w not in ("jr", "sr", "ii", "iii", "iv"))
+    return s
+
+
 def load_pbp_stats(seasons=None, verbose=True) -> pd.DataFrame:
-    """Per-offense game stats for every season, cached one file per season."""
+    """Per-offense game stats for every season, cached one file per season.
+    The same pass also writes per-player season production and each
+    offense's starting QB per game (see load_players / load_starters)."""
     seasons = [y for y in (seasons or C.ALL_SEASONS) if y >= cfb_data.PBP_FIRST]
     os.makedirs(C.PIPE_CACHE, exist_ok=True)
     cur = cfb_data.current_season()
     out = []
     for y in seasons:
         small = os.path.join(C.PIPE_CACHE, f"pbp_team_{y}.parquet")
-        if not os.path.exists(small) or y >= cur:
+        pl = os.path.join(C.PIPE_CACHE, f"players_{y}.parquet")
+        qb = os.path.join(C.PIPE_CACHE, f"starters_{y}.parquet")
+        if not all(os.path.exists(p) for p in (small, pl, qb)) or y >= cur:
             if verbose:
                 print(f"  downloading play-by-play {y} (~120 MB) ...", flush=True)
             raw_path = cfb_data._fetch(cfb_data.PBP_URL.format(season=y),
                                        f"pipe_pbp_{y}.parquet", 0)
-            raw = pd.read_parquet(raw_path, columns=PBP_COLS)
+            cols = PBP_COLS + PLAYER_ID_COLS + [c for c in DEF_NAME_COLS
+                                                if c not in PBP_COLS]
+            raw = pd.read_parquet(raw_path, columns=cols)
             collapse_pbp(raw).assign(season=y).to_parquet(small)
+            collapse_players(raw).assign(season=y).to_parquet(pl)
+            cfb_data._starters(raw_path).assign(season=y).to_parquet(qb)
             os.remove(raw_path)
         out.append(pd.read_parquet(small))
     return pd.concat(out, ignore_index=True)
+
+
+def load_players(seasons) -> pd.DataFrame:
+    fs = [os.path.join(C.PIPE_CACHE, f"players_{y}.parquet") for y in seasons]
+    fs = [f for f in fs if os.path.exists(f)]
+    return pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True) if fs else None
+
+
+def load_starters(seasons) -> pd.DataFrame:
+    fs = [os.path.join(C.PIPE_CACHE, f"starters_{y}.parquet") for y in seasons]
+    fs = [f for f in fs if os.path.exists(f)]
+    return pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True) if fs else None
+
+
+def load_rosters(seasons) -> pd.DataFrame:
+    """Season rosters (athlete_id, name, team, position, season)."""
+    out = []
+    for y in seasons:
+        try:
+            p = cfb_data._fetch(ROSTER_URL.format(season=y), f"roster_{y}.csv", None)
+        except Exception as e:
+            print(f"  roster {y} unavailable ({e})")
+            continue
+        r = pd.read_csv(p, usecols=["athlete_id", "first_name", "last_name", "team",
+                                    "position", "season"])
+        r["name"] = (r.first_name.fillna("") + " " + r.last_name.fillna("")).map(norm_name)
+        out.append(r)
+    return pd.concat(out, ignore_index=True) if out else None
+
+
+def load_talent() -> pd.DataFrame | None:
+    """247Sports team talent composite (season, team, talent) from CFBD.
+    Needs CFBD_API_KEY and network access to api.collegefootballdata.com,
+    or a CSV at pipeline/data/talent.csv with those columns."""
+    manual = os.path.join(os.path.dirname(__file__), "data", "talent.csv")
+    cache = os.path.join(C.PIPE_CACHE, "talent.csv")
+    for p in (manual, cache):
+        if os.path.exists(p):
+            return pd.read_csv(p)
+    if not C.CFBD_API_KEY:
+        return None
+    try:
+        rows = []
+        for y in C.ALL_SEASONS:
+            rows += [{"season": y, "team": t.get("team") or t.get("school"),
+                      "talent": float(t.get("talent"))} for t in _cfbd(f"/talent?year={y}")]
+        t = pd.DataFrame(rows)
+        os.makedirs(C.PIPE_CACHE, exist_ok=True)
+        t.to_csv(cache, index=False)
+        return t
+    except Exception as e:
+        print(f"  CFBD talent lookup failed ({e}); talent prior left out")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +330,8 @@ def haversine_miles(lat1, lon1, lat2, lon2):
 
 # ---------------------------------------------------------------------------
 def stage1(seasons=None, verbose=True):
-    """Run Stage 1: returns (games, pbp_stats, teams_loc, venues_loc)."""
+    """Run Stage 1: returns (games, pbp_stats, teams_loc, venues_loc, extras).
+    extras: players, starters, rosters, talent (talent None without CFBD)."""
     seasons = list(seasons or C.ALL_SEASONS)
     if verbose:
         print(f"Stage 1: loading games and lines for {seasons[0]}-{seasons[-1]}")
@@ -238,13 +342,17 @@ def stage1(seasons=None, verbose=True):
         print("Stage 1: play-by-play (garbage time removed)")
     pbp = load_pbp_stats(seasons, verbose)
     teams, venues = load_locations()
+    extras = {"players": load_players(seasons),
+              "starters": load_starters(seasons),
+              "rosters": load_rosters(seasons),
+              "talent": load_talent()}
     if verbose:
         print(f"  {len(pbp):,} offense-game rows; travel data: "
               f"{'yes' if teams is not None else 'no (set CFBD_API_KEY)'}")
-    return games, pbp, teams, venues
+    return games, pbp, teams, venues, extras
 
 
 if __name__ == "__main__":
-    g, p, _, _ = stage1()
+    g, p, _, _, _ = stage1()
     print(g.tail().to_string())
     print(p.tail().to_string())

@@ -1,11 +1,21 @@
-"""Stage 5: out-of-sample backtest.
+"""Stage 5: out-of-sample backtest, now a comparison of strategies.
 
-Fits Stage 3 on the training seasons only, predicts the test season(s),
-flags bets with Stage 4 and settles them against the final scores.
+Every strategy is fit on the training seasons only, predicts the test
+season(s), flags bets with Stage 4 and settles them at the line it bet.
 
-Sizing is realistic: each week's stakes are quarter-Kelly shares of the
-bankroll at the start of that week (you can't reinvest Saturday's winnings
-in Saturday's other games). Units are reported as flat 1-unit bets.
+  * @close strategies bet and grade at the closing line (game-day betting)
+  * @open strategies bet and grade at the opening line, and track closing
+    line value (CLV): did the line then move toward our side, and by how
+    many points?
+  * "raw" models predict the score and compare with the line; "resid"
+    models predict the market's error directly (margin + spread), using
+    the line and its movement as features.
+
+Sizing: each week's stakes are quarter-Kelly shares of the bankroll at the
+start of that week. Units are flat 1-unit bets at the market price; units
+at 734's usual -105 are shown too.
+
+Opening prices aren't in the free data, so opening bets assume -110.
 
     python -m pipeline.backtest                 # uses pipeline/output/model_table.parquet
 """
@@ -19,33 +29,63 @@ import pandas as pd
 
 from . import config as C
 from .betting import american_to_decimal, pick_bets
-from .model import MARKETS, eligible, feature_importance, fit
+from .model import MARKETS, Spec, eligible, feature_importance, fit, market_error
+
+ODDS_COLS = {"spread": ("home_spread_odds", "away_spread_odds"),
+             "total": ("over_odds", "under_odds")}
 
 
-def settle(games: pd.DataFrame, bets: pd.DataFrame, market: str) -> pd.DataFrame:
+def strategies(market: str) -> list[Spec]:
+    S = lambda **k: Spec(market=market, **k)  # noqa: E731
+    return [
+        S(kind="raw", line="close"),                                   # Stage 1-5 baseline
+        S(kind="raw", line="close", groups=("priors", "qb")),
+        S(kind="raw", line="open"),                                    # idea 1
+        S(kind="raw", line="open", groups=("priors", "qb")),
+        S(kind="resid", line="close", groups=("mkt_close",)),          # idea 3
+        S(kind="resid", line="close", groups=("mkt_close", "priors", "qb")),
+        S(kind="resid", line="open", groups=("mkt_open", "priors", "qb")),
+    ]
+
+
+# ---------------------------------------------------------------------------
+def settle(games: pd.DataFrame, bets: pd.DataFrame, spec: Spec) -> pd.DataFrame:
     g = games.loc[bets.index]
-    if market == "spread":
-        res = g.margin + g.close_spread          # > 0 home covered
-        won = np.where(bets.side == "home", res > 0, res < 0)
-    else:
-        res = g.points - g.close_total            # > 0 over hit
-        won = np.where(bets.side == "over", res > 0, res < 0)
+    res = market_error(g, spec)                     # > 0 home covered / over hit
+    first = "home" if spec.market == "spread" else "over"
+    won = np.where(bets.side == first, res > 0, res < 0)
     out = bets.copy()
-    out["market"] = market
-    for c in ("season", "week", "kickoff", "home_team", "away_team",
-              MARKETS[market]["line"], "margin", "points"):
+    out["strategy"] = spec.label
+    for c in ("season", "week", "kickoff", "home_team", "away_team", "close_spread",
+              "open_spread", "close_total", "open_total", "margin", "points"):
         out[c] = g[c]
     out["result"] = np.where(res == 0, "push", np.where(won, "win", "loss"))
     dec = american_to_decimal(out.odds)
     out["units"] = np.select([out.result == "win", out.result == "loss"], [dec - 1, -1.0], 0.0)
+    out["units_734"] = np.select([out.result == "win", out.result == "loss"],
+                                 [100 / 105, -1.0], 0.0)
+    out["clv"] = clv_points(g, out.side, spec)
     return out
+
+
+def clv_points(g: pd.DataFrame, side: pd.Series, spec: Spec) -> np.ndarray:
+    """Points the line moved in our favour from the open to the close
+    (0 for bets made at the close). Spreads are from the home side, so a
+    home bet at -3 that closes -5 gained 2 points."""
+    if spec.line != "open":
+        return np.zeros(len(g))
+    if spec.market == "spread":
+        move = (g.open_spread - g.close_spread).to_numpy(float)   # + = toward home
+        return np.where(side == "home", move, -move)
+    move = (g.close_total - g.open_total).to_numpy(float)         # + = toward over
+    return np.where(side == "over", move, -move)
 
 
 def run_bankroll(bets: pd.DataFrame, start=C.START_BANKROLL) -> pd.DataFrame:
     """Week-start Kelly sizing; returns bets with stake, profit, bankroll."""
     bets = bets.sort_values("kickoff").copy()
     bets["wk"] = (bets.kickoff.dt.tz_convert("America/New_York").dt.tz_localize(None)
-                 .dt.to_period("W-MON"))
+                  .dt.to_period("W-MON"))
     bank = start
     rows = []
     for _, wk in bets.groupby("wk", sort=True):
@@ -57,7 +97,7 @@ def run_bankroll(bets: pd.DataFrame, start=C.START_BANKROLL) -> pd.DataFrame:
         wk["bankroll"] = bank + wk.profit.cumsum()
         bank = float(wk.bankroll.iloc[-1])
         rows.append(wk)
-    return pd.concat(rows) if rows else bets.assign(stake=[], profit=[], bankroll=[])
+    return pd.concat(rows)
 
 
 def max_drawdown(path: pd.Series, start=C.START_BANKROLL) -> float:
@@ -67,34 +107,60 @@ def max_drawdown(path: pd.Series, start=C.START_BANKROLL) -> float:
 
 
 def summarise(b: pd.DataFrame, label: str, start=C.START_BANKROLL) -> dict:
-    if b.empty:
+    if b is None or b.empty:
         return {"strategy": label, "bets": 0}
     w, l, p = (int((b.result == x).sum()) for x in ("win", "loss", "push"))
     staked = float(b.stake.sum())
     end = float(b.bankroll.iloc[-1])
-    return {
+    out = {
         "strategy": label, "bets": len(b), "W-L-P": f"{w}-{l}-{p}",
         "win%": w / max(w + l, 1), "units": float(b.units.sum()),
-        "unit_roi": float(b.units.sum()) / len(b),
-        "profit_$": end - start, "staked_$": staked,
-        "roi_on_staked": (end - start) / staked if staked else 0.0,
-        "end_bankroll": end, "max_drawdown": max_drawdown(b.bankroll, start),
-        "avg_edge": float(b.edge.mean()),
+        "roi": float(b.units.sum()) / len(b),
+        "roi_734": float(b.units_734.sum()) / len(b),
+        "profit_$": end - start, "max_dd": max_drawdown(b.bankroll, start),
     }
+    if (b.clv != 0).any():
+        out["clv_pts"] = float(b.clv.mean())
+        out["clv_beat%"] = float((b.clv > 0).mean())
+    return out
+
+
+def side_diagnostics(te: pd.DataFrame, probs: pd.DataFrame, spec: Spec) -> dict:
+    """Every test game, no filter: does the model's side cover, and (for
+    open strategies) does the line move toward the model's side?"""
+    res = market_error(te, spec)
+    g = probs.gap.to_numpy()
+    nz = (res != 0) & (g != 0)
+    d = {"games": int(len(te)),
+         "side_cover%": float((np.sign(g[nz]) == np.sign(res[nz])).mean())}
+    if spec.line == "open":
+        side = np.where(g > 0, "home" if spec.market == "spread" else "over", "x")
+        c = clv_points(te, pd.Series(side, index=te.index), spec)
+        moved = c != 0
+        d["line_moved_our_way%"] = float((c[moved] > 0).mean()) if moved.any() else np.nan
+        d["avg_clv_pts"] = float(c.mean())
+    return d
+
+
+# ---------------------------------------------------------------------------
+def _pct(x):
+    return f"{x:+.1%}" if pd.notna(x) else ""
 
 
 def _fmt(s: pd.DataFrame) -> str:
     f = s.copy()
-    for c in ("win%", "unit_roi", "roi_on_staked", "max_drawdown", "avg_edge"):
+    for c in ("win%", "roi", "roi_734", "max_dd", "clv_beat%", "side_cover%",
+              "line_moved_our_way%"):
         if c in f:
-            f[c] = f[c].map(lambda x: f"{x:+.1%}" if pd.notna(x) else "")
-    for c in ("units",):
+            f[c] = f[c].map(lambda x: f"{x:.1%}" if c in ("win%", "clv_beat%",
+                            "side_cover%", "line_moved_our_way%") and pd.notna(x)
+                            else _pct(x))
+    for c in ("units", "clv_pts", "avg_clv_pts"):
         if c in f:
-            f[c] = f[c].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
-    for c in ("profit_$", "staked_$", "end_bankroll"):
-        if c in f:
-            f[c] = f[c].map(lambda x: f"{x:,.0f}" if pd.notna(x) else "")
-    return f.to_string(index=False)
+            f[c] = f[c].map(lambda x: f"{x:+.2f}" if pd.notna(x) else "")
+    if "profit_$" in f:
+        f["profit_$"] = f["profit_$"].map(lambda x: f"{x:+,.0f}" if pd.notna(x) else "")
+    return f.fillna("").to_string(index=False)
 
 
 def _bar_chart(imp: pd.DataFrame, width=30) -> str:
@@ -105,56 +171,56 @@ def _bar_chart(imp: pd.DataFrame, width=30) -> str:
 
 def backtest(df: pd.DataFrame, train=C.TRAIN_SEASONS, test=C.TEST_SEASONS,
              markets=("spread", "total"), verbose=True):
-    print(f"Stage 3: training on {train[0]}-{train[-1]}")
-    models = {mk: fit(df, train, mk, verbose) for mk in markets}
+    summaries, diags, early, all_bets, logs, models = [], [], [], [], [], {}
+    for mk in markets:
+        for spec in strategies(mk):
+            fm = fit(df, train, spec, verbose)
+            models[spec.label] = fm
+            logs.append(fm.log)
+            te = eligible(df, spec)
+            te = te[te.season.isin(test)]
+            probs = fm.predict(te)
+            diags.append({"strategy": spec.label, **side_diagnostics(te, probs, spec)})
+            priced = te
+            if spec.line == "open":       # no opening prices in the data: -110
+                priced = te.assign(**{c: np.nan for c in ODDS_COLS[mk]})
+            bets = pick_bets(priced, probs, mk)
+            b = None
+            if not bets.empty:
+                b = run_bankroll(settle(te, bets, spec).join(probs[["pred", "gap"]]))
+                all_bets.append(b)
+            summaries.append(summarise(b, spec.label))
+            wk = te.week.le(4) & te.season_type.eq("regular")
+            e = {"strategy": spec.label,
+                 **{f"wk1-4 {k}": v for k, v in
+                    side_diagnostics(te[wk], probs[wk], spec).items()
+                    if k in ("games", "side_cover%")}}
+            if b is not None:
+                be = b[b.week.le(4)]
+                e["wk1-4 bets"] = len(be)
+                e["wk1-4 W-L"] = f"{(be.result == 'win').sum()}-{(be.result == 'loss').sum()}"
+            early.append(e)
 
-    print(f"Stage 4-5: betting {', '.join(map(str, test))} out of sample")
-    summaries, all_bets, report = [], [], []
-    for mk, fm in models.items():
-        te = eligible(df, mk)
-        te = te[te.season.isin(test)]
-        probs = fm.predict(te)
-        line = te[MARKETS[mk]["line"]]
-        res = te[MARKETS[mk]["target"]] + (line if mk == "spread" else -line)
-        mae_model = float((probs.pred - te[MARKETS[mk]["target"]]).abs().mean())
-        report.append(f"{mk}: {len(te)} test games; model MAE {mae_model:.2f} vs "
-                      f"closing line {float(res.abs().mean()):.2f}")
-        # Did the model's side win more than half the time, all games?
-        side_right = np.sign(probs.gap) == np.sign(res)
-        nz = (res != 0) & (probs.gap != 0)
-        report.append(f"  model side vs closing line, every game: "
-                      f"{side_right[nz].mean():.1%} ({int(nz.sum())} games)")
-        for prob_col, price, label in (
-                ("p_platt", None, "calibrated, market price"),
-                ("p_platt", C.YOUR_BOOK_ODDS, "calibrated, 734 at -105"),
-                ("p_normal", None, "normal-dist, market price")):
-            bets = pick_bets(te, probs, mk, prob_col=prob_col, price=price)
-            if bets.empty:
-                summaries.append({"strategy": f"{mk}: {label}", "bets": 0})
-                continue
-            b = run_bankroll(settle(te, bets, mk).join(probs[["pred", "gap"]]))
-            b["strategy"] = f"{mk}: {label}"
-            summaries.append(summarise(b, f"{mk}: {label}"))
-            all_bets.append(b)
-
-    # Main strategy: both markets together, calibrated, market price.
-    main = [b for b in all_bets if b.strategy.iloc[0].endswith("calibrated, market price")]
-    if main:
-        comb = pd.concat(main).drop(columns=["bankroll", "stake", "profit", "wk"])
-        comb = run_bankroll(comb)
-        summaries.insert(0, summarise(comb, "MAIN: spreads + totals"))
-
-    out = ["", "=" * 78, f"OUT-OF-SAMPLE BACKTEST {', '.join(map(str, test))}  "
-           f"(train {train[0]}-{train[-1]}, edge >= {C.MIN_EDGE:.1%}, "
-           f"{C.KELLY_FRACTION:g} Kelly, ${C.START_BANKROLL:,.0f} start)", "=" * 78]
-    out += report
-    out += ["", _fmt(pd.DataFrame(summaries))]
-    out.append("\nunits = flat 1-unit bets; profit_$/drawdown = quarter-Kelly bankroll; "
-               "break-even win% is 52.4% at -110, 51.2% at -105")
-    for mk, fm in models.items():
-        out.append(f"\nFeature importance, {mk} model (share of XGBoost gain and "
-                   f"Ridge |coef|, averaged)")
-        out.append(_bar_chart(feature_importance(fm)))
+    out = ["", "=" * 96,
+           f"OUT-OF-SAMPLE COMPARISON {', '.join(map(str, test))}  (train "
+           f"{train[0]}-{train[-1]}, edge >= {C.MIN_EDGE:.1%}, {C.KELLY_FRACTION:g} Kelly, "
+           f"${C.START_BANKROLL:,.0f} start each)", "=" * 96,
+           "", "1) BETS THE STRATEGY WOULD HAVE MADE",
+           _fmt(pd.DataFrame(summaries)),
+           "   roi = units per bet at the market price (-110 at the open); roi_734 at -105;",
+           "   clv_pts = avg points the line moved our way after an opening bet.",
+           "", "2) EVERY TEST GAME, NO FILTER (is there any signal at all?)",
+           _fmt(pd.DataFrame(diags)),
+           "   side_cover% needs 52.4% at -110 (51.2% at -105). With ~800 games, +/-1.8% is noise.",
+           "", "3) WEEKS 1-4 ONLY (where the preseason priors carry weight)",
+           _fmt(pd.DataFrame(early)),
+           "", "TRAINING LOG (2018-2024, leave-one-season-out)"]
+    out += logs
+    for lab in (f"spread resid @close [mkt_close+priors+qb]",
+                f"spread resid @open [mkt_open+priors+qb]"):
+        if lab in models:
+            out.append(f"\nFeature importance, {lab}")
+            out.append(_bar_chart(feature_importance(models[lab])))
     text = "\n".join(out)
     if verbose:
         print(text)
@@ -175,9 +241,9 @@ def main(argv=None):
     summ.to_csv(os.path.join(C.OUTPUT_DIR, "backtest_summary.csv"), index=False)
     if not bets.empty:
         cols = ["strategy", "season", "week", "kickoff", "home_team", "away_team",
-                "side", "close_spread", "close_total", "pred", "gap", "p_model",
-                "p_fair", "edge", "odds", "kelly", "stake", "result", "units",
-                "profit", "bankroll"]
+                "side", "open_spread", "close_spread", "open_total", "close_total",
+                "pred", "gap", "p_model", "p_fair", "edge", "odds", "kelly", "stake",
+                "result", "units", "clv", "profit", "bankroll"]
         bets[[c for c in cols if c in bets]].to_csv(
             os.path.join(C.OUTPUT_DIR, "backtest_bets.csv"), index=False)
 

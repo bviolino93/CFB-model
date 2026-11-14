@@ -32,3 +32,40 @@ def test_pick_bets_needs_edge():
 
 def test_max_drawdown():
     assert np.isclose(max_drawdown(pd.Series([1100, 880, 990]), 1000), -0.2)
+
+
+def test_clv_sign():
+    from pipeline.backtest import clv_points
+    from pipeline.model import Spec
+    g = pd.DataFrame({"open_spread": [-3.0, -3.0], "close_spread": [-5.0, -5.0],
+                      "open_total": [50.0, 50.0], "close_total": [52.0, 52.0]})
+    sp = Spec(market="spread", line="open")
+    assert list(clv_points(g, pd.Series(["home", "away"]), sp)) == [2.0, -2.0]
+    tt = Spec(market="total", line="open")
+    assert list(clv_points(g, pd.Series(["over", "under"]), tt)) == [2.0, -2.0]
+    assert list(clv_points(g, pd.Series(["home", "away"]), Spec(market="spread"))) == [0, 0]
+
+
+def test_prior_weight_fades_by_week_5():
+    from pipeline.features import prior_weight
+    d = pd.DataFrame({"week": [1, 2, 3, 4, 5, 9, 1],
+                      "season_type": ["regular"] * 6 + ["postseason"]})
+    assert prior_weight(d).tolist() == [1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.0]
+
+
+def test_injury_feed_only_counts_news_known_before_kickoff():
+    from pipeline.features import add_injury_feed
+    g = pd.DataFrame({"game_id": [1], "home_team": ["Ohio State"],
+                      "away_team": ["Northwestern"],
+                      "kickoff": [pd.Timestamp("2026-11-14T17:00Z")]})
+    rows = [
+        {"team": "Ohio State", "points": 3, "note": "J. Sayin starting QB out",
+         "until": "2026-11-14", "added_at": "2026-11-14T07:45:22-05:00"},
+        {"team": "Northwestern", "points": 2, "note": "LB out",
+         "until": "2026-11-13", "added_at": "2026-11-01T08:00:00-05:00"},   # expired
+        {"team": "Northwestern", "points": 5, "note": "QB out",
+         "until": "2026-11-21", "added_at": "2026-11-14T18:00:00-05:00"},   # after kickoff
+    ]
+    out = add_injury_feed(g, rows).iloc[0]
+    assert out.inj_h_pts == 3 and out.inj_a_pts == 0
+    assert out.inj_diff == -3 and out.inj_qb_diff == -1

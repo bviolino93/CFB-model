@@ -47,39 +47,105 @@ XGB_PARAMS = dict(n_estimators=400, max_depth=3, learning_rate=0.03,
                   random_state=0)
 
 MARKETS = {
-    # target column, line column, feature prefix.
-    # for spreads the home side covers when margin + spread > 0;
-    # for totals the over hits when points - total > 0.
-    "spread": dict(target="margin", line="close_spread", prefix="diff_"),
-    "total": dict(target="points", line="close_total", prefix="sum_"),
+    # target column, feature prefix, closing and opening line columns.
+    # Spreads: the home side covers when margin + spread > 0.
+    # Totals: the over hits when points - total > 0.
+    "spread": dict(target="margin", prefix="diff_", close="close_spread",
+                   open="open_spread", sign=+1),
+    "total": dict(target="points", prefix="sum_", close="close_total",
+                  open="open_total", sign=-1),
+}
+
+# Extra feature groups on top of the play-by-play base set.
+GROUPS = {
+    "priors": {"spread": lambda c: c.startswith("pri_") and not c.endswith("_sum"),
+               "total": lambda c: c.startswith("pri_") and (c.endswith("_sum") or c == "pri_w")},
+    "qb": {"spread": lambda c: c in ("qb_change_diff", "qb_starts_diff", "h_qb_change",
+                                     "a_qb_change", "h_qb_starts", "a_qb_starts"),
+           "total": lambda c: c in ("qb_change_sum", "h_qb_change", "a_qb_change",
+                                    "h_qb_starts", "a_qb_starts")},
+    "injury": {"spread": lambda c: c in ("inj_diff", "inj_qb_diff"),
+               "total": lambda c: c in ("inj_sum",)},
+    # what the market said at the open (known when you'd bet the open)
+    "mkt_open": {"spread": lambda c: c in ("mkt_open_spread", "mkt_has_open_spread"),
+                 "total": lambda c: c in ("mkt_open_total", "mkt_has_open_total")},
+    # the close and the open-to-close move (only usable at the close)
+    "mkt_close": {"spread": lambda c: c in ("mkt_open_spread", "mkt_has_open_spread",
+                                            "mkt_close_spread", "mkt_spread_move"),
+                  "total": lambda c: c in ("mkt_open_total", "mkt_has_open_total",
+                                           "mkt_close_total", "mkt_total_move")},
 }
 
 
-def feature_columns(df: pd.DataFrame, market: str) -> list[str]:
-    pre = MARKETS[market]["prefix"]
+@dataclass(frozen=True)
+class Spec:
+    """What to fit.
+
+    kind  "raw":   predict the margin / total, then compare with the line
+          "resid": predict the market's error directly
+                   (margin + spread, or points - total), Brian's idea 3
+    line  "close" or "open": which line the bet is priced and graded against
+    groups  extra feature groups (see GROUPS)
+    """
+    market: str = "spread"
+    kind: str = "raw"
+    line: str = "close"
+    groups: tuple = ()
+
+    @property
+    def line_col(self):
+        return MARKETS[self.market][self.line]
+
+    @property
+    def label(self):
+        g = "+".join(self.groups) if self.groups else "base"
+        return f"{self.market} {self.kind} @{self.line} [{g}]"
+
+
+def feature_columns(df: pd.DataFrame, spec: Spec) -> list[str]:
+    pre = MARKETS[spec.market]["prefix"]
     cols = [c for c in df.columns if c.startswith(pre)]
     cols += [f"{p}_{f}" for p in ("h", "a") for f in TEAM_FEATS]
     cols += ["home_field", "rest_diff", "travel_diff"]
-    # drop columns that are entirely blank (e.g. travel without a CFBD key)
-    return [c for c in cols if c in df.columns and df[c].notna().any()]
+    for g in spec.groups:
+        cols += [c for c in df.columns if GROUPS[g][spec.market](c)]
+    cols = list(dict.fromkeys(c for c in cols if c in df.columns))
+    # drop blank or constant columns (e.g. travel without a CFBD key,
+    # injury columns in seasons with no injury feed)
+    return [c for c in cols if df[c].notna().any() and df[c].nunique() > 1]
 
 
-def eligible(df: pd.DataFrame, market: str) -> pd.DataFrame:
-    """Played FBS-vs-FBS games with a line and features."""
-    m = MARKETS[market]
-    ok = (~df.non_fbs_game & df[m["target"]].notna() & df[m["line"]].notna()
+def eligible(df: pd.DataFrame, spec: Spec) -> pd.DataFrame:
+    """Played FBS-vs-FBS games with the chosen line and features."""
+    m = MARKETS[spec.market]
+    ok = (~df.non_fbs_game & df[m["target"]].notna() & df[spec.line_col].notna()
           & df.diff_rating_epa.notna())
     return df[ok]
 
 
-def gap(pred: np.ndarray, line: np.ndarray, market: str) -> np.ndarray:
-    """Model minus market, oriented so positive = bet the home side / over."""
-    return pred + line if market == "spread" else pred - line
+def market_error(df: pd.DataFrame, spec: Spec) -> np.ndarray:
+    """> 0 when the home side covered / the over hit at `spec`'s line."""
+    m = MARKETS[spec.market]
+    return (df[m["target"]] + m["sign"] * df[spec.line_col]).to_numpy(float)
+
+
+def target(df: pd.DataFrame, spec: Spec) -> pd.Series:
+    if spec.kind == "resid":
+        return pd.Series(market_error(df, spec), index=df.index)
+    return df[MARKETS[spec.market]["target"]]
+
+
+def gap(pred, df: pd.DataFrame, spec: Spec) -> np.ndarray:
+    """Model's view minus the line, oriented so positive = home / over."""
+    pred = np.asarray(pred, float)
+    if spec.kind == "resid":
+        return pred
+    return pred + MARKETS[spec.market]["sign"] * df[spec.line_col].to_numpy(float)
 
 
 @dataclass
 class FittedModel:
-    market: str
+    spec: Spec
     features: list[str]
     ridge: object
     xgb: object
@@ -88,14 +154,18 @@ class FittedModel:
     ridge_alpha: float
     oof: pd.DataFrame = field(repr=False, default=None)
     gap_table: pd.DataFrame = field(repr=False, default=None)
+    log: str = ""
+
+    @property
+    def market(self):
+        return self.spec.market
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         X = df[self.features]
         pr = self.ridge.predict(X)
         px = self.xgb.predict(X)
         pe = 0.5 * (pr + px)
-        line = df[MARKETS[self.market]["line"]].to_numpy(float)
-        g = gap(pe, line, self.market)
+        g = gap(pe, df, self.spec)
         out = pd.DataFrame(index=df.index)
         out["pred_ridge"], out["pred_xgb"], out["pred"] = pr, px, pe
         out["gap"] = g
@@ -114,69 +184,70 @@ def _xgb():
     return xgb.XGBRegressor(**XGB_PARAMS)
 
 
-def _loso(train: pd.DataFrame, feats, target, make):
+def _loso(train: pd.DataFrame, feats, y: pd.Series, make):
     """Leave-one-season-out predictions."""
     pred = pd.Series(np.nan, index=train.index)
     for s in sorted(train.season.unique()):
-        tr, va = train[train.season != s], train[train.season == s]
-        m = make().fit(tr[feats], tr[target])
-        pred.loc[va.index] = m.predict(va[feats])
+        tr, va = train.season != s, train.season == s
+        m = make().fit(train.loc[tr, feats], y[tr])
+        pred.loc[va] = m.predict(train.loc[va, feats])
     return pred
 
 
-def fit(df: pd.DataFrame, train_seasons, market="spread", verbose=True) -> FittedModel:
-    m = MARKETS[market]
-    train = eligible(df, market)
+def fit(df: pd.DataFrame, train_seasons, spec: Spec | str = "spread",
+        verbose=True) -> FittedModel:
+    if isinstance(spec, str):
+        spec = Spec(market=spec)
+    train = eligible(df, spec)
     train = train[train.season.isin(train_seasons)]
-    feats = feature_columns(train, market)
-    y = train[m["target"]]
+    feats = feature_columns(train, spec)
+    y = target(train, spec)
 
     # Ridge alpha by leave-one-season-out MAE.
     scores = {}
     for a in RIDGE_ALPHAS:
-        p = _loso(train, feats, m["target"], lambda a=a: _ridge(a))
+        p = _loso(train, feats, y, lambda a=a: _ridge(a))
         scores[a] = float((p - y).abs().mean())
     alpha = min(scores, key=scores.get)
 
-    oof_r = _loso(train, feats, m["target"], lambda: _ridge(alpha))
-    oof_x = _loso(train, feats, m["target"], _xgb)
+    oof_r = _loso(train, feats, y, lambda: _ridge(alpha))
+    oof_x = _loso(train, feats, y, _xgb)
     oof = 0.5 * (oof_r + oof_x)
-    line = train[m["line"]].to_numpy(float)
-    g = gap(oof.to_numpy(), line, market)
+    g = gap(oof, train, spec)
 
-    # Outcome for calibration: 1 = home covered / over hit; pushes dropped.
-    res = train[m["target"]].to_numpy() + (line if market == "spread" else -line)
+    # Calibration on the out-of-fold gap; pushes dropped.
+    res = market_error(train, spec)
     keep = res != 0
     platt = LogisticRegression(C=1.0).fit(g[keep].reshape(-1, 1), (res[keep] > 0).astype(int))
     # A negative slope would mean "bet against our own model". Never do
     # that: treat it as no information (probabilities stay at the base rate).
     if platt.coef_[0][0] < 0:
         platt.coef_[0][0] = 0.0
-    sigma = float(np.std(res - g))  # spread of the result around the gap
+    sigma = float(np.std(res - g))
 
     ridge = _ridge(alpha).fit(train[feats], y)
     xg = _xgb().fit(train[feats], y)
-    oof_df = train[["game_id", "season", m["target"], m["line"]]].assign(
-        oof_ridge=oof_r, oof_xgb=oof_x, oof=oof, gap=g)
-    fm = FittedModel(market, feats, ridge, xg, platt, sigma, alpha, oof_df)
+    oof_df = train[["game_id", "season", "week"]].assign(
+        oof_ridge=oof_r, oof_xgb=oof_x, oof=oof, gap=g, res=res)
+    bins = pd.cut(np.abs(g[keep]), [0, 2, 4, 6, 8, np.inf])
+    hit = pd.Series((np.sign(g[keep]) == np.sign(res[keep])).astype(float)).groupby(
+        np.asarray(bins), observed=True).agg(["mean", "size"])
+    lines = [f"  {spec.label}: {len(train):,} training games, {len(feats)} features, "
+             f"ridge alpha {alpha}"]
+    if spec.kind == "raw":
+        yv = y.to_numpy()
+        lines.append(f"    out-of-fold MAE {float(np.abs(oof - yv).mean()):.2f} "
+                     f"vs the line {float(np.abs(res).mean()):.2f}")
+    else:
+        lines.append(f"    out-of-fold: predicted vs actual market error, corr "
+                     f"{np.corrcoef(oof, res)[0, 1]:+.3f}")
+    lines.append("    out-of-fold, model's side covered by |gap|: " + ", ".join(
+        f"{str(b)} {r['mean']:.1%} (n={int(r['size'])})" for b, r in hit.iterrows()))
+    lines.append(f"    calibration slope {platt.coef_[0][0]:+.4f} per point")
+    log = "\n".join(lines)
     if verbose:
-        mae_line = float(np.abs(res).mean())
-        print(f"  {market}: {len(train):,} training games, {len(feats)} features, "
-              f"ridge alpha {alpha}")
-        print(f"    out-of-fold MAE  ridge {float((oof_r - y).abs().mean()):.2f}  "
-              f"xgb {float((oof_x - y).abs().mean()):.2f}  "
-              f"ensemble {float((oof - y).abs().mean()):.2f}  "
-              f"| closing line {mae_line:.2f}")
-        bins = pd.cut(np.abs(g[keep]), [0, 2, 4, 6, 8, np.inf])
-        hit = pd.Series((np.sign(g[keep]) == np.sign(res[keep])).astype(float)).groupby(
-            np.asarray(bins), observed=True).agg(["mean", "size"])
-        fm.gap_table = hit
-        print("    out-of-fold: how often the model's side covered, by model-line gap")
-        for b, r in hit.iterrows():
-            print(f"      gap {str(b):<12} {r['mean']:.1%}  ({int(r['size'])} games)")
-        print(f"    calibration: P(cover) = logistic({platt.intercept_[0]:+.3f} "
-              f"{platt.coef_[0][0]:+.4f} x gap); normal sigma {sigma:.1f}")
-    return fm
+        print(log)
+    return FittedModel(spec, feats, ridge, xg, platt, sigma, alpha, oof_df, hit, log)
 
 
 def feature_importance(fm: FittedModel, top=15) -> pd.DataFrame:

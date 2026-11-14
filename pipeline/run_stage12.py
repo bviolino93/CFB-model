@@ -66,11 +66,12 @@ def main(argv=None):
     seasons = sorted({int(a) for a in argv}) if argv else C.ALL_SEASONS
     if argv:
         seasons = sorted(set(seasons) | {min(seasons) - 1})   # warm-up year
-    games, pbp, teams, venues = stage1(seasons)
-    df, tg, audit = stage2(games, pbp, teams, venues)
+    games, pbp, teams, venues, extras = stage1(seasons)
+    df, tg, audit = stage2(games, pbp, teams, venues, extras=extras)
     feats = model_features(df)
     os.makedirs(C.OUTPUT_DIR, exist_ok=True)
     df.to_parquet(os.path.join(C.OUTPUT_DIR, "model_table.parquet"))
+    tg.to_parquet(os.path.join(C.OUTPUT_DIR, "team_games.parquet"))
     cols = ["season", "week", "kickoff", "home_team", "away_team", "close_spread",
             "close_total", "margin", "points", "diff_rating_epa", "diff_ewm4_epa",
             "diff_ewm8_epa", "rest_diff", "travel_diff", "home_cover"]

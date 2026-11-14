@@ -23,7 +23,8 @@ def _synthetic(seed=0, n_teams=12, weeks=10, seasons=(2023, 2024)):
                     home_team=h, away_team=a, home_tier="fbs", away_tier="fbs",
                     home_points=float(hp), away_points=float(ap),
                     margin=float(hp - ap), points=float(hp + ap),
-                    close_spread=-3.0, close_total=50.0, non_fbs_game=False))
+                    close_spread=-3.0, close_total=50.0, open_spread=-2.5,
+                    open_total=49.5, non_fbs_game=False))
                 for t in (h, a):
                     pbp.append(dict(game_id=gid, team=t, epa=rng.normal(0, .2),
                                     sr=rng.uniform(.3, .55), isoppp=rng.normal(1, .2),

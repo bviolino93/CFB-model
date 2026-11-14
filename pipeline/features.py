@@ -34,6 +34,8 @@ schedule-adjusted) are also kept as features.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -264,8 +266,8 @@ def game_table(games: pd.DataFrame, tg: pd.DataFrame) -> pd.DataFrame:
 
 
 def model_features(df: pd.DataFrame) -> list[str]:
-    """Columns Stage 3 should feed the model (no outcomes, no market)."""
-    cols = [c for c in df.columns if c.startswith(("diff_", "sum_"))]
+    """Pre-kickoff feature columns (no outcomes, no market lines)."""
+    cols = [c for c in df.columns if c.startswith(("diff_", "sum_", "pri_", "qb_", "inj_"))]
     cols += [f"{p}_{f}" for p in ("h", "a") for f in TEAM_FEATS]
     cols += ["home_field", "rest_diff", "travel_diff"]
     return [c for c in cols if c in df.columns]
@@ -294,7 +296,8 @@ def audit_leakage(df: pd.DataFrame, ratings_used) -> dict:
 
 
 # ---------------------------------------------------------------------------
-def stage2(games, pbp, teams_loc=None, venues_loc=None, verbose=True):
+def stage2(games, pbp, teams_loc=None, venues_loc=None, verbose=True, extras=None,
+           injury_rows=None):
     """Run Stage 2: returns (model_table, team_games, audit)."""
     if verbose:
         print("Stage 2: team-game table")
@@ -308,8 +311,233 @@ def stage2(games, pbp, teams_loc=None, venues_loc=None, verbose=True):
     tg = add_adjusted_and_ewma(tg)
     tg = add_travel(tg, games, teams_loc, venues_loc)
     df = game_table(games, tg)
+    df = add_signals(df, tg, extras, injury_rows)
     audit = audit_leakage(df, used)
     if verbose:
         print(f"  leakage audit: {audit['status']} "
               f"({audit['games_checked']:,} games, {audit['ridge_fits_checked']} fits)")
     return df, tg, audit
+
+
+# ---------------------------------------------------------------------------
+# 6. Preseason priors for weeks 1-4 (fade linearly to zero by week 5)
+# ---------------------------------------------------------------------------
+PRIOR_FULL_WEEKS = 5     # weight 1.0 in week 1, 0.75, 0.5, 0.25, 0 from week 5
+
+
+def prior_weight(df: pd.DataFrame) -> pd.Series:
+    w = ((PRIOR_FULL_WEEKS - df.week) / (PRIOR_FULL_WEEKS - 1)).clip(0, 1)
+    return w.where(df.season_type == "regular", 0.0).astype(float)
+
+
+def returning_production(players: pd.DataFrame, rosters: pd.DataFrame) -> pd.DataFrame:
+    """Share of last season's production by players on this season's roster.
+
+    ret_pass  dropbacks      ret_rush  rushing yards     ret_rec  receiving yards
+    ret_def   havoc credits (sacks, INTs, PBUs, forced fumbles), by name
+    ret_off   0.5 pass + 0.25 rush + 0.25 rec
+    ret_qb    1 if last season's top passer is on the roster
+    Transfers in are not counted (same as CFBD's returning production).
+    """
+    out = []
+    for s in sorted(rosters.season.unique()):
+        prev = players[players.season == s - 1]
+        ros = rosters[rosters.season == s]
+        if prev.empty or ros.empty:
+            continue
+        ids = set(zip(ros.team, ros.athlete_id))
+        names = set(zip(ros.team, ros.name))
+        off = prev[prev.pid.notna()].copy()
+        off["back"] = [(t, int(p)) in ids for t, p in zip(off.team, off.pid)]
+        de = prev[prev.name.notna()].copy()
+        de["back"] = [(t, n) in names for t, n in zip(de.team, de.name)]
+        agg = {}
+        for col, key in (("dropbacks", "ret_pass"), ("rush_yds", "ret_rush"),
+                         ("rec_yds", "ret_rec")):
+            v = off[col].clip(lower=0)
+            tot = v.groupby(off.team).sum()
+            agg[key] = (v * off.back).groupby(off.team).sum() / tot.where(tot > 0)
+        tot = de.havoc.groupby(de.team).sum()
+        agg["ret_def"] = (de.havoc * de.back).groupby(de.team).sum() / tot.where(tot > 0)
+        top = off.sort_values("dropbacks").groupby("team").tail(1).set_index("team")
+        agg["ret_qb"] = top.back.astype(float)
+        r = pd.DataFrame(agg)
+        r["ret_off"] = 0.5 * r.ret_pass + 0.25 * r.ret_rush + 0.25 * r.ret_rec
+        out.append(r.rename_axis("team").reset_index().assign(season=s))
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(
+        columns=["team", "season", "ret_off", "ret_def", "ret_qb"])
+
+
+def prior_ratings(tg: pd.DataFrame) -> pd.DataFrame:
+    """Each team's final schedule-adjusted points ratings from last season
+    (the as-of ratings before its last game), keyed to the next season."""
+    last = tg[tg.rO_pts.notna()].sort_values("kickoff").groupby(["team", "season"]).tail(1)
+    return pd.DataFrame({"team": last.team, "season": last.season + 1,
+                         "prior_off": last.rO_pts.values, "prior_def": last.rA_pts.values})
+
+
+def add_preseason_priors(df: pd.DataFrame, tg: pd.DataFrame, players=None,
+                         rosters=None, talent=None) -> pd.DataFrame:
+    """pri_* features: preseason information times the week-1-to-5 fade
+    weight `pri_w`. Everything here is known before the season starts
+    (caveat: the free roster files are one snapshot per season, so a
+    mid-season transfer could appear a few weeks early)."""
+    df = df.copy()
+    w = prior_weight(df)
+    df["pri_w"] = w
+    pr = prior_ratings(tg)
+    parts = [pr]
+    if players is not None and rosters is not None:
+        parts.append(returning_production(players, rosters))
+    if talent is not None:
+        t = talent.copy()
+        t["talent"] = t.groupby("season").talent.transform(lambda x: (x - x.mean()) / x.std())
+        parts.append(t[["team", "season", "talent"]])
+    info = parts[0]
+    for p in parts[1:]:
+        info = info.merge(p, on=["team", "season"], how="outer")
+    for side in ("home", "away"):
+        x = info.add_prefix(f"{side[0]}p_").rename(
+            columns={f"{side[0]}p_team": f"{side}_team", f"{side[0]}p_season": "season"})
+        df = df.merge(x, on=[f"{side}_team", "season"], how="left")
+    # Matchup priors (spread side) and their totals counterparts.
+    h_net = df.hp_prior_off - df.hp_prior_def
+    a_net = df.ap_prior_off - df.ap_prior_def
+    df["pri_rating_diff"] = w * (h_net - a_net)
+    df["pri_rating_sum"] = w * (df.hp_prior_off + df.ap_prior_def
+                                + df.ap_prior_off + df.hp_prior_def)
+    for k in ("ret_off", "ret_def", "ret_qb", "talent"):
+        if f"hp_{k}" in df:
+            df[f"pri_{k}_diff"] = w * (df[f"hp_{k}"] - df[f"ap_{k}"])
+            df[f"pri_{k}_sum"] = w * (df[f"hp_{k}"] + df[f"ap_{k}"])
+    # Last year's rating matters less when little production returns.
+    if "hp_ret_off" in df:
+        df["pri_rating_x_ret"] = w * (h_net * df.hp_ret_off.fillna(0.5)
+                                      - a_net * df.ap_ret_off.fillna(0.5))
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 7. Injury / QB signals
+# ---------------------------------------------------------------------------
+def add_qb_change(df: pd.DataFrame, starters: pd.DataFrame) -> pd.DataFrame:
+    """Historical stand-in for QB injury news, since there is no historical
+    college injury report: did a team start a different QB than in its
+    previous game, and how many starts does this QB have for the team?
+
+    qb_change   1 if this game's starter differs from the last game's
+                (week 1: last season's most frequent starter)
+    qb_starts   starts for this team in the current + previous season, cap 10
+
+    Caveat: this uses who actually started. That's usually public before
+    kickoff, but not always (game-time decisions), so treat it as an upper
+    bound on what pregame injury news is worth.
+    """
+    df = df.copy()
+    st = starters.drop(columns=["season"], errors="ignore").merge(
+        df[["game_id", "kickoff", "season"]], on="game_id", how="inner")
+    st = st.sort_values(["pos_team", "kickoff"]).reset_index(drop=True)
+    g = st.groupby("pos_team", sort=False)
+    prev = g.starter.shift(1)
+    prev_season = g.season.shift(1)
+    # week 1: compare with last season's most frequent starter
+    mode = (st.groupby(["pos_team", "season"]).starter
+            .agg(lambda x: x.mode().iloc[0]).rename("mode").reset_index())
+    mode["season"] += 1
+    st = st.merge(mode, on=["pos_team", "season"], how="left")
+    new_season = prev_season.values != st.season.values
+    ref = np.where(new_season, st["mode"], prev)
+    st["qb_change"] = np.where(pd.isna(ref), np.nan, (st.starter != ref).astype(float))
+    # starts by this QB for this team in this and the previous season
+    st["qb_starts"] = 0.0
+    for (team, qb), grp in st.groupby(["pos_team", "starter"]):
+        k = grp.kickoff.values
+        ss = grp.season.values
+        cnt = [(np.sum((k < k[i]) & (ss >= ss[i] - 1))) for i in range(len(k))]
+        st.loc[grp.index, "qb_starts"] = np.minimum(cnt, 10)
+    for side in ("home", "away"):
+        x = st[["game_id", "pos_team", "qb_change", "qb_starts"]].rename(columns={
+            "pos_team": f"{side}_team", "qb_change": f"{side[0]}_qb_change",
+            "qb_starts": f"{side[0]}_qb_starts"})
+        df = df.merge(x, on=["game_id", f"{side}_team"], how="left")
+    df["qb_change_diff"] = df.a_qb_change - df.h_qb_change       # + favours home
+    df["qb_starts_diff"] = df.h_qb_starts - df.a_qb_starts
+    df["qb_change_sum"] = df.a_qb_change + df.h_qb_change
+    return df
+
+
+def _team_key(t) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(t or "").strip().lower())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[\u2018\u2019'`.]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return re.sub(r" st$", " state", s)
+
+
+def add_injury_feed(df: pd.DataFrame, rows) -> pd.DataFrame:
+    """Injury impact from the app's injury format, as model features.
+
+    `rows`: list of dicts or a DataFrame with the app's columns
+    (team, points, note, until, added_at): "team is N points WORSE until
+    `until`", the same rows the app reads from the sheet and from
+    injuries_auto.json on the injury-feed branch. An entry counts for a game
+    only if it was added before kickoff and is still in force that day.
+
+    inj_h_pts / inj_a_pts   points off each team
+    inj_diff                away points - home points (+ favours home), spreads
+    inj_sum                 total points off both teams, totals
+    inj_qb_diff             1 per side whose entry mentions a QB (+ favours home)
+    """
+    df = df.copy()
+    inj = pd.DataFrame(rows)
+    for c in ("inj_h_pts", "inj_a_pts", "inj_diff", "inj_sum", "inj_qb_diff"):
+        df[c] = 0.0
+    if inj.empty:
+        return df
+    inj["key"] = inj.team.map(_team_key)
+    inj["points"] = pd.to_numeric(inj.points, errors="coerce").fillna(0)
+    inj["until"] = pd.to_datetime(inj.until.astype(str).str[:10], errors="coerce")
+    inj["added"] = pd.to_datetime(inj.added_at, errors="coerce", utc=True)
+    inj["qb"] = inj.note.astype(str).str.contains(r"\bQB\b|quarterback", case=False)
+    day = df.kickoff.dt.tz_convert("America/New_York").dt.tz_localize(None).dt.normalize()
+    for side, p in (("home", "h"), ("away", "a")):
+        keys = df[f"{side}_team"].map(_team_key)
+        pts, qb = np.zeros(len(df)), np.zeros(len(df))
+        for i, (k, d, ko) in enumerate(zip(keys, day, df.kickoff)):
+            m = inj[(inj.key == k) & ((inj.until >= d) | inj.until.isna())
+                    & ((inj.added < ko) | inj.added.isna())]
+            pts[i], qb[i] = m.points.sum(), float(m.qb.any())
+        df[f"inj_{p}_pts"], df[f"_qb_{p}"] = pts, qb
+    df["inj_diff"] = df.inj_a_pts - df.inj_h_pts
+    df["inj_sum"] = df.inj_a_pts + df.inj_h_pts
+    df["inj_qb_diff"] = df._qb_a - df._qb_h
+    return df.drop(columns=["_qb_h", "_qb_a"])
+
+
+# ---------------------------------------------------------------------------
+# 8. Market features (for the market-residual model)
+# ---------------------------------------------------------------------------
+def add_market_features(df: pd.DataFrame) -> pd.DataFrame:
+    """mkt_* columns. line_move = close - open (home side for spreads, so a
+    negative move means money came in on the home team)."""
+    df = df.copy()
+    df["mkt_has_open_spread"] = df.open_spread.notna().astype(int)
+    df["mkt_open_spread"] = df.open_spread.fillna(df.close_spread)
+    df["mkt_close_spread"] = df.close_spread
+    df["mkt_spread_move"] = (df.close_spread - df.open_spread).fillna(0)
+    df["mkt_has_open_total"] = df.open_total.notna().astype(int)
+    df["mkt_open_total"] = df.open_total.fillna(df.close_total)
+    df["mkt_close_total"] = df.close_total
+    df["mkt_total_move"] = (df.close_total - df.open_total).fillna(0)
+    return df
+
+
+def add_signals(df, tg, extras, injury_rows=None):
+    """Priors, QB change, injury feed and market features in one call."""
+    ex = extras or {}
+    df = add_preseason_priors(df, tg, ex.get("players"), ex.get("rosters"), ex.get("talent"))
+    if ex.get("starters") is not None:
+        df = add_qb_change(df, ex["starters"])
+    df = add_injury_feed(df, injury_rows or [])
+    return add_market_features(df)

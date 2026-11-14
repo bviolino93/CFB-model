@@ -94,3 +94,21 @@ spreads went 309-279-8 (+0.3% ROI, 58% drawdown) and totals lost 74% of the
 bankroll. Public box-score stats are already in the closing line; an edge
 would need information the market prices late (injuries, QB news, weather)
 or a better price than the close.
+
+## Round 2: opening lines, priors, market residual, injuries
+
+`python -m pipeline.backtest` now compares 14 strategies (7 per market):
+
+| Idea | What was built |
+|---|---|
+| Opening lines + CLV | `Spec(line="open")`: the same score model is calibrated, bet and graded at the opening line (at -110, since the free data has no opening prices). CLV = points the line moved our way from the open to the close. |
+| Preseason priors | `features.add_preseason_priors`: last season's final schedule-adjusted ratings, plus returning production from the free rosters and last season's play-by-play (share of dropbacks, rushing yards, receiving yards and havoc credits still on the roster, and whether the top QB returns). All of it is multiplied by a weight that fades 1.0, 0.75, 0.5, 0.25, 0 over weeks 1-5. The 247 talent composite loads through `ingest.load_talent()` when CFBD is reachable (it is blocked from the cloud sandbox). |
+| Market residual | `Spec(kind="resid")`: the target is margin + spread (the market's error), with the open, the close and the move as features. The `@open` variant only gets the open. |
+| Injuries | `features.add_injury_feed(df, rows)` reads the app's injury rows (team, points, note, until, added_at: the sheet and `injuries_auto.json`) and only counts news added before kickoff and still in force. There's no historical college injury report, so the backtest uses `add_qb_change` (a different starting QB than last game, and the starter's starts) as a stand-in. |
+
+### Result (2025, out of sample)
+
+* **Market residual:** no signal. Out of fold, predicted vs actual market error correlates +0.02 to +0.03, and line movement gives no fade spots. It made 1 bet all year (lost).
+* **Opening lines:** the model's opening side gets small, steady CLV. On spreads the line moved our way in 54-61% of moved games every season from 2018 to 2025, averaging +0.2-0.4 points. But the side still covered only ~50% in training, which isn't enough to beat -110 or -105. Totals at the open placed 51 bets, went 29-22 (+8.6% ROI) and beat the close by 2.1 points on average. That's the best result, but it's fragile: the priors+QB version went 47-50, and the training-era edge was in Unders while 2025's bets were mostly Overs.
+* **Preseason priors:** they don't help. Spreads in weeks 1-4 at the open went 55.9% vs 54.9% for the model's side across 195 games, which is noise, and the calibration found no edge.
+* **QB change:** already priced in. It adds nothing measurable.
