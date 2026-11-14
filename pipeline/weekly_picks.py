@@ -64,6 +64,10 @@ MAX_EDGE = 7.0
 # slates of 10+ games): e.g. if the model is 3 points over the market on
 # the median total, that's a level bias, not 50 Over bets.
 CENTER_MIN_GAMES = 10
+# A play also needs the model's own number (before that centring) to lean
+# the same way by at least this much, so a pick can't come only from the
+# slate adjustment.
+MIN_RAW_LEAN = 1.0
 BOOK_ODDS = C.YOUR_BOOK_ODDS    # -105 at 734
 
 ALIASES = {
@@ -191,6 +195,9 @@ def center_slate(slate: pd.DataFrame):
     (slates of CENTER_MIN_GAMES+ games). Injury moves stay in, since they're
     applied game by game on top of the centred number."""
     notes = []
+    # the model's own lean before centring, kept for the agreement check
+    slate["raw_spread_edge"] = slate.mkt_spread - slate.fair_spread
+    slate["raw_total_edge"] = slate.fair_total - slate.mkt_total
     has = slate.mkt_spread.notna()
     if has.sum() >= CENTER_MIN_GAMES:
         base = slate.fair_spread + slate.inj_h_pts - slate.inj_a_pts      # pre-injury
@@ -239,6 +246,7 @@ def build_card(slate: pd.DataFrame, ranks: pd.DataFrame, sig_spread: float,
                    f"{opp} {_ord(ro.off)} and {_ord(ro['def'])}")
             plays.append(dict(game_id=r.game_id, kickoff=r.kickoff, market="spread",
                               pick=f"{team} {line:+.1f}", edge=abs(edge),
+                              raw_lean=float(np.sign(edge) * r.raw_spread_edge),
                               ok_to=f"{team} {fair + TIER1['spread']:+.1f}",
                               odds=r.spread_odds, sigma=sig_spread, why=why, inj=inj_txt,
                               fair=f"{team} {fair:+.1f}", game=f"{r.away_team} at {r.home_team}"))
@@ -251,15 +259,21 @@ def build_card(slate: pd.DataFrame, ranks: pd.DataFrame, sig_spread: float,
                    f"adjusted EPA, defenses {_ord(rh['def'])} and {_ord(ra['def'])}")
             plays.append(dict(game_id=r.game_id, kickoff=r.kickoff, market="total",
                               pick=f"{side} {r.mkt_total:g}", edge=abs(edge),
+                              raw_lean=float(np.sign(edge) * r.raw_total_edge),
                               ok_to=f"{side} {ok:.1f}", odds=r.total_odds, sigma=sig_total,
                               why=why, inj=inj_txt, fair=f"{r.fair_total:.1f}",
                               game=f"{r.away_team} at {r.home_team}"))
     card = pd.DataFrame(plays)
     if card.empty:
         return card
-    card["tier"] = np.where(card.edge > MAX_EDGE, 3,
-                            np.where(card.edge >= card.market.map(TIER1), 1,
-                                     np.where(card.edge >= TIER2, 2, 0)))
+    # If either market on a game is more than MAX_EDGE off, the model is
+    # probably missing something about the matchup: flag both.
+    wild = card.groupby("game_id").edge.transform("max") > MAX_EDGE
+    agrees = card.raw_lean.fillna(card.edge) >= MIN_RAW_LEAN
+    card["tier"] = np.where(wild, 3,
+                            np.where(~agrees, 0,
+                                     np.where(card.edge >= card.market.map(TIER1), 1,
+                                              np.where(card.edge >= TIER2, 2, 0))))
     card["p_cover"] = norm.cdf(card.edge / card.sigma)
     card["qk_pct"] = kelly_fraction(card.p_cover, card.odds)
     card["qk_$"] = card.qk_pct * bankroll
