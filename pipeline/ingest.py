@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import sys
 import urllib.request
 
@@ -207,7 +208,9 @@ def load_pbp_stats(seasons=None, verbose=True) -> pd.DataFrame:
         small = os.path.join(C.PIPE_CACHE, f"pbp_team_{y}.parquet")
         pl = os.path.join(C.PIPE_CACHE, f"players_{y}.parquet")
         qb = os.path.join(C.PIPE_CACHE, f"starters_{y}.parquet")
-        if not all(os.path.exists(p) for p in (small, pl, qb)) or y >= cur:
+        have = all(os.path.exists(p) for p in (small, pl, qb))
+        stale = have and y >= cur and time.time() - os.path.getmtime(small) > 12 * 3600
+        if not have or stale:
             if verbose:
                 print(f"  downloading play-by-play {y} (~120 MB) ...", flush=True)
             raw_path = cfb_data._fetch(cfb_data.PBP_URL.format(season=y),

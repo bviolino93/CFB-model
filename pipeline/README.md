@@ -112,3 +112,12 @@ or a better price than the close.
 * **Opening lines:** the model's opening side gets small, steady CLV. On spreads the line moved our way in 54-61% of moved games every season from 2018 to 2025, averaging +0.2-0.4 points. But the side still covered only ~50% in training, which isn't enough to beat -110 or -105. Totals at the open placed 51 bets, went 29-22 (+8.6% ROI) and beat the close by 2.1 points on average. That's the best result, but it's fragile: the priors+QB version went 47-50, and the training-era edge was in Unders while 2025's bets were mostly Overs.
 * **Preseason priors:** they don't help. Spreads in weeks 1-4 at the open went 55.9% vs 54.9% for the model's side across 195 games, which is noise, and the calibration found no edge.
 * **QB change:** already priced in. It adds nothing measurable.
+
+## Weekly card (live)
+
+```bash
+python -m pipeline.weekly_picks --lines lines.csv          # today's slate
+python -m pipeline.weekly_picks --date 2026-11-21          # uses ODDS_API_KEY if set
+```
+
+It rebuilds ratings through the slate date and fits the spread and total score models on every past season. It applies active rows from `injuries_auto.json` (plus `--injuries sheet.csv`), removes the slate-wide lean like the app does, and ranks every game by point edge at -105. Tier 1 is spreads >= 3 or totals >= 4 (1u, quarter Kelly shown for reference). Tier 2 is 2+ points (watch). Gaps over 7 points go to "check the news first". The output files in `pipeline/output/` are `weekly_card_<date>.md`, `weekly_plays_<date>.csv` and `weekly_fair_lines_<date>.csv`.
