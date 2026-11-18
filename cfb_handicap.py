@@ -28,7 +28,10 @@ import pandas as pd
 import cfb_news
 import cfb_streak
 
-HANDICAP = True
+# Off unless USE_CLAUDE_API=1 (Brian shut off all Claude API usage,
+# 2026-11-18): bets then go out as the model and the over-streak rule make
+# them, with no reviews, leans or game projections.
+HANDICAP = cfb_news.API_ON
 
 SYSTEM = """You are a sharp, disciplined college football bettor making the \
 final call on bets a model has flagged. You see the model's numbers, the \

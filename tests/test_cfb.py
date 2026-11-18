@@ -655,3 +655,23 @@ def test_news_relooks_empty_and_game_day_entries():
     finally:
         cfb_news._ask = orig
     assert sorted(asked) == ["H2", "H3"]    # empty one and the game-day one
+
+
+def test_api_off_by_default(monkeypatch):
+    import importlib
+    import pandas as pd
+    import cfb_handicap
+    import cfb_news
+    monkeypatch.delenv("USE_CLAUDE_API", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")   # even with a key, nothing is called
+    assert importlib.reload(cfb_news).API_ON is False
+    assert importlib.reload(cfb_handicap).HANDICAP is False
+    now = pd.Timestamp("2026-11-18T15:00Z")
+    games = [{"home": "A", "away": "B", "kickoff": (now + pd.Timedelta(hours=5)).isoformat()}]
+    assert cfb_news.fetch(games, {}, now) == {}
+    picks = pd.DataFrame([{"market": "totals", "pick": "Under", "point": 50.0, "why": "w",
+                           "stake": 5.0, "sources": "model"}])
+    assert len(cfb_handicap.review(picks, {}, [], now)) == 1
+    assert cfb_handicap.review(picks, {}, [], now, leans=True).empty
+    assert cfb_handicap.game_views(picks, {}, [], picks, now, 1000, {}) [1] == []
+    importlib.reload(cfb_news); importlib.reload(cfb_handicap)

@@ -53,7 +53,7 @@ jobs:
           path: .cache_cfb
           key: cfb-${{ github.run_id }}
           restore-keys: cfb-
-      - run: pip install pandas numpy pyarrow requests scipy scikit-learn anthropic
+      - run: pip install pandas numpy pyarrow requests scipy scikit-learn
       - name: Which game
         id: q
         env:
@@ -72,7 +72,7 @@ jobs:
       - name: Run the game
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USE_CLAUDE_API: "0"
           MY_BOOKS: ${{ vars.MY_BOOKS || 'draftkings,fanduel' }}
           GAME: ${{ steps.q.outputs.game }}
         run: |
