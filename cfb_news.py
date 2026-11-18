@@ -37,6 +37,12 @@ import pandas as pd
 # ~$30-40 a week. Sonnet at low effort, news kept 2 days, lookups only in the
 # last 3 days before kickoff and at most MAX_LOOKUPS games a run; still 3
 # searches a game, any site, so QB news from beat writers isn't missed.
+# Brian shut off ALL Claude API usage for cost (2026-11-18). Nothing in this
+# repo calls the Anthropic API unless the environment sets USE_CLAUDE_API=1
+# (the workflows set it to 0 and no longer pass ANTHROPIC_API_KEY). Off: no
+# injury/news lookups, no handicapper reviews, no game projections.
+API_ON = os.environ.get("USE_CLAUDE_API", "0") == "1"
+
 MODEL = "claude-sonnet-5-5"
 EFFORT = "low"
 REUSE_HOURS = 48
@@ -209,6 +215,9 @@ def fetch(games: list[dict], cache: dict | None = None, now=None,
         print(f"news: {len(todo)} games due, looking up the {left} soonest (cap {cap} a run)")
         todo = todo[:left]
     if todo and client is None:
+        if not API_ON:
+            print("news: Claude API usage is off (USE_CLAUDE_API), skipping the injury check")
+            return cache
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("news: no ANTHROPIC_API_KEY, skipping the injury check")
             return cache
