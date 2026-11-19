@@ -1,0 +1,33 @@
+{
+ "updated": "2026-11-19T22:22:54.530336+00:00",
+ "games": [
+  {
+   "commence": "2026-11-20T00:30:00Z",
+   "away": "Rice Owls",
+   "home": "Temple Owls",
+   "market": "spreads",
+   "pick": "Rice Owls",
+   "point": 2.5,
+   "price": -102,
+   "book": "draftkings",
+   "lean": 0.19,
+   "ev": 0.0075,
+   "win_chance": 0.5088,
+   "sources": "combined"
+  },
+  {
+   "commence": "2026-11-20T00:30:00Z",
+   "away": "Rice Owls",
+   "home": "Temple Owls",
+   "market": "totals",
+   "pick": "Over",
+   "point": 51.5,
+   "price": -112,
+   "book": "draftkings",
+   "lean": 0.0,
+   "ev": -0.0369,
+   "win_chance": 0.5088,
+   "sources": "market"
+  }
+ ]
+}
